@@ -1946,12 +1946,30 @@ export default function Backlog() {
                    <Label className="text-base font-semibold mb-4 block">Details</Label>
                    <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                       <div className="space-y-1.5">
-                        <Label htmlFor="taskEpic" className="text-muted-foreground text-xs uppercase tracking-wider">Epic</Label>
-                        <Input
-                          id="taskEpic"
-                          value={selectedTask.epic || ""}
-                          onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
-                        />
+                        <Label className="text-muted-foreground text-xs uppercase tracking-wider">Epic</Label>
+                        <Select
+                          value={selectedTask.epicId || availableEpics.find(e => e.name === selectedTask.epic)?.id || "no-epic"}
+                          onValueChange={(value) => {
+                            const epic = availableEpics.find(e => e.id === value);
+                            setSelectedTask({
+                              ...selectedTask,
+                              epicId: value === "no-epic" ? undefined : value,
+                              epic: epic ? epic.name : undefined
+                            });
+                          }}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select Epic" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="no-epic">No Epic</SelectItem>
+                            {availableEpics.map((epic) => (
+                              <SelectItem key={epic.id} value={epic.id}>
+                                {epic.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                       <div className="space-y-1.5">
                         <Label htmlFor="taskSprint" className="text-muted-foreground text-xs uppercase tracking-wider">Sprint</Label>

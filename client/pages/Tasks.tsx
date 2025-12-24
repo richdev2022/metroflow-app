@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from "@/lib/api-client";
-import { Task, CreateTaskInput, ApiResponse, TeamMember, Comment, CreateCommentInput, EpicCounts } from "@shared/api";
+import { Task, CreateTaskInput, ApiResponse, TeamMember, Comment, CreateCommentInput, EpicCounts, Epic } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -230,10 +230,25 @@ export default function Tasks() {
   const [selectedMemberFilter, setSelectedMemberFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<{ start: string; end: string }>({ start: "", end: "" });
 
+  const [epicsList, setEpicsList] = useState<Epic[]>([]);
+
   useEffect(() => { 
     fetchTasks();
     fetchTeamMembers();
+    fetchEpics();
   }, []);
+
+  const fetchEpics = async () => {
+    try {
+      const response = await api.get("/epics");
+      const data = response.data;
+      if (data.success && data.data) {
+        setEpicsList(data.data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch epics", err);
+    }
+  };
 
   const fetchTeamMembers = async () => {
     try {
@@ -1422,12 +1437,29 @@ export default function Tasks() {
                       />
                       <div className="flex items-center gap-2">
                         <span className="text-sm text-muted-foreground">in</span>
-                        <Input 
-                           value={selectedTask.epic || ""}
-                           onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
-                           className="h-8 w-auto min-w-[200px] text-sm"
-                           placeholder="Epic Name"
-                        />
+                        <Select
+                          value={selectedTask.epicId || epicsList.find(e => e.name === selectedTask.epic)?.id || "no-epic"}
+                          onValueChange={(value) => {
+                            const epic = epicsList.find(e => e.id === value);
+                            setSelectedTask({
+                              ...selectedTask,
+                              epicId: value === "no-epic" ? undefined : value,
+                              epic: epic ? epic.name : undefined
+                            });
+                          }}
+                        >
+                          <SelectTrigger className="h-8 w-auto min-w-[200px] text-sm">
+                            <SelectValue placeholder="Select Epic" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="no-epic">No Epic</SelectItem>
+                            {epicsList.map((epic) => (
+                              <SelectItem key={epic.id} value={epic.id}>
+                                {epic.name}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
                       </div>
                     </div>
                   </div>

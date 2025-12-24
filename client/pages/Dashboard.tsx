@@ -946,7 +946,7 @@ export default function Dashboard() {
                                 </div>
                               </td>
                               <td className="py-3 px-4 font-medium max-w-[200px]">
-                                <div className="truncate" title={task.title}>
+                                <div className="break-words whitespace-normal" title={task.title}>
                                   {task.title}
                                 </div>
                               </td>
