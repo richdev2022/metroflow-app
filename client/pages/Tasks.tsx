@@ -1368,30 +1368,33 @@ export default function Tasks() {
           <DialogContent className="max-w-4xl h-[90vh] flex flex-col p-0 gap-0">
             {selectedTask && (
               <>
-                <DialogHeader className="p-6 pb-2">
-                  <div className="flex items-start justify-between gap-4">
-                    <div className="flex-1">
-                      <Input
-                        value={selectedTask.title}
-                        onChange={(e) => setSelectedTask({...selectedTask, title: e.target.value})}
-                        className="text-2xl font-bold h-auto py-2 mb-2"
-                        placeholder="Task Title"
-                      />
-                      <div className="flex items-center gap-2 mt-2">
-                        <Badge variant="outline">#{selectedTask.id}</Badge>
-                        <Input 
-                           value={selectedTask.epic || ""}
-                           onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
-                           className="h-6 w-32 text-xs"
-                           placeholder="Epic"
-                        />
+                <DialogHeader className="p-6 pb-4 border-b">
+                  <div className="space-y-4">
+                    <div className="flex items-center justify-between gap-4">
+                      <div className="flex items-center gap-2">
+                        <Badge variant="outline" className="text-sm py-1 px-3 bg-muted/50">
+                          #{selectedTask.id}
+                        </Badge>
+                        <Button
+                          variant="ghost"
+                          size="icon"
+                          className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                          onClick={() => {
+                            navigator.clipboard.writeText(selectedTask.id);
+                            toast({ title: "Copied", description: "Task ID copied to clipboard" });
+                          }}
+                        >
+                          <Copy className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex items-center gap-2">
                         <Select
                             value={selectedTask.status}
                             onValueChange={(value: any) =>
                               setSelectedTask({...selectedTask, status: value})
                             }
                         >
-                            <SelectTrigger className="h-6 w-32 text-xs">
+                            <SelectTrigger className="w-[140px]">
                                 <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
@@ -1400,9 +1403,6 @@ export default function Tasks() {
                                 <SelectItem value="completed">Completed</SelectItem>
                             </SelectContent>
                         </Select>
-                      </div>
-                    </div>
-                    <div className="flex gap-2">
                         <Button 
                             onClick={() => updateTask(selectedTask.id, selectedTask)} 
                             disabled={isUpdatingTask}
@@ -1410,66 +1410,85 @@ export default function Tasks() {
                             {isUpdatingTask ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
                             Save
                         </Button>
+                      </div>
+                    </div>
+                    
+                    <div className="space-y-2">
+                      <Input
+                        value={selectedTask.title}
+                        onChange={(e) => setSelectedTask({...selectedTask, title: e.target.value})}
+                        className="text-xl md:text-2xl font-bold h-auto py-2 border-none shadow-none px-0 focus-visible:ring-0"
+                        placeholder="Task Title"
+                      />
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground">in</span>
+                        <Input 
+                           value={selectedTask.epic || ""}
+                           onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
+                           className="h-8 w-auto min-w-[200px] text-sm"
+                           placeholder="Epic Name"
+                        />
+                      </div>
                     </div>
                   </div>
                 </DialogHeader>
 
-                <div className="flex-1 overflow-hidden flex flex-col md:flex-row">
+                <div className="flex-1 overflow-hidden flex flex-col md:flex-row bg-muted/5">
                   {/* Left Column: Details */}
-                  <div className="w-full md:w-2/3 p-6 pt-0 overflow-y-auto border-r">
+                  <div className="w-full md:w-2/3 p-6 overflow-y-auto border-r">
                     <div className="space-y-6">
-                      <div>
-                        <Label className="text-muted-foreground">Description</Label>
+                      {/* Description Card */}
+                      <Card className="p-4 shadow-sm">
+                        <Label className="text-base font-semibold mb-2 block">Description</Label>
                         <Textarea
                             value={selectedTask.description || ""}
                             onChange={(e) => setSelectedTask({...selectedTask, description: e.target.value})}
-                            className="mt-2 min-h-[100px]"
-                            placeholder="Task description"
+                            className="min-h-[120px] resize-none focus-visible:ring-1"
+                            placeholder="Add a more detailed description..."
                         />
-                      </div>
+                      </Card>
 
-                      <div className="grid grid-cols-2 gap-4">
-                        <div>
-                          <Label className="text-muted-foreground">Sprint</Label>
-                          <Input
-                            value={selectedTask.sprint || ""}
-                            onChange={(e) => setSelectedTask({...selectedTask, sprint: e.target.value})}
-                            className="mt-1"
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-muted-foreground">Assigned To</Label>
-                          <div className="mt-1">
-                             <TeamMemberMultiSelect
-                                selected={selectedTask.assignedTo || []}
-                                onChange={(selected) => setSelectedTask({...selectedTask, assignedTo: selected})}
-                             />
+                      {/* Details Card */}
+                      <Card className="p-4 shadow-sm">
+                        <Label className="text-base font-semibold mb-4 block">Details</Label>
+                        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                          <div className="space-y-1.5">
+                            <Label className="text-muted-foreground text-xs uppercase tracking-wider">Sprint</Label>
+                            <Input
+                              value={selectedTask.sprint || ""}
+                              onChange={(e) => setSelectedTask({...selectedTask, sprint: e.target.value})}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-muted-foreground text-xs uppercase tracking-wider">Assigned To</Label>
+                            <TeamMemberMultiSelect
+                               selected={selectedTask.assignedTo || []}
+                               onChange={(selected) => setSelectedTask({...selectedTask, assignedTo: selected})}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-muted-foreground text-xs uppercase tracking-wider">Start Date</Label>
+                            <Input
+                              type="date"
+                              value={selectedTask.startDate ? new Date(selectedTask.startDate).toISOString().split('T')[0] : ""}
+                              onChange={(e) => setSelectedTask({...selectedTask, startDate: e.target.value})}
+                            />
+                          </div>
+                          <div className="space-y-1.5">
+                            <Label className="text-muted-foreground text-xs uppercase tracking-wider">End Date</Label>
+                            <Input
+                              type="date"
+                              value={selectedTask.endDate ? new Date(selectedTask.endDate).toISOString().split('T')[0] : ""}
+                              onChange={(e) => setSelectedTask({...selectedTask, endDate: e.target.value})}
+                            />
                           </div>
                         </div>
-                        <div>
-                          <Label className="text-muted-foreground">Start Date</Label>
-                          <Input
-                            type="date"
-                            value={selectedTask.startDate ? new Date(selectedTask.startDate).toISOString().split('T')[0] : ""}
-                            onChange={(e) => setSelectedTask({...selectedTask, startDate: e.target.value})}
-                            className="mt-1"
-                          />
-                        </div>
-                        <div>
-                          <Label className="text-muted-foreground">End Date</Label>
-                          <Input
-                            type="date"
-                            value={selectedTask.endDate ? new Date(selectedTask.endDate).toISOString().split('T')[0] : ""}
-                            onChange={(e) => setSelectedTask({...selectedTask, endDate: e.target.value})}
-                            className="mt-1"
-                          />
-                        </div>
-                      </div>
+                      </Card>
 
-                      {/* Images */}
+                      {/* Images Card */}
                       {selectedTask.images && selectedTask.images.length > 0 && (
-                        <div>
-                          <Label className="text-muted-foreground mb-2 block">Attachments</Label>
+                        <Card className="p-4 shadow-sm">
+                          <Label className="text-base font-semibold mb-4 block">Attachments</Label>
                           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
                             {selectedTask.images.map((img, i) => (
                               <a key={i} href={img} target="_blank" rel="noopener noreferrer" className="block relative aspect-video rounded-lg overflow-hidden border hover:opacity-90 transition-opacity">
@@ -1477,7 +1496,7 @@ export default function Tasks() {
                               </a>
                             ))}
                           </div>
-                        </div>
+                        </Card>
                       )}
                     </div>
                   </div>

@@ -1886,122 +1886,144 @@ export default function Backlog() {
 
         {/* Task Detail Modal */}
         <Dialog open={showTaskDetailModal} onOpenChange={setShowTaskDetailModal}>
-          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto w-full">
-            <DialogHeader>
-              <DialogTitle className="flex items-center gap-2">
-                <Edit className="h-5 w-5" />
-                Task Details
-              </DialogTitle>
+          <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto w-full p-0 gap-0 bg-muted/5">
+            <DialogHeader className="p-6 pb-4 border-b bg-background sticky top-0 z-10">
+              <div className="flex items-center justify-between">
+                <DialogTitle className="flex items-center gap-2 text-xl">
+                  <Edit className="h-5 w-5" />
+                  Task Details
+                </DialogTitle>
+                <div className="flex items-center gap-2">
+                  <Badge variant="outline" className="text-sm py-1 px-3 bg-muted/50">
+                    #{selectedTask?.id}
+                  </Badge>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 text-muted-foreground hover:text-foreground"
+                    onClick={() => {
+                      if (selectedTask) {
+                        navigator.clipboard.writeText(selectedTask.id);
+                        toast({ title: "Copied", description: "Task ID copied to clipboard" });
+                      }
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
             </DialogHeader>
             {selectedTask && (
-              <div className="space-y-6">
-                {/* Task Title */}
-                <div>
-                  <Label htmlFor="taskTitle">Title</Label>
-                  <Input
-                    id="taskTitle"
-                    value={selectedTask.title}
-                    onChange={(e) => setSelectedTask({...selectedTask, title: e.target.value})}
-                    className="mt-1"
-                  />
-                </div>
+              <div className="p-6 space-y-6">
+                {/* Main Info Card */}
+                <Card className="p-4 shadow-sm bg-background">
+                  <div className="space-y-4">
+                    <div>
+                      <Label htmlFor="taskTitle" className="text-base font-semibold mb-1.5 block">Title</Label>
+                      <Input
+                        id="taskTitle"
+                        value={selectedTask.title}
+                        onChange={(e) => setSelectedTask({...selectedTask, title: e.target.value})}
+                        className="text-lg font-medium"
+                      />
+                    </div>
 
-                {/* Description */}
-                <div>
-                  <Label htmlFor="taskDescription">Description</Label>
-                  <Textarea
-                    id="taskDescription"
-                    value={selectedTask.description || ""}
-                    onChange={(e) => setSelectedTask({...selectedTask, description: e.target.value})}
-                    rows={3}
-                    className="mt-1"
-                  />
-                </div>
+                    <div>
+                      <Label htmlFor="taskDescription" className="text-base font-semibold mb-1.5 block">Description</Label>
+                      <Textarea
+                        id="taskDescription"
+                        value={selectedTask.description || ""}
+                        onChange={(e) => setSelectedTask({...selectedTask, description: e.target.value})}
+                        rows={3}
+                        className="min-h-[100px] resize-none"
+                      />
+                    </div>
+                  </div>
+                </Card>
 
-                {/* Epic and Sprint */}
-                <div className="grid grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="taskEpic">Epic</Label>
-                    <Input
-                      id="taskEpic"
-                      value={selectedTask.epic || ""}
-                      onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="taskSprint">Sprint</Label>
-                    <Input
-                      id="taskSprint"
-                      value={selectedTask.sprint || ""}
-                      onChange={(e) => setSelectedTask({...selectedTask, sprint: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
+                {/* Details Card */}
+                <Card className="p-4 shadow-sm bg-background">
+                   <Label className="text-base font-semibold mb-4 block">Details</Label>
+                   <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                      <div className="space-y-1.5">
+                        <Label htmlFor="taskEpic" className="text-muted-foreground text-xs uppercase tracking-wider">Epic</Label>
+                        <Input
+                          id="taskEpic"
+                          value={selectedTask.epic || ""}
+                          onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label htmlFor="taskSprint" className="text-muted-foreground text-xs uppercase tracking-wider">Sprint</Label>
+                        <Input
+                          id="taskSprint"
+                          value={selectedTask.sprint || ""}
+                          onChange={(e) => setSelectedTask({...selectedTask, sprint: e.target.value})}
+                        />
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-muted-foreground text-xs uppercase tracking-wider">Status</Label>
+                        <Select
+                          value={selectedTask.status}
+                          onValueChange={(value: "pending" | "in_progress" | "completed") =>
+                            setSelectedTask({...selectedTask, status: value})
+                          }
+                        >
+                          <SelectTrigger>
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="pending">Pending</SelectItem>
+                            <SelectItem value="in_progress">In Progress</SelectItem>
+                            <SelectItem value="completed">Completed</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <div className="space-y-1.5">
+                        <Label className="text-muted-foreground text-xs uppercase tracking-wider">Assigned Team Members</Label>
+                        <TeamMemberMultiSelect
+                          selected={selectedTask.assignedTo || []}
+                          onChange={(selected) => setSelectedTask({...selectedTask, assignedTo: selected})}
+                          placeholder="Select team members..."
+                        />
+                      </div>
+                   </div>
+                </Card>
 
-                {/* Status */}
-                <div>
-                  <Label>Status</Label>
-                  <Select
-                    value={selectedTask.status}
-                    onValueChange={(value: "pending" | "in_progress" | "completed") =>
-                      setSelectedTask({...selectedTask, status: value})
-                    }
-                  >
-                    <SelectTrigger className="mt-1">
-                      <SelectValue />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="in_progress">In Progress</SelectItem>
-                      <SelectItem value="completed">Completed</SelectItem>
-                    </SelectContent>
-                  </Select>
-                </div>
-
-                {/* Assigned Team Members */}
-                <div>
-                  <Label>Assigned Team Members</Label>
-                  <div className="mt-2">
-                    <TeamMemberMultiSelect
-                      selected={selectedTask.assignedTo || []}
-                      onChange={(selected) => setSelectedTask({...selectedTask, assignedTo: selected})}
-                      placeholder="Select team members for this task..."
-                    />
+                {/* Timeline Card */}
+                <Card className="p-4 shadow-sm bg-background">
+                  <Label className="text-base font-semibold mb-4 block">Timeline</Label>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                    <div className="space-y-1.5">
+                      <Label htmlFor="taskStartDate" className="text-muted-foreground text-xs uppercase tracking-wider">Start Date</Label>
+                      <Input
+                        id="taskStartDate"
+                        type="date"
+                        value={selectedTask.startDate}
+                        onChange={(e) => setSelectedTask({...selectedTask, startDate: e.target.value})}
+                      />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label htmlFor="taskEndDate" className="text-muted-foreground text-xs uppercase tracking-wider">End Date</Label>
+                      <Input
+                        id="taskEndDate"
+                        type="date"
+                        value={selectedTask.endDate}
+                        onChange={(e) => setSelectedTask({...selectedTask, endDate: e.target.value})}
+                      />
+                    </div>
                   </div>
-                </div>
-
-                {/* Date Range */}
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                  <div>
-                    <Label htmlFor="taskStartDate">Start Date</Label>
-                    <Input
-                      id="taskStartDate"
-                      type="date"
-                      value={selectedTask.startDate}
-                      onChange={(e) => setSelectedTask({...selectedTask, startDate: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="taskEndDate">End Date</Label>
-                    <Input
-                      id="taskEndDate"
-                      type="date"
-                      value={selectedTask.endDate}
-                      onChange={(e) => setSelectedTask({...selectedTask, endDate: e.target.value})}
-                      className="mt-1"
-                    />
-                  </div>
-                </div>
+                </Card>
 
                 {/* Comments Section */}
-                <div className="border-t pt-6">
-                  <div className="flex items-center gap-2 mb-4">
-                    <MessageSquare className="h-5 w-5" />
-                    <h3 className="text-lg font-semibold">Comments</h3>
+                <Card className="shadow-sm bg-background overflow-hidden">
+                  <div className="p-4 border-b bg-muted/30">
+                    <div className="flex items-center gap-2">
+                      <MessageSquare className="h-5 w-5" />
+                      <h3 className="text-lg font-semibold">Comments</h3>
+                    </div>
                   </div>
+                  <div className="p-4">
 
                   {/* Add Comment */}
                   <div className="relative mb-4">
