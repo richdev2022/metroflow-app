@@ -1369,22 +1369,47 @@ export default function Tasks() {
             {selectedTask && (
               <>
                 <DialogHeader className="p-6 pb-2">
-                  <div className="flex items-start justify-between">
-                    <div>
-                      <DialogTitle className="text-2xl font-bold">{selectedTask.title}</DialogTitle>
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="flex-1">
+                      <Input
+                        value={selectedTask.title}
+                        onChange={(e) => setSelectedTask({...selectedTask, title: e.target.value})}
+                        className="text-2xl font-bold h-auto py-2 mb-2"
+                        placeholder="Task Title"
+                      />
                       <div className="flex items-center gap-2 mt-2">
                         <Badge variant="outline">#{selectedTask.id}</Badge>
-                        <Badge variant="secondary">{selectedTask.epic || "No Epic"}</Badge>
-                        <Badge 
-                          className={
-                            selectedTask.status === 'completed' ? 'bg-green-100 text-green-700' :
-                            selectedTask.status === 'in_progress' ? 'bg-blue-100 text-blue-700' :
-                            'bg-yellow-100 text-yellow-700'
-                          }
+                        <Input 
+                           value={selectedTask.epic || ""}
+                           onChange={(e) => setSelectedTask({...selectedTask, epic: e.target.value})}
+                           className="h-6 w-32 text-xs"
+                           placeholder="Epic"
+                        />
+                        <Select
+                            value={selectedTask.status}
+                            onValueChange={(value: any) =>
+                              setSelectedTask({...selectedTask, status: value})
+                            }
                         >
-                          {selectedTask.status.replace('_', ' ')}
-                        </Badge>
+                            <SelectTrigger className="h-6 w-32 text-xs">
+                                <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                                <SelectItem value="pending">Pending</SelectItem>
+                                <SelectItem value="in_progress">In Progress</SelectItem>
+                                <SelectItem value="completed">Completed</SelectItem>
+                            </SelectContent>
+                        </Select>
                       </div>
+                    </div>
+                    <div className="flex gap-2">
+                        <Button 
+                            onClick={() => updateTask(selectedTask.id, selectedTask)} 
+                            disabled={isUpdatingTask}
+                        >
+                            {isUpdatingTask ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
+                            Save
+                        </Button>
                     </div>
                   </div>
                 </DialogHeader>
@@ -1395,27 +1420,49 @@ export default function Tasks() {
                     <div className="space-y-6">
                       <div>
                         <Label className="text-muted-foreground">Description</Label>
-                        <div className="mt-2 whitespace-pre-wrap">{selectedTask.description || "No description provided."}</div>
+                        <Textarea
+                            value={selectedTask.description || ""}
+                            onChange={(e) => setSelectedTask({...selectedTask, description: e.target.value})}
+                            className="mt-2 min-h-[100px]"
+                            placeholder="Task description"
+                        />
                       </div>
 
                       <div className="grid grid-cols-2 gap-4">
                         <div>
                           <Label className="text-muted-foreground">Sprint</Label>
-                          <div className="mt-1 font-medium">{selectedTask.sprint || "-"}</div>
+                          <Input
+                            value={selectedTask.sprint || ""}
+                            onChange={(e) => setSelectedTask({...selectedTask, sprint: e.target.value})}
+                            className="mt-1"
+                          />
                         </div>
                         <div>
                           <Label className="text-muted-foreground">Assigned To</Label>
-                          <div className="mt-1 font-medium">
-                            {selectedTask.assignedTo?.map(id => teamMembers.find(d => d.id === id)?.name).join(", ") || "Unassigned"}
+                          <div className="mt-1">
+                             <TeamMemberMultiSelect
+                                selected={selectedTask.assignedTo || []}
+                                onChange={(selected) => setSelectedTask({...selectedTask, assignedTo: selected})}
+                             />
                           </div>
                         </div>
                         <div>
                           <Label className="text-muted-foreground">Start Date</Label>
-                          <div className="mt-1 font-medium">{new Date(selectedTask.startDate).toLocaleDateString()}</div>
+                          <Input
+                            type="date"
+                            value={selectedTask.startDate ? new Date(selectedTask.startDate).toISOString().split('T')[0] : ""}
+                            onChange={(e) => setSelectedTask({...selectedTask, startDate: e.target.value})}
+                            className="mt-1"
+                          />
                         </div>
                         <div>
                           <Label className="text-muted-foreground">End Date</Label>
-                          <div className="mt-1 font-medium">{new Date(selectedTask.endDate).toLocaleDateString()}</div>
+                          <Input
+                            type="date"
+                            value={selectedTask.endDate ? new Date(selectedTask.endDate).toISOString().split('T')[0] : ""}
+                            onChange={(e) => setSelectedTask({...selectedTask, endDate: e.target.value})}
+                            className="mt-1"
+                          />
                         </div>
                       </div>
 
@@ -2014,7 +2061,7 @@ export default function Tasks() {
                                     </div>
                                   </td>
                                   <td className="py-3 px-4 font-medium max-w-[200px]">
-                                    <div className="truncate" title={task.title}>
+                                    <div className="break-words whitespace-normal" title={task.title}>
                                       {task.title}
                                     </div>
                                   </td>
@@ -2037,12 +2084,20 @@ export default function Tasks() {
                                     {new Date(task.startDate).toLocaleDateString()} - {new Date(task.endDate).toLocaleDateString()}
                                   </td>
                                   <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                                    <button
-                                      onClick={() => deleteTask(task.id)}
-                                      className="text-red-500 hover:text-red-700 transition-colors"
-                                    >
-                                      <Trash2 className="h-4 w-4" />
-                                    </button>
+                                    <div className="flex items-center justify-center gap-2">
+                                      <button
+                                        onClick={() => openTaskDetail(task)}
+                                        className="text-blue-500 hover:text-blue-700 transition-colors"
+                                      >
+                                        <Edit className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        onClick={() => deleteTask(task.id)}
+                                        className="text-red-500 hover:text-red-700 transition-colors"
+                                      >
+                                        <Trash2 className="h-4 w-4" />
+                                      </button>
+                                    </div>
                                   </td>
                                 </tr>
                               );
