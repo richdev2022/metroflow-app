@@ -147,7 +147,10 @@ export default function Register() {
     <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center p-4">
       <Card className="w-full max-w-md">
         <CardHeader>
-          <div className="flex items-center justify-center gap-3 mb-4">
+          <div 
+            className="flex items-center justify-center gap-3 mb-4 cursor-pointer"
+            onClick={() => window.location.href = import.meta.env.VITE_SITE_URL}
+          >
             <img src="/Assets/logo.png" alt="MetricFlow Logo" className="h-10 w-auto" />
             <span className="font-bold text-xl">MetricFlow</span>
           </div>
