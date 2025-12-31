@@ -1212,9 +1212,9 @@ export default function Backlog() {
               onClick={handleBackfillEpics}
               variant="outline"
               className="gap-2"
-              disabled={isBackfilling}
+              loading={isBackfilling}
             >
-              <RefreshCw className={`h-4 w-4 ${isBackfilling ? 'animate-spin' : ''}`} />
+              <RefreshCw className="h-4 w-4" />
               Sync Epics
             </Button>
             <Button
@@ -1421,13 +1421,9 @@ export default function Backlog() {
                 <Button variant="outline" onClick={() => setIsFormOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleAddTask} disabled={isCreatingTasks} className="gap-2">
-                  {isCreatingTasks ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  {isCreatingTasks ? "Creating Tasks..." : "Create Tasks"}
+                <Button onClick={handleAddTask} loading={isCreatingTasks} className="gap-2">
+                  <Check className="h-4 w-4" />
+                  Create Tasks
                 </Button>
               </div>
             </CardContent>
@@ -1813,8 +1809,7 @@ export default function Backlog() {
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setShowCreateEpicModal(false)}>Cancel</Button>
-              <Button onClick={handleCreateEpic} disabled={!createEpicForm.name.trim() || isCreatingEpic}>
-                {isCreatingEpic ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+              <Button onClick={handleCreateEpic} disabled={!createEpicForm.name.trim()} loading={isCreatingEpic}>
                 Create Epic
               </Button>
             </DialogFooter>
@@ -2165,6 +2160,7 @@ export default function Backlog() {
                     </div>
                   )}
                 </div>
+                </Card>
 
                 {/* Action Buttons */}
                 <div className="flex gap-2 justify-end pt-4 border-t">
@@ -2187,15 +2183,11 @@ export default function Backlog() {
                         endDate: selectedTask.endDate,
                       });
                     }}
-                    disabled={isUpdatingTask}
+                    loading={isUpdatingTask}
                     className="gap-2"
                   >
-                    {isUpdatingTask ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Check className="h-4 w-4" />
-                    )}
-                    {isUpdatingTask ? "Updating..." : "Update Task"}
+                    <Check className="h-4 w-4" />
+                    Update Task
                   </Button>
                   <Button
                     variant="destructive"
@@ -2203,15 +2195,11 @@ export default function Backlog() {
                       deleteTask(selectedTask.id);
                       setShowTaskDetailModal(false);
                     }}
-                    disabled={isDeletingTask}
+                    loading={isDeletingTask}
                     className="gap-2"
                   >
-                    {isDeletingTask ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Trash2 className="h-4 w-4" />
-                    )}
-                    {isDeletingTask ? "Deleting..." : "Delete"}
+                    <Trash2 className="h-4 w-4" />
+                    Delete
                   </Button>
                 </div>
               </div>

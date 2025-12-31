@@ -209,6 +209,7 @@ export default function Tasks() {
 
   // Delete loader state
   const [isDeletingTask, setIsDeletingTask] = useState(false);
+  const [isBulkDeleting, setIsBulkDeleting] = useState(false);
 
   // Epic edit modal state
   const [showEpicEditModal, setShowEpicEditModal] = useState(false);
@@ -498,6 +499,7 @@ export default function Tasks() {
     if (selectedTasks.length === 0) return;
 
     try {
+      setIsBulkDeleting(true);
       const response = await api.delete("/tasks", {
         data: { taskIds: selectedTasks }
       });
@@ -1274,13 +1276,9 @@ export default function Tasks() {
                 <Button variant="outline" onClick={() => setIsFormOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleAddTask} disabled={isCreatingTasks} className="gap-2">
-                  {isCreatingTasks ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  {isCreatingTasks ? "Creating Tasks..." : "Create Tasks"}
+                <Button onClick={handleAddTask} loading={isCreatingTasks} className="gap-2">
+                  <Check className="h-4 w-4" />
+                  Create Tasks
                 </Button>
               </div>
             </CardContent>
@@ -1420,9 +1418,9 @@ export default function Tasks() {
                         </Select>
                         <Button 
                             onClick={() => updateTask(selectedTask.id, selectedTask)} 
-                            disabled={isUpdatingTask}
+                            loading={isUpdatingTask}
                         >
-                            {isUpdatingTask ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Check className="h-4 w-4 mr-2" />}
+                            <Check className="h-4 w-4 mr-2" />
                             Save
                         </Button>
                       </div>

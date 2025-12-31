@@ -195,6 +195,153 @@ export interface RegisterBusinessInput {
   adminName: string;
   adminEmail: string;
   password: string;
+  kycReferenceId?: string; // Link to pre-submitted KYC
+  gtbAccount?: string; // New field
+}
+
+export interface BusinessKycInput {
+  country: string;
+  state: string;
+  city: string;
+  street: string;
+  house_number: string;
+  proof_of_address?: any; // File handling is usually separate or FormData
+}
+
+// KYC Types
+export interface KycStatus {
+  user_kyc_status: "none" | "pending" | "verified" | "rejected";
+  business_kyc_status: "none" | "pending" | "verified" | "rejected";
+  bvn_verified: boolean;
+  nin_verified: boolean;
+}
+
+export interface KycInitiateInput {
+  type: "bvn" | "nin";
+  number: string;
+}
+
+export interface KycVerifyOtpInput {
+  otp: string;
+}
+
+// Wallet Types
+export interface Wallet {
+  id: string;
+  balance: number;
+  currency: string;
+  account_number: string;
+  bank_name: string;
+  type: "user" | "business";
+}
+
+export interface BusinessWallet extends Wallet {
+  business_name: string;
+}
+
+export interface WalletInfo {
+  user_wallet: Wallet;
+  business_wallet?: BusinessWallet;
+}
+
+export interface FundWalletInput {
+  amount: number;
+  wallet_type: "business" | "user";
+}
+
+export interface CreateBusinessWalletInput {
+  gtb_account_number: string;
+  business_name: string;
+  kycReferenceId?: string;
+}
+
+// Payroll Types
+export interface PayrollEmployee {
+  id: string; // User ID
+  name: string;
+  email: string;
+  salary: number | string;
+  salary_currency: string;
+  bank_account_number?: string | null;
+  bank_code?: string | null;
+  account_name?: string | null;
+  role: string;
+  bonuses_total: number;
+  deductions_total: number;
+  net_salary: number;
+  next_pay_date: string;
+  salary_calculation_status: string;
+  adjustments?: {
+    bonuses: number;
+    deductions: number;
+    bonus_list: AdjustmentItem[];
+    deduction_list: AdjustmentItem[];
+  };
+}
+
+export interface PayrollConfig {
+  salary_interval: "daily" | "weekly" | "monthly" | "yearly" | "custom";
+  salary_custom_date?: string | null;
+}
+
+export interface PayrollConfigUpdateInput {
+  salary_interval: "daily" | "weekly" | "monthly" | "yearly" | "custom";
+  salary_custom_date?: string | null;
+}
+
+export interface AdjustmentItem {
+  user_id: string;
+  type: "bonus" | "deduction";
+  amount: string;
+  currency: string;
+}
+
+export interface PayrollAdjustment {
+  id: string;
+  business_id: string;
+  user_id: string;
+  type: "bonus" | "deduction";
+  amount: string;
+  currency: string;
+  reason: string;
+  status: "pending" | "processed";
+  transfer_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  processed_at?: string | null;
+  user_name?: string;
+  user_email?: string;
+}
+
+export interface PayrollUpdateInput {
+  salary: number;
+  salary_currency: string;
+  bank_code: string;
+  account_number: string;
+  account_name?: string;
+}
+
+export interface PayrollAdjustmentInput {
+  userId: string;
+  type: "bonus" | "deduction";
+  amount: number;
+  reason: string;
+}
+
+export interface BulkTransferInput {
+  type: "salary" | "manual" | "sprint" | "task";
+  source_wallet_id: string;
+  data?: any;
+}
+
+export interface Transfer {
+  id: string;
+  amount: number;
+  currency: string;
+  status: "pending" | "success" | "failed";
+  recipient_name: string;
+  failure_reason?: string;
+  created_at: string;
 }
 
 export interface LoginInput {
@@ -340,4 +487,95 @@ export interface PaymentTransaction {
   updated_at?: string;
   transaction_type?: string;
   plan_name?: string;
+}
+
+// --- New Features Types ---
+
+// 1. Business Profile Management
+export interface BusinessProfile {
+  id: string;
+  name: string;
+  email: string;
+  phone_number: string;
+  industry: string;
+  logo_url: string;
+  currency: string;
+}
+
+export interface UpdateBusinessProfileInput {
+  name?: string;
+  industry?: string;
+  logo_url?: string;
+  currency?: "NGN" | "USD";
+}
+
+// 2. Contact Information Updates
+export interface RequestContactUpdateOtpInput {
+  type: "email" | "phone";
+  value: string;
+}
+
+export interface VerifyContactUpdateOtpInput {
+  otp: string;
+}
+
+// 3. Transaction OTP Preferences
+export interface OtpPreferenceResponse {
+  preference: "email" | "sms" | "both";
+}
+
+export interface UpdateOtpPreferenceInput {
+  preference: "email" | "sms" | "both";
+}
+
+// 4. Fee Transparency
+export interface FeeConfig {
+  id: string;
+  name: string;
+  fee_type: string;
+  config_type: "flat" | "percentage_cap" | "flat_conditional" | "range";
+  config: {
+    amount?: number;
+    percentage?: number;
+    cap?: number;
+    conditions?: Array<{
+      fee: number;
+      operator: string;
+      threshold: number;
+    }>;
+    ranges?: Array<{
+      min: number;
+      max: number;
+      fee: number;
+    }>;
+  };
+  currency: string;
+}
+
+// 5. Transfer Authorization
+export interface RequestTransferOtpInput {
+  wallet_id?: string;
+}
+
+export interface SingleTransferWithOtpInput {
+  bankCode: string;
+  accountNumber: string;
+  accountName: string;
+  amount: number;
+  remark: string;
+  otp: string;
+  wallet_id: string;
+}
+
+export interface BulkTransferWithOtpInput {
+  type: "salary" | "manual" | "sprint" | "task";
+  source_wallet_id: string;
+  otp: string;
+  data: {
+    items: Array<{
+      amount: number;
+      bankCode: string;
+      accountNumber: string;
+    }>;
+  };
 }

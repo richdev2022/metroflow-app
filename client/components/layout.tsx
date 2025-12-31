@@ -1,7 +1,12 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings } from "lucide-react";
 import { useTheme } from "next-themes";
+import { api } from "@/lib/api-client";
+import { KycStatus } from "@shared/api";
+import { normalizeKycStatus } from "@/lib/utils";
+import { useToast } from "@/components/ui/use-toast";
+import { KycModal } from "./KycModal";
 import {
   Sidebar,
   SidebarContent,
@@ -32,9 +37,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const userName = localStorage.getItem("userName") || "User";
   const { theme, setTheme } = useTheme();
+  const { toast } = useToast();
   
   const [showSubscriptionAlert, setShowSubscriptionAlert] = useState(false);
   const [alertType, setAlertType] = useState<'expired' | 'trial_ended'>('expired');
+
+  // KYC State
+  const [showKycModal, setShowKycModal] = useState(false);
+  const [kycStatus, setKycStatus] = useState<KycStatus | null>(null);
+  const [kycCheckingPath, setKycCheckingPath] = useState<string | null>(null);
+
+  const handleKycProtectedNavigation = async (e: React.MouseEvent, path: string) => {
+    e.preventDefault();
+    setKycCheckingPath(path);
+    try {
+      const response = await api.get('/kyc/status');
+      const status = normalizeKycStatus(response.data);
+      if (status.user_kyc_status === 'verified') {
+        navigate(path);
+      } else {
+        setKycStatus(status);
+        setShowKycModal(true);
+      }
+    } catch (error) {
+       console.error("KYC check failed", error);
+    } finally {
+      setKycCheckingPath(null);
+    }
+  };
 
   useEffect(() => {
     const checkSubscription = async () => {
@@ -105,6 +135,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </AlertDialogContent>
       </AlertDialog>
 
+      {kycStatus && (
+        <KycModal 
+           open={showKycModal} 
+           onOpenChange={setShowKycModal} 
+           status={kycStatus}
+           onSuccess={() => setShowKycModal(false)}
+        />
+      )}
+
       <Sidebar collapsible="icon">
         <SidebarHeader>
           <div className="flex items-center gap-2 p-2 group-data-[collapsible=icon]:justify-center">
@@ -171,10 +210,34 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/wallet")} tooltip="Wallet">
+                <Link to="/wallet" onClick={(e) => handleKycProtectedNavigation(e, "/wallet")}>
+                  {kycCheckingPath === "/wallet" ? <Loader2 className="animate-spin" /> : <Wallet />}
+                  <span>Wallet</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/payroll")} tooltip="Payroll">
+                <Link to="/payroll" onClick={(e) => handleKycProtectedNavigation(e, "/payroll")}>
+                  {kycCheckingPath === "/payroll" ? <Loader2 className="animate-spin" /> : <Banknote />}
+                  <span>Payroll</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/subscription")} tooltip="Subscription">
                 <Link to="/subscription">
                   <CreditCard />
                   <span>Subscription</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/settings")} tooltip="Settings">
+                <Link to="/settings">
+                  <Settings />
+                  <span>Settings</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

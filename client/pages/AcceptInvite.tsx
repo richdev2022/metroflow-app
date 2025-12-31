@@ -54,8 +54,8 @@ export default function AcceptInvite() {
       } else {
         setError(data.error || "Failed to activate account");
       }
-    } catch (err) {
-      setError("Failed to activate account");
+    } catch (err: any) {
+      setError(err.response?.data?.message || err.response?.data?.error || "Failed to activate account");
       console.error(err);
     } finally {
       setLoading(false);

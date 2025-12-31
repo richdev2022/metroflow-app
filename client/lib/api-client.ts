@@ -21,9 +21,10 @@ api.interceptors.response.use(
   (response) => response,
   (error) => {
     if (error.response?.status === 401) {
-      // Optional: Handle token expiration
-      // localStorage.removeItem("token");
-      // window.location.href = "/login";
+      // Handle token expiration
+      localStorage.removeItem("token");
+      localStorage.removeItem("businessId");
+      window.location.href = "/login";
     }
     return Promise.reject(error);
   }

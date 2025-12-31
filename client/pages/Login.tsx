@@ -62,8 +62,8 @@ export default function Login() {
       } else {
         setError(data.message || "Login failed");
       }
-    } catch (err) {
-      setError("Failed to login");
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to login");
       console.error(err);
     } finally {
       setLoading(false);
@@ -97,8 +97,8 @@ export default function Login() {
       } else {
         setError(data.message || "Failed to verify OTP");
       }
-    } catch (err) {
-      setError("Failed to verify OTP");
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to verify OTP");
       console.error(err);
     } finally {
       setLoading(false);
@@ -199,10 +199,10 @@ export default function Login() {
 
               <Button
                 type="submit"
-                disabled={loading}
+                loading={loading}
                 className="w-full"
               >
-                {loading ? "Logging in..." : "Login"}
+                Login
               </Button>
 
               <div className="space-y-2">

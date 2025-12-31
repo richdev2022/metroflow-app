@@ -35,8 +35,8 @@ export default function ForgotPassword() {
       } else {
         setError(data.message || "Failed to send reset email");
       }
-    } catch (err) {
-      setError("Failed to send reset email");
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to send reset email");
       console.error(err);
     } finally {
       setLoading(false);
@@ -89,10 +89,10 @@ export default function ForgotPassword() {
 
             <Button
               onClick={handleForgotPassword}
-              disabled={loading}
+              loading={loading}
               className="w-full"
             >
-              {loading ? "Sending..." : "Send Reset Code"}
+              Send Reset Code
             </Button>
 
             <p className="text-sm text-center text-muted-foreground">

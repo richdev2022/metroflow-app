@@ -1159,13 +1159,9 @@ export default function Dashboard() {
                 <Button variant="outline" onClick={() => setShowEpicEditModal(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleEpicEdit} disabled={isUpdatingEpic} className="gap-2">
-                  {isUpdatingEpic ? (
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                  ) : (
-                    <Check className="h-4 w-4" />
-                  )}
-                  {isUpdatingEpic ? "Updating..." : "Update Epic"}
+                <Button onClick={handleEpicEdit} loading={isUpdatingEpic} className="gap-2">
+                  <Check className="h-4 w-4" />
+                  Update Epic
                 </Button>
               </div>
             </div>
@@ -1426,10 +1422,10 @@ export default function Dashboard() {
                             });
                           }
                         }}
-                        disabled={isUpdatingTask}
+                        loading={isUpdatingTask}
                         className="w-full gap-2"
                       >
-                        {isUpdatingTask ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
+                        <Check className="h-4 w-4" />
                         Update Task
                       </Button>
                       
@@ -1440,10 +1436,10 @@ export default function Dashboard() {
                             deleteTask(selectedTask.id);
                           }
                         }}
-                        disabled={isDeletingTask}
+                        loading={isDeletingTask}
                         className="w-full gap-2"
                       >
-                        {isDeletingTask ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                        <Trash2 className="h-4 w-4" />
                         Delete Task
                       </Button>
                     </div>

@@ -22,6 +22,9 @@ import Ideas from "./pages/Ideas";
 import Subscription from "./pages/Subscription";
 import PaymentCallback from "./pages/PaymentCallback";
 import AcceptInvite from "./pages/AcceptInvite";
+import Wallet from "./pages/Wallet";
+import Payroll from "./pages/Payroll";
+import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -79,6 +82,18 @@ const App = () => (
           <Route
             path="/payment/callback"
             element={<ProtectedRoute element={<PaymentCallback />} />}
+          />
+          <Route
+            path="/wallet"
+            element={<ProtectedRoute element={<Wallet />} />}
+          />
+          <Route
+            path="/payroll"
+            element={<ProtectedRoute element={<Payroll />} />}
+          />
+          <Route
+            path="/settings"
+            element={<ProtectedRoute element={<Settings />} />}
           />
           <Route path="/accept-invite/:token" element={<AcceptInvite />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

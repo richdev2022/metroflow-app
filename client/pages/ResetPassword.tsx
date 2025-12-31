@@ -63,8 +63,8 @@ export default function ResetPassword() {
       } else {
         setError(data.message || "Failed to reset password");
       }
-    } catch (err) {
-      setError("Failed to reset password");
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to reset password");
       console.error(err);
     } finally {
       setLoading(false);
@@ -131,10 +131,10 @@ export default function ResetPassword() {
 
             <Button
               onClick={handleResetPassword}
-              disabled={loading}
+              loading={loading}
               className="w-full"
             >
-              {loading ? "Resetting..." : "Reset Password"}
+              Reset Password
             </Button>
 
             <Button
