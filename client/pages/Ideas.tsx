@@ -50,11 +50,9 @@ export default function Ideas() {
       const token = localStorage.getItem("token");
       if (token) {
         // Try to parse token safely
-        try {
-            const payload = JSON.parse(atob(token.split('.')[1]));
-            setCurrentUserRole(payload.role);
-        } catch (e) {
-            console.error("Failed to parse token payload", e);
+        const payload = parseJwt(token);
+        if (payload) {
+          setCurrentUserRole(payload.role);
         }
       }
     } catch (e) {

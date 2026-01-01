@@ -18,7 +18,15 @@ api.interceptors.request.use((config) => {
 });
 
 api.interceptors.response.use(
-  (response) => response,
+  (response) => {
+    // Check if response data is string and starts with < (likely HTML)
+    if (typeof response.data === 'string' && response.data.trim().startsWith('<')) {
+        console.error("Received HTML response instead of JSON. Check API URL configuration.");
+        // We can't easily recover here, but we can reject it so the app knows it failed
+        return Promise.reject(new Error("Invalid API response (HTML received)"));
+    }
+    return response;
+  },
   (error) => {
     if (error.response?.status === 401) {
       // Handle token expiration
