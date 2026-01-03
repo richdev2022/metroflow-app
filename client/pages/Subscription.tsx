@@ -50,6 +50,12 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { api } from "@/lib/api-client";
 import { Subscription as SubscriptionType, Plan, PaymentTransaction, Card as CardType } from "@shared/api";
 
@@ -74,6 +80,8 @@ export default function Subscription() {
   const [date, setDate] = useState<DateRange | undefined>(undefined);
   const [transactionsLoading, setTransactionsLoading] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [billingCycle, setBillingCycle] = useState<"monthly" | "yearly">("monthly");
+  const [selectedPlanForCheckout, setSelectedPlanForCheckout] = useState<Plan | null>(null);
 
   const { toast } = useToast();
 
@@ -153,10 +161,10 @@ export default function Subscription() {
 
       const response = await api.get(`/subscription/transactions?${queryParams}`);
       if (response.data.success) {
-        setTransactions(response.data.data || []);
+        setTransactions(response.data.transactions || []);
         // Assuming backend returns pagination info. If not, we default to 1 page or infer from data length
         // Adjust this based on actual API response structure if known
-        setTotalPages(response.data.pagination?.totalPages || response.data.meta?.last_page || (response.data.data?.length < perPage ? page : page + 1));
+        setTotalPages(response.data.pagination?.totalPages || response.data.meta?.last_page || (response.data.transactions?.length < perPage ? page : page + 1));
       }
     } catch (error: any) {
       const message = error.message || "Failed to load transactions";
@@ -251,7 +259,14 @@ export default function Subscription() {
       }
     };
 
-  const handleUpgrade = async (planId: string) => {
+  const handleUpgrade = (plan: Plan) => {
+    setSelectedPlanForCheckout(plan);
+  };
+
+  const confirmUpgrade = async () => {
+    if (!selectedPlanForCheckout) return;
+    const planId = selectedPlanForCheckout.id;
+
     try {
       setProcessingId(planId);
 
@@ -467,7 +482,8 @@ export default function Subscription() {
             {cards.map((card) => (
               <Card key={card.id} className={card.is_active ? "border-primary" : ""}>
                 <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-                  <CardTitle className="text-sm font-medium capitalize">
+                  <CardTitle className="flex items-center gap-2 text-sm font-medium capitalize">
+                    <CreditCard className="h-4 w-4" />
                     {card.card_type} **** {card.last4}
                   </CardTitle>
                   {card.is_active && <Badge variant="secondary">Active</Badge>}
@@ -510,22 +526,39 @@ export default function Subscription() {
         </div>
 
         <div>
-          <div className="flex justify-between items-center mb-6">
+          <div className="flex flex-col md:flex-row justify-between items-center mb-6 gap-4">
             <h2 className="text-2xl font-bold tracking-tight">Available Plans</h2>
-            <div className="flex items-center space-x-2">
-              <Label htmlFor="currency-mode" className={currency === 'USD' ? 'font-bold' : 'text-muted-foreground'}>USD</Label>
-              <Switch 
-                id="currency-mode" 
-                checked={currency === 'NGN'}
-                onCheckedChange={(checked) => setCurrency(checked ? 'NGN' : 'USD')}
-              />
-              <Label htmlFor="currency-mode" className={currency === 'NGN' ? 'font-bold' : 'text-muted-foreground'}>NGN</Label>
+            
+            <div className="flex items-center gap-6">
+              <Tabs defaultValue="monthly" value={billingCycle} onValueChange={(v) => setBillingCycle(v as "monthly" | "yearly")}>
+                <TabsList>
+                  <TabsTrigger value="monthly">Monthly</TabsTrigger>
+                  <TabsTrigger value="yearly">Yearly</TabsTrigger>
+                </TabsList>
+              </Tabs>
+
+              <div className="flex items-center space-x-2">
+                <Label htmlFor="currency-mode" className={currency === 'USD' ? 'font-bold' : 'text-muted-foreground'}>USD</Label>
+                <Switch 
+                  id="currency-mode" 
+                  checked={currency === 'NGN'}
+                  onCheckedChange={(checked) => setCurrency(checked ? 'NGN' : 'USD')}
+                />
+                <Label htmlFor="currency-mode" className={currency === 'NGN' ? 'font-bold' : 'text-muted-foreground'}>NGN</Label>
+              </div>
             </div>
           </div>
           <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
-            {plans.map((plan) => {
+            {plans
+              .filter(p => !p.duration || p.duration === billingCycle)
+              .map((plan) => {
               const isCurrentPlan = subscription?.plan_id === plan.id;
-              const price = currency === 'USD' ? plan.price : Math.round(plan.price * exchangeRate);
+              
+              const originalPrice = currency === 'USD' ? plan.price : Math.round(plan.price * exchangeRate);
+              const discountVal = parseFloat(plan.discount || "0");
+              const discount = currency === 'USD' ? discountVal : Math.round(discountVal * exchangeRate);
+              const finalPrice = Math.max(0, originalPrice - discount);
+              
               const symbol = currency === 'USD' ? '$' : '₦';
               
               // Find the current plan's price from the plans array to ensure currency consistency (USD)
@@ -545,8 +578,22 @@ export default function Subscription() {
                   </CardHeader>
                   <CardContent className="flex-1">
                     <div className="mb-4">
-                      <span className="text-3xl font-bold">{symbol}{price.toLocaleString()}</span>
-                      <span className="text-muted-foreground">/month</span>
+                      {discount > 0 ? (
+                        <div className="flex flex-col">
+                           <span className="text-muted-foreground line-through text-sm">
+                             {symbol}{originalPrice.toLocaleString()}
+                           </span>
+                           <div className="flex items-baseline gap-2">
+                             <span className="text-3xl font-bold">{symbol}{finalPrice.toLocaleString()}</span>
+                             <Badge variant="secondary" className="text-green-600 bg-green-100 border-green-200">
+                               Save {symbol}{discount.toLocaleString()}
+                             </Badge>
+                           </div>
+                        </div>
+                      ) : (
+                        <span className="text-3xl font-bold">{symbol}{originalPrice.toLocaleString()}</span>
+                      )}
+                      <span className="text-muted-foreground text-sm">/{billingCycle === 'yearly' ? 'year' : 'month'}</span>
                     </div>
                     <ul className="space-y-2 text-sm">
                       <li className="flex items-center gap-2">
@@ -567,7 +614,7 @@ export default function Subscription() {
                         className="w-full" 
                         variant={isCurrentPlan ? "outline" : "default"}
                         disabled={isCurrentPlan || !!processingId}
-                        onClick={() => handleUpgrade(plan.id)}
+                        onClick={() => handleUpgrade(plan)}
                       >
                         {processingId === plan.id ? (
                           <>
@@ -788,6 +835,73 @@ export default function Subscription() {
                     </div>
                   )}
                </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!selectedPlanForCheckout} onOpenChange={(open) => !open && setSelectedPlanForCheckout(null)}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle>Confirm Subscription</DialogTitle>
+              <DialogDescription>
+                Review your plan selection before proceeding to payment.
+              </DialogDescription>
+            </DialogHeader>
+            
+            {selectedPlanForCheckout && (
+              <div className="space-y-6 pt-4">
+                <div className="space-y-2">
+                  <h3 className="font-medium text-lg">{selectedPlanForCheckout.name}</h3>
+                  <p className="text-sm text-muted-foreground">{selectedPlanForCheckout.description}</p>
+                </div>
+                
+                <div className="space-y-3 border-t pt-4">
+                  <div className="flex justify-between text-sm">
+                    <span className="text-muted-foreground">Subtotal ({billingCycle})</span>
+                    <span>
+                      {currency === 'USD' ? '$' : '₦'}
+                      {currency === 'USD' 
+                        ? selectedPlanForCheckout.price.toLocaleString() 
+                        : Math.round(selectedPlanForCheckout.price * exchangeRate).toLocaleString()}
+                    </span>
+                  </div>
+                  
+                  {parseFloat(selectedPlanForCheckout.discount || "0") > 0 && (
+                    <div className="flex justify-between text-sm text-green-600">
+                      <span>Discount</span>
+                      <span>
+                        - {currency === 'USD' ? '$' : '₦'}
+                        {currency === 'USD'
+                          ? parseFloat(selectedPlanForCheckout.discount || "0").toLocaleString()
+                          : Math.round(parseFloat(selectedPlanForCheckout.discount || "0") * exchangeRate).toLocaleString()}
+                      </span>
+                    </div>
+                  )}
+                  
+                  <div className="flex justify-between font-bold text-lg border-t pt-3">
+                    <span>Total Pay</span>
+                    <span>
+                      {currency === 'USD' ? '$' : '₦'}
+                      {(
+                        (currency === 'USD' 
+                          ? selectedPlanForCheckout.price 
+                          : Math.round(selectedPlanForCheckout.price * exchangeRate)) -
+                        (currency === 'USD'
+                          ? parseFloat(selectedPlanForCheckout.discount || "0")
+                          : Math.round(parseFloat(selectedPlanForCheckout.discount || "0") * exchangeRate))
+                      ).toLocaleString()}
+                    </span>
+                  </div>
+                </div>
+
+                <div className="flex gap-3 justify-end pt-4">
+                  <Button variant="outline" onClick={() => setSelectedPlanForCheckout(null)}>Cancel</Button>
+                  <Button onClick={confirmUpgrade} disabled={!!processingId}>
+                    {processingId === selectedPlanForCheckout.id && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Proceed to Payment
+                  </Button>
+                </div>
+              </div>
             )}
           </DialogContent>
         </Dialog>

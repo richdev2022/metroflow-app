@@ -445,6 +445,9 @@ export interface Plan {
   id: string;
   name: string;
   price: number;
+  discount?: string; // Discount Amount
+  duration?: "monthly" | "yearly";
+  currency?: string;
   description: string;
   features: string[];
   max_team_members: number;
@@ -459,6 +462,7 @@ export interface Subscription {
   plan_id: string;
   plan_name: string;
   plan_price: string;
+  plan_discount?: string;
   max_team_members: number;
   features: string[];
   team_usage: number;

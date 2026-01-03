@@ -24,7 +24,7 @@ import PaymentCallback from "./pages/PaymentCallback";
 import AcceptInvite from "./pages/AcceptInvite";
 import Wallet from "./pages/Wallet";
 import Payroll from "./pages/Payroll";
-import TransferHistory from "./pages/TransferHistory";
+import TransferHistory from "./pages/TransferHistory"; // Page
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
