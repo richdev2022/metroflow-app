@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { api } from "@/lib/api-client";
+import { parseJwt } from "@/lib/utils";
 import { Idea, CreateIdeaInput, ApiResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";

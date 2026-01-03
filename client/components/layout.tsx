@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History } from "lucide-react";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -97,8 +97,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               setShowSubscriptionAlert(true);
           }
         }
-      } catch (error) {
-        console.error("Subscription check failed", error);
+      } catch (error: any) {
+         // Silently fail for network errors in background checks
+         if (error.message && !error.message.includes("Unable to connect")) {
+            console.error("Subscription check failed", error);
+         }
       }
     };
 
@@ -222,6 +225,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link to="/payroll" onClick={(e) => handleKycProtectedNavigation(e, "/payroll")}>
                   {kycCheckingPath === "/payroll" ? <Loader2 className="animate-spin" /> : <Banknote />}
                   <span>Payroll</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/transfer-history")} tooltip="Transfer History">
+                <Link to="/transfer-history">
+                  <History />
+                  <span>Transfer History</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

@@ -24,6 +24,7 @@ import PaymentCallback from "./pages/PaymentCallback";
 import AcceptInvite from "./pages/AcceptInvite";
 import Wallet from "./pages/Wallet";
 import Payroll from "./pages/Payroll";
+import TransferHistory from "./pages/TransferHistory";
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
 
@@ -90,6 +91,10 @@ const App = () => (
           <Route
             path="/payroll"
             element={<ProtectedRoute element={<Payroll />} />}
+          />
+          <Route
+            path="/transfer-history"
+            element={<ProtectedRoute element={<TransferHistory />} />}
           />
           <Route
             path="/settings"

@@ -9,7 +9,21 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRight, CheckCircle2, AlertCircle, Plus, RefreshCw, Upload, CheckCircle, ArrowRightLeft } from "lucide-react";
+import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRight, CheckCircle2, AlertCircle, Plus, RefreshCw, Upload, CheckCircle, ArrowRightLeft, Check, ChevronsUpDown } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+  Command,
+  CommandEmpty,
+  CommandGroup,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { useToast } from "@/components/ui/use-toast";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
@@ -51,6 +65,7 @@ export default function Wallet() {
   const [fundWalletOpen, setFundWalletOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [selectedWalletType, setSelectedWalletType] = useState<"user" | "business">("user");
+  const [bankOpen, setBankOpen] = useState(false);
 
   // Transfer State
   const [transferStep, setTransferStep] = useState<"details" | "otp">("details");
@@ -876,22 +891,60 @@ export default function Wallet() {
                       control={transferForm.control}
                       name="bankCode"
                       render={({ field }) => (
-                        <FormItem>
+                        <FormItem className="flex flex-col">
                           <FormLabel>Bank Name</FormLabel>
-                          <Select onValueChange={field.onChange} value={field.value}>
-                            <FormControl>
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select Bank" />
-                              </SelectTrigger>
-                            </FormControl>
-                            <SelectContent>
-                                {banks.map((bank: any) => (
-                                    <SelectItem key={bank.code} value={bank.code}>
+                          <Popover open={bankOpen} onOpenChange={setBankOpen}>
+                            <PopoverTrigger asChild>
+                              <FormControl>
+                                <Button
+                                  variant="outline"
+                                  role="combobox"
+                                  aria-expanded={bankOpen}
+                                  className={cn(
+                                    "w-full justify-between",
+                                    !field.value && "text-muted-foreground"
+                                  )}
+                                >
+                                  {field.value
+                                    ? banks.find(
+                                        (bank) => bank.code === field.value
+                                      )?.name
+                                    : "Select bank"}
+                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                </Button>
+                              </FormControl>
+                            </PopoverTrigger>
+                            <PopoverContent className="w-[350px] p-0">
+                              <Command>
+                                <CommandInput placeholder="Search bank..." />
+                                <CommandList>
+                                  <CommandEmpty>No bank found.</CommandEmpty>
+                                  <CommandGroup>
+                                    {banks.map((bank) => (
+                                      <CommandItem
+                                         value={bank.name}
+                                         key={bank.code}
+                                         onSelect={() => {
+                                           field.onChange(bank.code);
+                                           setBankOpen(false);
+                                         }}
+                                       >
+                                        <Check
+                                          className={cn(
+                                            "mr-2 h-4 w-4",
+                                            bank.code === field.value
+                                              ? "opacity-100"
+                                              : "opacity-0"
+                                          )}
+                                        />
                                         {bank.name}
-                                    </SelectItem>
-                                ))}
-                            </SelectContent>
-                          </Select>
+                                      </CommandItem>
+                                    ))}
+                                  </CommandGroup>
+                                </CommandList>
+                              </Command>
+                            </PopoverContent>
+                          </Popover>
                           <FormMessage />
                         </FormItem>
                       )}

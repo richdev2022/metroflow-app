@@ -4,6 +4,10 @@ export const api = axios.create({
   baseURL: import.meta.env.VITE_API_BASE_URL || "/api",
 });
 
+if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
+  console.warn("VITE_API_BASE_URL is not set. API calls might fail if backend is not proxied correctly.");
+}
+
 api.interceptors.request.use((config) => {
   const token = localStorage.getItem("token");
   if (token) {
@@ -22,12 +26,18 @@ api.interceptors.response.use(
     // Check if response data is string and starts with < (likely HTML)
     if (typeof response.data === 'string' && response.data.trim().startsWith('<')) {
         console.error("Received HTML response instead of JSON. Check API URL configuration.");
-        // We can't easily recover here, but we can reject it so the app knows it failed
         return Promise.reject(new Error("Invalid API response (HTML received)"));
     }
     return response;
   },
   (error) => {
+    // Handle Network Errors (CORS, Offline, Server Down)
+    if (error.code === 'ERR_NETWORK') {
+        console.error("Network Error: Unable to connect to the server.");
+        // Optional: You could trigger a global toast here if you had access to the toast hook
+        return Promise.reject(new Error("Unable to connect to the server. Please check your connection or try again later."));
+    }
+
     if (error.response?.status === 401) {
       // Handle token expiration
       localStorage.removeItem("token");

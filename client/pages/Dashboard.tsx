@@ -199,13 +199,14 @@ export default function Dashboard() {
     try {
       setLoading(true);
       const response = await api.get("/tasks?limit=10000");
-      const data = response.data as ApiResponse<{ tasks: Task[]; total: number }>;
+      const data = response.data as any;
 
       if (data.success && data.data) {
-        setAllTasks(data.data.tasks);
-        let filteredTasks = data.data.tasks;
+        const fetchedTasks = Array.isArray(data.data) ? data.data : (data.data.tasks || []);
+        setAllTasks(fetchedTasks);
+        let filteredTasks = fetchedTasks;
         if (selectedMember !== "all") {
-          filteredTasks = data.data.tasks.filter(task =>
+          filteredTasks = fetchedTasks.filter(task =>
             task.assignedTo && task.assignedTo.includes(selectedMember)
           );
         }
@@ -992,7 +993,7 @@ export default function Dashboard() {
                 <CardTitle>Recent Tasks</CardTitle>
               </CardHeader>
               <CardContent>
-                {tasks.length === 0 ? (
+                {!tasks || tasks.length === 0 ? (
                   <div className="text-center py-8">
                     <p className="text-muted-foreground">No tasks found</p>
                     <p className="text-sm text-muted-foreground mt-1">

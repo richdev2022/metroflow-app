@@ -15,7 +15,6 @@ import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Calendar } from "@/components/ui/calendar";
@@ -50,7 +49,6 @@ const bulkTransferSchema = z.object({
 
 export default function Payroll() {
   const [employees, setEmployees] = useState<PayrollEmployee[]>([]);
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [wallets, setWallets] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
@@ -64,7 +62,6 @@ export default function Payroll() {
   const [banks, setBanks] = useState<{code: string, name: string}[]>([]);
   const [accountName, setAccountName] = useState<string>("");
   const [openBank, setOpenBank] = useState(false);
-  const [retryingId, setRetryingId] = useState<string | null>(null);
   
   // Config State
   const [configDialogOpen, setConfigDialogOpen] = useState(false);
@@ -78,15 +75,6 @@ export default function Payroll() {
   const [endDate, setEndDate] = useState("");
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
-
-  // Transfer Filter & Pagination States
-  const [transferSearch, setTransferSearch] = useState("");
-  const [transferStatus, setTransferStatus] = useState("all");
-  const [transferStartDate, setTransferStartDate] = useState("");
-  const [transferEndDate, setTransferEndDate] = useState("");
-  const [transferPage, setTransferPage] = useState(1);
-  const [transferLimit, setTransferLimit] = useState(20);
-  const [transferTotal, setTransferTotal] = useState(0);
   
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
@@ -241,7 +229,6 @@ export default function Payroll() {
     try {
       // Load initial employees (page 1, no filters yet or default filters)
       fetchEmployees(1);
-      fetchTransfers(1);
       fetchConfig();
 
       const [walletRes, banksRes] = await Promise.all([
@@ -276,12 +263,6 @@ export default function Payroll() {
        fetchEmployees(page);
     }
   }, [page]);
-
-  useEffect(() => {
-    if (!loading) {
-       fetchTransfers(transferPage);
-    }
-  }, [transferPage]);
 
   const handleSearch = () => {
     setPage(1);
@@ -424,13 +405,7 @@ export default function Payroll() {
            </div>
         </div>
 
-        <Tabs defaultValue="employees">
-          <TabsList>
-            <TabsTrigger value="employees">Employees</TabsTrigger>
-            <TabsTrigger value="history">Transfer History</TabsTrigger>
-          </TabsList>
-          
-          <TabsContent value="employees" className="space-y-4">
+        <div className="space-y-4">
             <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
               <div className="grid w-full max-w-sm items-center gap-1.5">
                 <p className="text-sm font-medium">Search</p>
@@ -570,127 +545,7 @@ export default function Payroll() {
                 </div>
               </CardContent>
             </Card>
-          </TabsContent>
-
-          <TabsContent value="history" className="space-y-4">
-             {/* Filters for Transfer History */}
-            <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
-              <div className="grid w-full max-w-sm items-center gap-1.5">
-                <p className="text-sm font-medium">Search</p>
-                <div className="relative">
-                   <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                   <Input 
-                      placeholder="Name, Account or Reference" 
-                      className="pl-8" 
-                      value={transferSearch}
-                      onChange={(e) => setTransferSearch(e.target.value)}
-                   />
-                </div>
-              </div>
-              
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">Status</p>
-                 <Select value={transferStatus} onValueChange={setTransferStatus}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="All Status" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Status</SelectItem>
-                      <SelectItem value="pending">Pending</SelectItem>
-                      <SelectItem value="processing">Processing</SelectItem>
-                      <SelectItem value="success">Success</SelectItem>
-                      <SelectItem value="failed">Failed</SelectItem>
-                    </SelectContent>
-                 </Select>
-              </div>
-
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">Start Date</p>
-                 <Input 
-                    type="date" 
-                    value={transferStartDate}
-                    onChange={(e) => setTransferStartDate(e.target.value)}
-                 />
-              </div>
-
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">End Date</p>
-                 <Input 
-                    type="date" 
-                    value={transferEndDate}
-                    onChange={(e) => setTransferEndDate(e.target.value)}
-                 />
-              </div>
-
-              <Button onClick={handleTransferSearch}>
-                <Filter className="mr-2 h-4 w-4" /> Filter
-              </Button>
-            </div>
-
-             <Card>
-              <CardHeader>
-                <CardTitle>Transfer History</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Recipient</TableHead>
-                      <TableHead>Amount</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Date</TableHead>
-                      <TableHead>Action</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {Array.isArray(transfers) && transfers.map((t) => (
-                      <TableRow key={t.id}>
-                        <TableCell>{t.recipient_name}</TableCell>
-                        <TableCell>{t.currency} {t.amount.toLocaleString()}</TableCell>
-                        <TableCell>
-                          <Badge variant={t.status === 'success' ? 'default' : t.status === 'failed' ? 'destructive' : 'secondary'}>
-                            {t.status}
-                          </Badge>
-                          {t.failure_reason && <p className="text-xs text-red-500 mt-1">{t.failure_reason}</p>}
-                        </TableCell>
-                        <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
-                        <TableCell>
-                          {t.status === 'failed' && (
-                            <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)}>
-                              <RefreshCw className="h-4 w-4 mr-1" /> Retry
-                            </Button>
-                          )}
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                
-                <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setTransferPage(p => Math.max(1, p - 1))}
-                      disabled={transferPage === 1}
-                    >
-                      <ChevronLeft className="h-4 w-4 mr-1" />
-                      Previous
-                    </Button>
-                    <div className="text-sm font-medium">Page {transferPage}</div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setTransferPage(p => p + 1)}
-                      disabled={transferPage * transferLimit >= transferTotal}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
-                </div>
-              </CardContent>
-            </Card>
-          </TabsContent>
-        </Tabs>
+          </div>
 
         {/* Detail Dialog */}
         <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>

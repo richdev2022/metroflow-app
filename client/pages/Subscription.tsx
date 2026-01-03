@@ -158,12 +158,16 @@ export default function Subscription() {
         // Adjust this based on actual API response structure if known
         setTotalPages(response.data.pagination?.totalPages || response.data.meta?.last_page || (response.data.data?.length < perPage ? page : page + 1));
       }
-    } catch (error) {
-      console.error("Failed to fetch transactions", error);
+    } catch (error: any) {
+      const message = error.message || "Failed to load transactions";
+      // Only log unexpected errors
+      if (!message.includes("Unable to connect")) {
+         console.error("Failed to fetch transactions", error);
+      }
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to load transactions"
+        description: message
       });
     } finally {
       setTransactionsLoading(false);

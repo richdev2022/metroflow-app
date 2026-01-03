@@ -84,9 +84,13 @@ export default function ActivityLogs() {
       } else {
         setError(data.error || "Failed to fetch activity logs");
       }
-    } catch (err) {
-      setError("Failed to load activity logs");
-      console.error(err);
+    } catch (err: any) {
+      const message = err.message || "Failed to load activity logs";
+      setError(message);
+       // Only log unexpected errors
+      if (!message.includes("Unable to connect")) {
+         console.error(err);
+      }
     } finally {
       setLoading(false);
     }

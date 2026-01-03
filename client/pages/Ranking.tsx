@@ -45,9 +45,13 @@ export default function Ranking() {
       } else {
         setError("Failed to fetch data");
       }
-    } catch (err) {
-      setError("Failed to load ranking data");
-      console.error(err);
+    } catch (err: any) {
+      const message = err.message || "Failed to load ranking data";
+      setError(message);
+      // Only log unexpected errors
+      if (!message.includes("Unable to connect")) {
+         console.error(err);
+      }
     } finally {
       setLoading(false);
     }
