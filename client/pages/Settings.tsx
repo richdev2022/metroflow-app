@@ -12,6 +12,7 @@ import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard } from "
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { IndustryCombobox } from "@/components/industry-combobox";
 
 export default function Settings() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -69,11 +70,12 @@ export default function Settings() {
 
   const handleUpdatePreference = async (val: string) => {
     try {
-      setOtpPreference(val);
       await api.put("/settings/otp-preference", { preference: val });
+      setOtpPreference(val);
       toast({ title: "Success", description: "OTP preference updated" });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to update preference", variant: "destructive" });
+    } catch (error: any) {
+      const message = error.response?.data?.error || "Failed to update preference";
+      toast({ title: "Error", description: message, variant: "destructive" });
     }
   };
 
@@ -143,10 +145,9 @@ export default function Settings() {
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="industry">Industry</Label>
-                    <Input 
-                      id="industry" 
-                      value={profile?.industry || ""} 
-                      onChange={e => setProfile(prev => prev ? {...prev, industry: e.target.value} : null)} 
+                    <IndustryCombobox
+                      value={profile?.industry || ""}
+                      onChange={value => setProfile(prev => prev ? {...prev, industry: value} : null)}
                     />
                   </div>
                    <div className="space-y-2">

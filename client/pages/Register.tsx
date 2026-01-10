@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { AuthResponse } from "@shared/api";
+import { IndustryCombobox } from "@/components/industry-combobox";
 
 type Step = "business" | "otp";
 
@@ -219,18 +220,17 @@ export default function Register() {
 
               <div>
                 <Label htmlFor="businessIndustry">Industry</Label>
-                <Input
-                  id="businessIndustry"
-                  placeholder="e.g., Technology, Finance, etc."
-                  value={businessData.businessIndustry}
-                  onChange={(e) =>
-                    setBusinessData({
-                      ...businessData,
-                      businessIndustry: e.target.value,
-                    })
-                  }
-                  className="mt-1"
-                />
+                <div className="mt-1">
+                  <IndustryCombobox
+                    value={businessData.businessIndustry}
+                    onChange={(value) =>
+                      setBusinessData({
+                        ...businessData,
+                        businessIndustry: value,
+                      })
+                    }
+                  />
+                </div>
               </div>
 
               <hr className="my-4" />
