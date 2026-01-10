@@ -4,7 +4,7 @@ import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, 
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
-import { normalizeKycStatus } from "@/lib/utils";
+import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { useToast } from "@/components/ui/use-toast";
 import { KycModal } from "./KycModal";
 import {
@@ -33,6 +33,7 @@ import {
 } from "@/components/ui/alert-dialog";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
+  console.log("Layout loaded - v2");
   const location = useLocation();
   const navigate = useNavigate();
   const userName = localStorage.getItem("userName") || "User";

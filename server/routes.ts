@@ -17,6 +17,83 @@ export async function registerRoutes(app: Express): Promise<Server> {
   
   const getBusinessId = (req: any) => "biz_123"; // Mock Business ID
 
+  // --- Auth Routes ---
+  app.post("/api/auth/register", async (req, res) => {
+    try {
+      const { businessName, businessEmail, businessIndustry, adminName, adminEmail, password } = req.body;
+      
+      // Check if user already exists
+      const existingUser = await storage.getUserByEmail(adminEmail);
+      if (existingUser) {
+        return res.status(400).json({ success: false, message: "Email already registered" });
+      }
+
+      // Create Business
+      const business = await storage.createBusiness({
+        name: businessName,
+        email: businessEmail,
+        industry: businessIndustry
+      });
+
+      // Create Admin User
+      const user = await storage.createUser({
+        businessId: business.id,
+        email: adminEmail,
+        name: adminName,
+        role: "admin",
+        password: password
+      });
+      
+      res.json({ success: true, message: "Registration successful. Please verify OTP." });
+    } catch (err) {
+      console.error("Registration error:", err);
+      res.status(500).json({ success: false, message: "Registration failed" });
+    }
+  });
+
+  app.post("/api/auth/login", async (req, res) => {
+    try {
+      const { email, password } = req.body;
+      const user = await storage.validateUser(email, password);
+      
+      if (!user) {
+        return res.status(401).json({ success: false, message: "Invalid email or password" });
+      }
+      
+      res.json({ 
+        success: true, 
+        token: "mock_token_" + user.id,
+        userId: user.id,
+        businessId: user.businessId,
+        message: "Login successful"
+      });
+    } catch (err) {
+      console.error("Login error:", err);
+      res.status(500).json({ success: false, message: "Login failed" });
+    }
+  });
+
+  app.post("/api/auth/verify-otp", async (req, res) => {
+    // Mock verification
+    const { email, otp } = req.body;
+    if (otp === "123456") {
+       const user = await storage.getUserByEmail(email);
+       if (user) {
+         res.json({ 
+            success: true, 
+            token: "mock_token_" + user.id,
+            userId: user.id,
+            businessId: user.businessId,
+            message: "OTP verified" 
+         });
+       } else {
+         res.status(400).json({ success: false, message: "User not found" });
+       }
+    } else {
+      res.status(400).json({ success: false, message: "Invalid OTP" });
+    }
+  });
+
   // --- New Features Routes ---
 
   // 1. Business Profile Management

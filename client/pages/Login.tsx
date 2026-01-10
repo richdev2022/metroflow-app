@@ -30,21 +30,26 @@ export default function Login() {
   });
 
   const handleLogin = async () => {
+    console.log("handleLogin started", loginData);
     setError(null);
 
     if (!loginData.email || !loginData.password) {
+      console.log("Validation failed: Email or password missing");
       setError("Email and password are required");
       return;
     }
 
     try {
       setLoading(true);
+      console.log("Attempting API request to /auth/login");
       const response = await api.post("/auth/login", {
-        email: loginData.email,
+        email: loginData.email.trim(),
         password: loginData.password,
       });
+      console.log("API response received", response);
 
       const data = response.data as AuthResponse;
+
 
       if (data.success) {
         if (data.requiresOtp) {
@@ -58,13 +63,17 @@ export default function Login() {
           localStorage.setItem("userName", loginData.email);
           setSuccessMessage("Login successful! Redirecting...");
           setTimeout(() => navigate("/dashboard"), 1500);
+        } else {
+          setError("Login successful but no token received. Please try again.");
         }
       } else {
         setError(data.message || "Login failed");
       }
     } catch (err: any) {
+      console.error("Login Error Catch:", err);
+      if (err.message) console.error("Error Message:", err.message);
+      if (err.response) console.error("Error Response:", err.response);
       setError(err.response?.data?.message || "Failed to login");
-      console.error(err);
     } finally {
       setLoading(false);
     }

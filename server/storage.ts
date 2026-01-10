@@ -9,7 +9,26 @@ import {
   FeeConfig, SingleTransferWithOtpInput, BulkTransferWithOtpInput
 } from "../shared/api";
 
+export interface InsertUser {
+  businessId: string;
+  email: string;
+  name: string;
+  role: "admin" | "manager" | "member";
+  password?: string;
+}
+
+export interface InsertBusiness {
+  name: string;
+  email: string;
+  industry?: string;
+}
+
 export interface IStorage {
+  // Auth
+  createUser(user: InsertUser): Promise<User>;
+  createBusiness(business: InsertBusiness): Promise<Business>;
+  validateUser(email: string, password: string): Promise<User | undefined>;
+  
   // KYC
   getKycStatus(userId: string): Promise<KycStatus>;
   initiateKyc(userId: string, data: KycInitiateInput): Promise<string>; // returns otp
@@ -66,6 +85,8 @@ export interface IStorage {
 
 export class MemStorage implements IStorage {
   private users: Map<string, User>;
+  private businesses: Map<string, Business>;
+  private passwords: Map<string, string>; // userId -> password
   private kycStatus: Map<string, KycStatus>;
   private wallets: Map<string, WalletInfo>;
   private payrolls: Map<string, PayrollEmployee[]>;
@@ -83,6 +104,8 @@ export class MemStorage implements IStorage {
 
   constructor() {
     this.users = new Map();
+    this.businesses = new Map();
+    this.passwords = new Map();
     this.kycStatus = new Map();
     this.wallets = new Map();
     this.payrolls = new Map();
@@ -103,7 +126,73 @@ export class MemStorage implements IStorage {
   }
 
   private seed() {
-    // Mock user will be handled dynamically or assumed via middleware
+    // Seed a default business and user
+    const businessId = "biz_123";
+    const userId = "user_123";
+    
+    this.businesses.set(businessId, {
+      id: businessId,
+      name: "MetroFlow Demo",
+      email: "demo@metroflow.com",
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+
+    this.users.set(userId, {
+      id: userId,
+      businessId: businessId,
+      email: "demo@metroflow.com",
+      name: "Demo User",
+      role: "admin",
+      status: "active",
+      emailVerified: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    });
+    
+    this.passwords.set(userId, "password123");
+  }
+
+  async createUser(insertUser: InsertUser): Promise<User> {
+    const id = `user_${Math.random().toString(36).substr(2, 9)}`;
+    const user: User = {
+      id,
+      businessId: insertUser.businessId,
+      email: insertUser.email,
+      name: insertUser.name,
+      role: insertUser.role,
+      status: "active",
+      emailVerified: false,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.users.set(id, user);
+    if (insertUser.password) {
+      this.passwords.set(id, insertUser.password);
+    }
+    return user;
+  }
+
+  async createBusiness(insertBusiness: InsertBusiness): Promise<Business> {
+    const id = `biz_${Math.random().toString(36).substr(2, 9)}`;
+    const business: Business = {
+      id,
+      name: insertBusiness.name,
+      email: insertBusiness.email,
+      industry: insertBusiness.industry,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    this.businesses.set(id, business);
+    return business;
+  }
+
+  async validateUser(email: string, password: string): Promise<User | undefined> {
+    const user = await this.getUserByEmail(email);
+    if (!user) return undefined;
+    const storedPassword = this.passwords.get(user.id);
+    if (storedPassword === password) return user;
+    return undefined;
   }
 
   async getUser(id: string): Promise<User | undefined> {

@@ -1382,6 +1382,7 @@ export default function Tasks() {
             {selectedTask && (
               <>
                 <DialogHeader className="p-6 pb-4 border-b">
+                  <DialogTitle className="sr-only">Task Details</DialogTitle>
                   <div className="space-y-4">
                     <div className="flex items-center justify-between gap-4">
                       <div className="flex items-center gap-2">

@@ -1,14 +1,17 @@
 import axios from "axios";
 
 export const api = axios.create({
-  baseURL: import.meta.env.VITE_API_BASE_URL || "/api",
+  baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
 });
+
+console.log("API Configured with Base URL:", api.defaults.baseURL);
 
 if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
   console.warn("VITE_API_BASE_URL is not set. API calls might fail if backend is not proxied correctly.");
 }
 
 api.interceptors.request.use((config) => {
+  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config);
   const token = localStorage.getItem("token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
@@ -44,6 +47,18 @@ api.interceptors.response.use(
       localStorage.removeItem("businessId");
       window.location.href = "/login";
     }
+
+    // Handle custom token expiration/invalid messages
+    const errorMessage = error.response?.data?.message || error.response?.data || "";
+    const errorString = typeof errorMessage === 'string' ? errorMessage.toLowerCase() : "";
+    
+    if (errorString.includes("token expires") || errorString.includes("invalid token") || errorString.includes("token expired")) {
+       localStorage.removeItem("token");
+       localStorage.removeItem("businessId");
+       window.location.href = "/login";
+       return Promise.reject(error);
+    }
+    
     return Promise.reject(error);
   }
 );

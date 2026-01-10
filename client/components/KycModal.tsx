@@ -14,7 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useToast } from "@/components/ui/use-toast";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
-import { normalizeKycStatus } from "@/lib/utils";
+import { normalizeKycStatus } from "@/lib/kyc-utils";
 
 interface KycModalProps {
   open: boolean;
