@@ -65,6 +65,7 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
           lastName: data.lastName
         });
         setStep('otp');
+        startCountdown();
         toast({ title: "OTP Sent", description: data.message });
       }
     } catch (error: any) {
@@ -190,6 +191,16 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
                     value={kycOtp} 
                     onChange={(e) => setKycOtp(e.target.value)} 
                   />
+               </div>
+               <div className="text-center">
+                   <Button 
+                       variant="link" 
+                       size="sm" 
+                       onClick={handleInitiate} 
+                       disabled={loading || isActive}
+                   >
+                       {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                   </Button>
                </div>
             </div>
           )}

@@ -12,8 +12,11 @@ import { AuthResponse, ResendOTPInput } from "@shared/api";
 
 type Step = "login" | "otp";
 
+import { useCountdown } from "@/hooks/useCountdown";
+
 export default function Login() {
   const navigate = useNavigate();
+  const { seconds, isActive, startCountdown } = useCountdown();
   const [step, setStep] = useState<Step>("login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -272,10 +275,10 @@ export default function Login() {
               <Button
                 variant="ghost"
                 onClick={handleResendOTP}
-                disabled={loading}
+                disabled={loading || isActive}
                 className="w-full"
               >
-                {loading ? "Sending..." : "Resend OTP"}
+                {loading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
               </Button>
 
               <Button

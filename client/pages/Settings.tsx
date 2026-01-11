@@ -13,6 +13,7 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { IndustryCombobox } from "@/components/industry-combobox";
+import { useCountdown } from "@/hooks/useCountdown";
 
 export default function Settings() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -20,6 +21,7 @@ export default function Settings() {
   const [otpPreference, setOtpPreference] = useState<string>("email");
   const [fees, setFees] = useState<FeeConfig[]>([]);
   const { toast } = useToast();
+  const { seconds, isActive, startCountdown } = useCountdown();
 
   // Contact Update States
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
@@ -84,6 +86,7 @@ export default function Settings() {
       setContactLoading(true);
       await api.post("/settings/update-contact/request-otp", { type: contactType, value: contactValue });
       setOtpSent(true);
+      startCountdown();
       toast({ title: "OTP Sent", description: `OTP sent to ${contactValue}` });
     } catch (error) {
       toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
@@ -219,6 +222,16 @@ export default function Settings() {
                             <div className="space-y-2">
                                 <Label>OTP</Label>
                                 <Input value={otp} onChange={e => setOtp(e.target.value)} placeholder="Enter 6-digit OTP" />
+                            </div>
+                            <div className="text-center">
+                                <Button 
+                                    variant="link" 
+                                    size="sm" 
+                                    onClick={handleRequestOtp} 
+                                    disabled={contactLoading || isActive}
+                                >
+                                    {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                                </Button>
                             </div>
                         </div>
                     )}

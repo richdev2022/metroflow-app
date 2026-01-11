@@ -20,6 +20,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { useCountdown } from "@/hooks/useCountdown";
 
 const updatePayrollSchema = z.object({
   salary: z.string().min(1, "Salary is required"),
@@ -78,6 +79,7 @@ export default function Payroll() {
   
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
+  const { seconds, isActive, startCountdown } = useCountdown();
 
   const updateForm = useForm<z.infer<typeof updatePayrollSchema>>({
     resolver: zodResolver(updatePayrollSchema),
@@ -337,6 +339,7 @@ export default function Payroll() {
           // Use the source wallet ID for the request
           await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
           setOtpSent(true);
+          startCountdown();
           toast({ title: "OTP Sent", description: "Please enter the OTP sent to your registered contact." });
         } catch (error) {
            toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
@@ -1079,6 +1082,16 @@ export default function Payroll() {
                                         <FormControl>
                                             <Input {...field} placeholder="Enter 6-digit OTP" maxLength={6} />
                                         </FormControl>
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            onClick={handleResendOTP}
+                                            disabled={otpLoading || isActive}
+                                            className="w-full mt-2"
+                                        >
+                                            {otpLoading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                                        </Button>
                                         <FormMessage />
                                     </FormItem>
                                 )}

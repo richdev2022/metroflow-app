@@ -7,10 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle } from "lucide-react";
+import { useCountdown } from "@/hooks/useCountdown";
 
 export default function ResetPasswordOtp() {
   const navigate = useNavigate();
   const location = useLocation();
+  const { seconds, isActive, startCountdown } = useCountdown();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -62,6 +64,7 @@ export default function ResetPasswordOtp() {
 
       if (data.success) {
         setSuccessMessage("New OTP sent to your email");
+        startCountdown();
       } else {
         setError(data.message || "Failed to resend OTP");
       }
@@ -138,10 +141,10 @@ export default function ResetPasswordOtp() {
             <Button
               variant="ghost"
               onClick={handleResendOTP}
-              disabled={loading}
+              disabled={loading || isActive}
               className="w-full"
             >
-              {loading ? "Sending..." : "Resend Code"}
+              {loading ? "Sending..." : isActive ? `Resend Code in ${seconds}s` : "Resend Code"}
             </Button>
 
             <Button

@@ -1,6 +1,5 @@
 import React, { useEffect, useState } from 'react';
 import { api } from "@/lib/api-client";
-import { parseJwt } from "@/lib/utils";
 import { Idea, CreateIdeaInput, ApiResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -39,27 +38,12 @@ export default function Ideas() {
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [newIdea, setNewIdea] = useState<CreateIdeaInput>({ title: "", description: "" });
   const [isSubmitting, setIsSubmitting] = useState(false);
-  const [currentUserRole, setCurrentUserRole] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [selectedIdea, setSelectedIdea] = useState<Idea | null>(null);
 
   useEffect(() => {
     fetchIdeas();
-    fetchCurrentUser();
   }, []);
-
-  const fetchCurrentUser = async () => {
-    try {
-      const token = localStorage.getItem("token");
-      if (token) {
-        // Try to parse token safely
-        const payload = parseJwt(token);
-        if (payload) {
-          setCurrentUserRole(payload.role);
-        }
-      }
-    } catch (e) {
-      console.error("Failed to get current user info", e);
-    }
-  };
 
   const fetchIdeas = async () => {
     try {
@@ -123,6 +107,7 @@ export default function Ideas() {
   };
 
   const updateStatus = async (id: string, status: "under_review" | "executed" | "rejected") => {
+    setUpdatingId(id);
     try {
       const response = await api.put(`/ideas/${id}/status`, { status });
       const data = response.data as ApiResponse<Idea>;
@@ -147,6 +132,8 @@ export default function Ideas() {
         description: "Failed to update status",
         variant: "destructive",
       });
+    } finally {
+      setUpdatingId(null);
     }
   };
 
@@ -208,33 +195,43 @@ export default function Ideas() {
                   {ideas.map((idea) => (
                     <TableRow key={idea.id}>
                       <TableCell>
-                        <div className="font-medium">{idea.title}</div>
+                        <div 
+                          className="font-medium cursor-pointer hover:underline text-primary"
+                          onClick={() => setSelectedIdea(idea)}
+                        >
+                          {idea.title}
+                        </div>
                         <div className="text-sm text-muted-foreground line-clamp-1">{idea.description}</div>
                       </TableCell>
                       <TableCell>{idea.userName || "Unknown"}</TableCell>
                       <TableCell>{getStatusBadge(idea.status)}</TableCell>
                       <TableCell>{new Date(idea.createdAt).toLocaleDateString()}</TableCell>
                       <TableCell>
-                        {(currentUserRole === 'admin' || currentUserRole === 'manager') && (
-                            <DropdownMenu>
-                            <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" className="h-8 w-8 p-0">
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" className="h-8 w-8 p-0" disabled={updatingId === idea.id}>
+                              {updatingId === idea.id ? (
+                                <Loader2 className="h-4 w-4 animate-spin" />
+                              ) : (
                                 <MoreVertical className="h-4 w-4" />
-                                </Button>
-                            </DropdownMenuTrigger>
-                            <DropdownMenuContent align="end">
-                                <DropdownMenuItem onClick={() => updateStatus(idea.id, "under_review")}>
-                                Mark as Under Review
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => updateStatus(idea.id, "executed")}>
-                                Mark as Executed
-                                </DropdownMenuItem>
-                                <DropdownMenuItem onClick={() => updateStatus(idea.id, "rejected")}>
-                                Mark as Rejected
-                                </DropdownMenuItem>
-                            </DropdownMenuContent>
-                            </DropdownMenu>
-                        )}
+                              )}
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem onClick={() => setSelectedIdea(idea)}>
+                              View Details
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => updateStatus(idea.id, "under_review")}>
+                              Mark as Under Review
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => updateStatus(idea.id, "executed")}>
+                              Mark as Executed
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => updateStatus(idea.id, "rejected")}>
+                              Mark as Rejected
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </TableCell>
                     </TableRow>
                   ))}
@@ -276,6 +273,41 @@ export default function Ideas() {
                 {isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 Submit Idea
               </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+
+        <Dialog open={!!selectedIdea} onOpenChange={(open) => !open && setSelectedIdea(null)}>
+          <DialogContent className="max-w-3xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-2xl break-words pr-8">{selectedIdea?.title}</DialogTitle>
+              <div className="flex items-center gap-2 mt-2">
+                {selectedIdea && getStatusBadge(selectedIdea.status)}
+                <span className="text-sm text-muted-foreground">
+                   • {selectedIdea && new Date(selectedIdea.createdAt).toLocaleDateString()}
+                </span>
+              </div>
+            </DialogHeader>
+            <div className="py-4 space-y-6">
+              <div className="space-y-2">
+                <h4 className="text-sm font-medium text-muted-foreground">Description</h4>
+                <div className="text-base whitespace-pre-wrap leading-relaxed">
+                  {selectedIdea?.description}
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                 <h4 className="text-sm font-medium text-muted-foreground">Submitted By</h4>
+                 <div className="flex items-center gap-2">
+                    <div className="h-8 w-8 rounded-full bg-primary/10 flex items-center justify-center text-primary font-bold">
+                        {selectedIdea?.userName?.charAt(0).toUpperCase() || "U"}
+                    </div>
+                    <span>{selectedIdea?.userName || "Unknown User"}</span>
+                 </div>
+              </div>
+            </div>
+            <DialogFooter>
+               <Button variant="outline" onClick={() => setSelectedIdea(null)}>Close</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

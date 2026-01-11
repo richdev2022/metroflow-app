@@ -37,6 +37,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { useCountdown } from "@/hooks/useCountdown";
 
 const fundWalletSchema = z.object({
   amount: z.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, "Amount must be greater than 0"),
@@ -76,6 +77,7 @@ export default function Wallet() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [transferLoading, setTransferLoading] = useState(false);
   const [otp, setOtp] = useState("");
+  const { seconds, isActive, startCountdown } = useCountdown();
 
   // Business Wallet Creation State
   const [createStep, setCreateStep] = useState<"kyc" | "details">("kyc");
@@ -256,6 +258,20 @@ export default function Wallet() {
       } finally {
           setTransferLoading(false);
       }
+  };
+
+  const handleResendOTP = async () => {
+    try {
+        setOtpLoading(true);
+        const values = transferForm.getValues();
+        await api.post("/transfers/otp/request", { wallet_id: values.wallet_id });
+        toast({ title: "OTP Sent", description: "New OTP sent." });
+        startCountdown();
+    } catch (error) {
+        toast({ title: "Error", description: "Failed to resend OTP", variant: "destructive" });
+    } finally {
+        setOtpLoading(false);
+    }
   };
 
   const fetchWalletInfo = async () => {
@@ -1039,6 +1055,15 @@ export default function Wallet() {
                         <p className="text-xs text-muted-foreground">
                             Enter the OTP sent to your registered contact.
                         </p>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleResendOTP}
+                            disabled={otpLoading || isActive}
+                            className="w-full mt-2"
+                        >
+                            {otpLoading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                        </Button>
                     </div>
                     <DialogFooter>
                         <Button variant="outline" onClick={() => setTransferStep("details")}>Back</Button>

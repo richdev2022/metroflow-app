@@ -10,11 +10,13 @@ import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { AuthResponse } from "@shared/api";
 import { IndustryCombobox } from "@/components/industry-combobox";
+import { useCountdown } from "@/hooks/useCountdown";
 
 type Step = "business" | "otp";
 
 export default function Register() {
   const navigate = useNavigate();
+  const { seconds, isActive, startCountdown } = useCountdown();
   const [step, setStep] = useState<Step>("business");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +83,7 @@ export default function Register() {
         setOtpData({ email: businessData.adminEmail, otpCode: "" });
         setSuccessMessage(data.message);
         setStep("otp");
+        startCountdown();
       } else {
         setError(data.message || "Registration failed");
       }
@@ -374,10 +377,10 @@ export default function Register() {
               <Button
                 variant="ghost"
                 onClick={handleResendOTP}
-                disabled={loading}
+                disabled={loading || isActive}
                 className="w-full"
               >
-                {loading ? "Sending..." : "Resend OTP"}
+                {loading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
               </Button>
 
               <Button
