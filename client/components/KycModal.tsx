@@ -15,6 +15,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
+import { useCountdown } from "@/hooks/useCountdown";
 
 interface KycModalProps {
   open: boolean;
@@ -25,6 +26,7 @@ interface KycModalProps {
 
 export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess }: KycModalProps) {
   const { toast } = useToast();
+  const { seconds, isActive, startCountdown } = useCountdown();
   const [step, setStep] = useState<'initiate' | 'otp'>('initiate');
   const [kycType, setKycType] = useState<'bvn' | 'nin'>('bvn');
   const [kycNumber, setKycNumber] = useState('');

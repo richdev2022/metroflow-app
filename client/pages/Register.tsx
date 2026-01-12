@@ -141,6 +141,7 @@ export default function Register() {
 
       if (data.success) {
         setSuccessMessage("OTP sent successfully");
+        startCountdown();
       } else {
         setError(data.message || "Failed to resend OTP");
       }

@@ -59,6 +59,7 @@ export default function Login() {
           setOtpData({ email: loginData.email, otpCode: "" });
           setSuccessMessage(data.message);
           setStep("otp");
+          startCountdown();
         } else if (data.token) {
           localStorage.setItem("token", data.token);
           localStorage.setItem("userId", data.userId || "");
@@ -130,6 +131,7 @@ export default function Login() {
 
       if (data.success) {
         setSuccessMessage("OTP sent successfully");
+        startCountdown();
       } else {
         setError(data.message || "Failed to resend OTP");
       }
