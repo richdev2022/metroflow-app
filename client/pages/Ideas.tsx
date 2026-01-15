@@ -235,9 +235,11 @@ export default function Ideas() {
     setGeneratingDoc(true);
     try {
         const response = await api.post(`/ideas/${selectedIdea.id}/documentation`);
-        if (response.data.success) {
+        if (response.data && response.data.success) {
             setDocs([...docs, response.data.data]);
-            toast({ title: "Success", description: "Documentation generated" });
+            toast({ title: "Success", description: response.data.message || "Documentation generated" });
+        } else {
+            toast({ title: "Error", description: "Failed to generate documentation", variant: "destructive" });
         }
     } catch (error) {
         toast({ title: "Error", description: "Failed to generate documentation", variant: "destructive" });
@@ -278,11 +280,18 @@ export default function Ideas() {
           const response = await api.post(`/product-documentation/${selectedDoc.id}/regenerate`, {
               areasOfConcern: regenerateConcern
           });
-          const updatedDoc = response.data as ProductDocumentation;
+          let updatedDoc: ProductDocumentation;
+          let backendMessage: string | undefined;
+          if (response.data && response.data.success && response.data.data) {
+              updatedDoc = response.data.data as ProductDocumentation;
+              backendMessage = response.data.message;
+          } else {
+              updatedDoc = response.data as ProductDocumentation;
+          }
           setDocs(docs.map(d => d.id === updatedDoc.id ? updatedDoc : d));
           setIsRegenerateOpen(false);
           setRegenerateConcern("");
-          toast({ title: "Success", description: "Documentation regenerated" });
+          toast({ title: "Success", description: backendMessage || "Documentation regenerated" });
       } catch (error) {
           toast({ title: "Error", description: "Failed to regenerate documentation", variant: "destructive" });
       } finally {
@@ -581,6 +590,9 @@ export default function Ideas() {
                                                         <div className="font-medium">{doc.title}</div>
                                                         <div className="text-xs text-muted-foreground">
                                                             Version {doc.version} • {(doc.updatedAt || doc.updated_at) ? new Date(doc.updatedAt || doc.updated_at).toLocaleDateString() : 'Just now'}
+                                                        </div>
+                                                        <div className="mt-1">
+                                                            {(doc as any).status && <Badge variant="secondary" className="capitalize">{(doc as any).status}</Badge>}
                                                         </div>
                                                     </div>
                                                 </div>
