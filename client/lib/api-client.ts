@@ -1,4 +1,5 @@
 import axios from "axios";
+import { triggerSessionTimeout } from "@/components/SessionTimeoutProvider";
 
 export const api = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
@@ -31,6 +32,11 @@ api.interceptors.response.use(
         console.error("Received HTML response instead of JSON. Check API URL configuration.");
         return Promise.reject(new Error("Invalid API response (HTML received)"));
     }
+    // Check for success: false with error: "Invalid or expired token"
+    if (response.data && !response.data.success && response.data.error === "Invalid or expired token") {
+      triggerSessionTimeout();
+      return Promise.reject(new Error("Invalid or expired token"));
+    }
     return response;
   },
   (error) => {
@@ -39,6 +45,12 @@ api.interceptors.response.use(
         console.error("Network Error: Unable to connect to the server.");
         // Optional: You could trigger a global toast here if you had access to the toast hook
         return Promise.reject(new Error("Unable to connect to the server. Please check your connection or try again later."));
+    }
+
+    // Check for success: false with error: "Invalid or expired token" in error response
+    if (error.response?.data && !error.response.data.success && error.response.data.error === "Invalid or expired token") {
+      triggerSessionTimeout();
+      return Promise.reject(error);
     }
 
     if (error.response?.status === 401) {

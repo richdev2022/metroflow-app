@@ -27,6 +27,7 @@ import Payroll from "./pages/Payroll";
 import TransferHistory from "./pages/TransferHistory"; // Page
 import Settings from "./pages/Settings";
 import NotFound from "./pages/NotFound";
+import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 
 const queryClient = new QueryClient();
 
@@ -41,69 +42,71 @@ const App = () => (
       <Toaster />
       <Sonner />
       <BrowserRouter>
-        <Routes>
-          <Route path="/" element={<Navigate to="/login" replace />} />
-          <Route path="/login" element={<Login />} />
-          <Route path="/register" element={<Register />} />
-          <Route path="/forgot-password" element={<ForgotPassword />} />
-          <Route path="/reset-password-otp" element={<ResetPasswordOtp />} />
-          <Route path="/reset-password" element={<ResetPassword />} />
-          <Route
-            path="/dashboard"
-            element={<ProtectedRoute element={<Dashboard />} />}
-          />
-          <Route
-            path="/tasks"
-            element={<ProtectedRoute element={<Tasks />} />}
-          />
-          <Route
-            path="/ranking"
-            element={<ProtectedRoute element={<Ranking />} />}
-          />
-          <Route
-            path="/team"
-            element={<ProtectedRoute element={<Team />} />}
-          />
-          <Route
-            path="/activity-logs"
-            element={<ProtectedRoute element={<ActivityLogs />} />}
-          />
-          <Route
-            path="/backlog"
-            element={<ProtectedRoute element={<Backlog />} />}
-          />
-          <Route
-            path="/ideas"
-            element={<ProtectedRoute element={<Ideas />} />}
-          />
-          <Route
-            path="/subscription"
-            element={<ProtectedRoute element={<Subscription />} />}
-          />
-          <Route
-            path="/payment/callback"
-            element={<ProtectedRoute element={<PaymentCallback />} />}
-          />
-          <Route
-            path="/wallet"
-            element={<ProtectedRoute element={<Wallet />} />}
-          />
-          <Route
-            path="/payroll"
-            element={<ProtectedRoute element={<Payroll />} />}
-          />
-          <Route
-            path="/transfer-history"
-            element={<ProtectedRoute element={<TransferHistory />} />}
-          />
-          <Route
-            path="/settings"
-            element={<ProtectedRoute element={<Settings />} />}
-          />
-          <Route path="/accept-invite/:token" element={<AcceptInvite />} />
-          {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
-          <Route path="*" element={<NotFound />} />
-        </Routes>
+        <SessionTimeoutProvider>
+          <Routes>
+            <Route path="/" element={<Navigate to="/login" replace />} />
+            <Route path="/login" element={<Login />} />
+            <Route path="/register" element={<Register />} />
+            <Route path="/forgot-password" element={<ForgotPassword />} />
+            <Route path="/reset-password-otp" element={<ResetPasswordOtp />} />
+            <Route path="/reset-password" element={<ResetPassword />} />
+            <Route
+              path="/dashboard"
+              element={<ProtectedRoute element={<Dashboard />} />}
+            />
+            <Route
+              path="/tasks"
+              element={<ProtectedRoute element={<Tasks />} />}
+            />
+            <Route
+              path="/ranking"
+              element={<ProtectedRoute element={<Ranking />} />}
+            />
+            <Route
+              path="/team"
+              element={<ProtectedRoute element={<Team />} />}
+            />
+            <Route
+              path="/activity-logs"
+              element={<ProtectedRoute element={<ActivityLogs />} />}
+            />
+            <Route
+              path="/backlog"
+              element={<ProtectedRoute element={<Backlog />} />}
+            />
+            <Route
+              path="/ideas"
+              element={<ProtectedRoute element={<Ideas />} />}
+            />
+            <Route
+              path="/subscription"
+              element={<ProtectedRoute element={<Subscription />} />}
+            />
+            <Route
+              path="/payment/callback"
+              element={<ProtectedRoute element={<PaymentCallback />} />}
+            />
+            <Route
+              path="/wallet"
+              element={<ProtectedRoute element={<Wallet />} />}
+            />
+            <Route
+              path="/payroll"
+              element={<ProtectedRoute element={<Payroll />} />}
+            />
+            <Route
+              path="/transfer-history"
+              element={<ProtectedRoute element={<TransferHistory />} />}
+            />
+            <Route
+              path="/settings"
+              element={<ProtectedRoute element={<Settings />} />}
+            />
+            <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+            {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
+            <Route path="*" element={<NotFound />} />
+          </Routes>
+        </SessionTimeoutProvider>
       </BrowserRouter>
     </QueryClientProvider>
   </ThemeProvider>
