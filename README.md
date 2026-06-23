@@ -1,4 +1,4 @@
-# MetricFlow (Fusion Starter)
+# Metricorex (Fusion Starter)
 
 A comprehensive web application for tracking Key Performance Indicators (KPIs), managing developer tasks, and monitoring business performance. Built with a modern tech stack featuring React, Node.js, and PostgreSQL.
 
@@ -47,7 +47,7 @@ A comprehensive web application for tracking Key Performance Indicators (KPIs), 
 
    ```bash
    git clone <repository-url>
-   cd MetricFlow
+   cd Metricorex
    ```
 
 2. **Install dependencies**
@@ -112,7 +112,7 @@ npm start
 ## 📂 Project Structure
 
 ```
-MetricFlow/
+Metricorex/
 ├── client/                 # Frontend source code
 │   ├── components/         # Reusable UI components
 │   ├── hooks/              # Custom React hooks

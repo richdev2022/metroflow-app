@@ -1,15 +1,15 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { WalletInfo, FundWalletInput, CreateBusinessWalletInput } from "@shared/api";
-import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
+import { WalletInfo, FundWalletInput, CreateVirtualAccountInput } from "@shared/api";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRight, CheckCircle2, AlertCircle, Plus, RefreshCw, Upload, CheckCircle, ArrowRightLeft, Check, ChevronsUpDown } from "lucide-react";
+import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRightLeft, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Command,
@@ -29,7 +29,6 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
-import axios from "axios";
 import {
   Select,
   SelectContent,
@@ -52,16 +51,11 @@ const transferSchema = z.object({
   remark: z.string().optional(),
 });
 
-const createBusinessWalletSchema = z.object({
-  business_name: z.string().min(3, "Business name is required"),
-  gtb_account_number: z.string().length(10, "Account number must be 10 digits"),
-});
-
 export default function Wallet() {
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(true);
   const [fundingLoading, setFundingLoading] = useState(false);
-  const [creatingVaLoading, setCreatingVaLoading] = useState(false);
+  const [creatingVaLoading, setCreatingVaLoading] = useState<string | null>(null); // Track which wallet we're creating VA for
   const { toast } = useToast();
   const [fundWalletOpen, setFundWalletOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -79,35 +73,9 @@ export default function Wallet() {
   const [otp, setOtp] = useState("");
   const { seconds, isActive, startCountdown } = useCountdown();
 
-  // Business Wallet Creation State
-  const [createStep, setCreateStep] = useState<"kyc" | "details">("kyc");
-  const [kycId, setKycId] = useState<string>("");
-  const [kycLoading, setKycLoading] = useState(false);
-  
-  // Address Data State
-  const [addressData, setAddressData] = useState({
-    country: "",
-    state: "",
-    city: "",
-    street: "",
-    house_number: "",
-    proof_of_address: null as File | null,
-  });
-
-  // Location Data State
-  const [countries, setCountries] = useState<{ name: string; iso2: string }[]>([]);
-  const [states, setStates] = useState<{ name: string }[]>([]);
-  const [cities, setCities] = useState<string[]>([]);
-  const [loadingLocation, setLoadingLocation] = useState(false);
-
   const fundForm = useForm<z.infer<typeof fundWalletSchema>>({
     resolver: zodResolver(fundWalletSchema),
     defaultValues: { amount: "" },
-  });
-
-  const businessWalletForm = useForm<z.infer<typeof createBusinessWalletSchema>>({
-    resolver: zodResolver(createBusinessWalletSchema),
-    defaultValues: { business_name: "", gtb_account_number: "" },
   });
 
   const transferForm = useForm<z.infer<typeof transferSchema>>({
@@ -144,24 +112,25 @@ export default function Wallet() {
         setLookupLoading(true);
         setLookupError(null);
         setLookupName(null);
-        // Clear previous manual entry if we are looking up again? 
-        // Or keep it? Let's clear to avoid confusion if they changed account number
         transferForm.setValue("accountName", ""); 
         
-        const response = await api.post("/transfers/lookup", {
-          bankCode,
-          accountNumber,
+        const response = await api.post("/transfers/account-lookup", {
+          bank_code: bankCode,
+          account_number: accountNumber,
         });
-        const name = response.data.data.account_name;
+        let name = "";
+        if (response.data.data?.responseBody?.accountName) {
+          name = response.data.data.responseBody.accountName;
+        } else if (response.data.data?.account_name) {
+          name = response.data.data.account_name;
+        } else if (response.data.data?.accountName) {
+          name = response.data.data.accountName;
+        }
         setLookupName(name);
         transferForm.setValue("accountName", name);
       } catch (error: any) {
         setLookupName(null);
         setLookupError(error.response?.data?.message || "Could not verify account name");
-        // Ensure field is empty for manual entry or keep what user typed? 
-        // If lookup fails, we should probably not clear what they might have manually typed if they typed first? 
-        // But here we are triggering on change of acc number/bank, so they probably haven't typed a name for *this* new combo yet.
-        // So clearing is safe and correct to prompt entry.
         transferForm.setValue("accountName", ""); 
       } finally {
         setLookupLoading(false);
@@ -179,38 +148,32 @@ export default function Wallet() {
       } else {
           setLookupName(null);
           setLookupError(null);
-          // Don't clear accountName here necessarily, maybe they are just fixing a digit. 
-          // But if they clear account number, name should probably clear.
           if (!watchedAccountNumber || !watchedBankCode) {
                transferForm.setValue("accountName", "");
           }
       }
   }, [watchedAccountNumber, watchedBankCode]);
 
-
   const onInitiateTransfer = async (values: z.infer<typeof transferSchema>) => {
-     // Removed lookupName check to allow proceeding even if lookup failed
-     
      try {
-         setOtpLoading(true);
-         // Request OTP flow
-         await api.post("/transfers/otp/request", {
-             wallet_id: values.wallet_id
-         });
-         setTransferStep("otp");
-         toast({
-             title: "OTP Sent",
-             description: "Please enter the OTP sent to your email/phone",
-         });
-     } catch (error: any) {
-         toast({
-             title: "Error",
-             description: error.response?.data?.message || "Failed to request OTP",
-             variant: "destructive"
-         });
-     } finally {
-         setOtpLoading(false);
-     }
+        setOtpLoading(true);
+        await api.post("/transfers/otp/request", {
+            wallet_id: values.wallet_id
+        });
+        setTransferStep("otp");
+        toast({
+            title: "OTP Sent",
+            description: "Please enter the OTP sent to your email/phone",
+        });
+    } catch (error: any) {
+        toast({
+            title: "Error",
+            description: error.response?.data?.message || "Failed to request OTP",
+            variant: "destructive"
+        });
+    } finally {
+        setOtpLoading(false);
+    }
   };
   
   const onFinalizeTransfer = async () => {
@@ -227,7 +190,6 @@ export default function Wallet() {
           setTransferLoading(true);
           const values = transferForm.getValues();
           
-          // Construct payload matching schema exactly
           const payload = {
               bankCode: values.bankCode,
               accountNumber: values.accountNumber,
@@ -294,152 +256,24 @@ export default function Wallet() {
     fetchWalletInfo();
   }, []);
 
-  // Fetch Countries on Mount
-  useEffect(() => {
-    const fetchCountries = async () => {
-      try {
-        setLoadingLocation(true);
-        const response = await axios.get("https://countriesnow.space/api/v0.1/countries/positions");
-        if (!response.data.error) {
-          const sorted = response.data.data.sort((a: any, b: any) => 
-            a.name.localeCompare(b.name)
-          );
-          setCountries(sorted);
-        }
-      } catch (err) {
-        console.error("Failed to fetch countries", err);
-      } finally {
-        setLoadingLocation(false);
-      }
-    };
-    fetchCountries();
-  }, []);
-
-  // Fetch States when Country Changes
-  useEffect(() => {
-    if (!addressData.country) {
-      setStates([]);
-      setCities([]);
-      return;
-    }
-
-    const fetchStates = async () => {
-      try {
-        setLoadingLocation(true);
-        const response = await axios.post("https://countriesnow.space/api/v0.1/countries/states", {
-          country: addressData.country,
-        });
-        if (!response.data.error) {
-          setStates(response.data.data.states);
-          setCities([]);
-          setAddressData(prev => ({ ...prev, state: "", city: "" }));
-        }
-      } catch (err) {
-        console.error("Failed to fetch states", err);
-        setStates([]);
-      } finally {
-        setLoadingLocation(false);
-      }
-    };
-    fetchStates();
-  }, [addressData.country]);
-
-  // Fetch Cities when State Changes
-  useEffect(() => {
-    if (!addressData.country || !addressData.state) {
-      setCities([]);
-      return;
-    }
-
-    const fetchCities = async () => {
-      try {
-        setLoadingLocation(true);
-        const response = await axios.post("https://countriesnow.space/api/v0.1/countries/state/cities", {
-          country: addressData.country,
-          state: addressData.state,
-        });
-        if (!response.data.error) {
-          setCities(response.data.data);
-          setAddressData(prev => ({ ...prev, city: "" }));
-        }
-      } catch (err) {
-        console.error("Failed to fetch cities", err);
-        setCities([]);
-      } finally {
-        setLoadingLocation(false);
-      }
-    };
-    fetchCities();
-  }, [addressData.state]);
-
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      setAddressData({ ...addressData, proof_of_address: e.target.files[0] });
-    }
-  };
-
-  const handleAddressSubmit = async () => {
-    if (
-      !addressData.country ||
-      !addressData.state ||
-      !addressData.city ||
-      !addressData.street ||
-      !addressData.house_number ||
-      !addressData.proof_of_address
-    ) {
-      toast({
-        title: "Validation Error",
-        description: "All address fields and Proof of Address are required",
-        variant: "destructive",
-      });
-      return;
-    }
-
-    try {
-      setKycLoading(true);
-      const formData = new FormData();
-      formData.append("country", addressData.country);
-      formData.append("state", addressData.state);
-      formData.append("city", addressData.city);
-      formData.append("street", addressData.street);
-      formData.append("house_number", addressData.house_number);
-      formData.append("proof_of_address", addressData.proof_of_address);
-
-      const response = await api.post("/kyc/business", formData, {
-        headers: { "Content-Type": "multipart/form-data" },
-      });
-
-      if (response.data.success) {
-        setKycId(response.data.kycId);
-        setCreateStep("details");
-        toast({
-          title: "Success",
-          description: "Proof of address submitted. Please provide business details.",
-        });
-      } else {
-        toast({
-          title: "Error",
-          description: response.data.message || "Failed to submit address",
-          variant: "destructive",
-        });
-      }
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err.response?.data?.message || "Failed to submit address",
-        variant: "destructive",
-      });
-    } finally {
-      setKycLoading(false);
-    }
-  };
-
   const onFundWallet = async (values: z.infer<typeof fundWalletSchema>) => {
     try {
       setFundingLoading(true);
+      const wallet = selectedWalletType === "user" ? walletInfo?.user_wallet : walletInfo?.business_wallet;
+      
+      if (!wallet?.id) {
+        toast({
+          title: "Error",
+          description: "Wallet not found",
+          variant: "destructive",
+        });
+        return;
+      }
+
       const response = await api.post("/wallet/fund/card", {
         amount: Number(values.amount),
-        wallet_type: selectedWalletType,
+        wallet_id: wallet.id,
+        redirect_url: window.location.origin + "/payment-callback",
       });
       
       if (response.data.payment_url) {
@@ -462,39 +296,10 @@ export default function Wallet() {
     }
   };
 
-  const onCreateBusinessWallet = async (values: z.infer<typeof createBusinessWalletSchema>) => {
-    if (!kycId) {
-      toast({
-        title: "Error",
-        description: "KYC Reference missing. Please submit proof of address first.",
-        variant: "destructive",
-      });
-      return;
-    }
-
+  const onCreateVirtualAccount = async (type: "Personal" | "Business") => {
     try {
-      await api.post("/wallet/business/create", {
-        ...values,
-        kycReferenceId: kycId
-      });
-      toast({
-        title: "Success",
-        description: "Business wallet created successfully",
-      });
-      fetchWalletInfo();
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.response?.data?.error || "Failed to create business wallet",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const onCreateVirtualAccount = async () => {
-    try {
-      setCreatingVaLoading(true);
-      await api.post("/wallet/create-virtual-account");
+      setCreatingVaLoading(type);
+      await api.post("/wallet/create-virtual-account", { accountType: type } as CreateVirtualAccountInput);
       toast({
         title: "Success",
         description: "Virtual Account created successfully",
@@ -507,8 +312,18 @@ export default function Wallet() {
         variant: "destructive",
       });
     } finally {
-      setCreatingVaLoading(false);
+      setCreatingVaLoading(null);
     }
+  };
+
+  // Helper to get bank name from code
+  const getBankName = (bankCode: string) => {
+    const bankMap: Record<string, string> = {
+      "035": "Wema Bank",
+      "232": "Sterling Bank",
+      "058": "Guaranty Trust Bank",
+    };
+    return bankMap[bankCode] || `Bank (${bankCode})`;
   };
 
   if (loading) {
@@ -529,320 +344,224 @@ export default function Wallet() {
           <p className="text-muted-foreground">Manage your personal and business finances.</p>
         </div>
 
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          {/* User Wallet Card */}
+        <div className="grid gap-4 md:grid-cols-1 lg:grid-cols-2">
+          {/* Personal Wallet Card */}
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Personal Wallet</CardTitle>
-              <WalletIcon className="h-4 w-4 text-muted-foreground" />
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <WalletIcon className="h-4 w-4 text-muted-foreground" />
+                Personal Wallet
+              </CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onCreateVirtualAccount("Personal")}
+                disabled={creatingVaLoading === "Personal"}
+              >
+                {creatingVaLoading === "Personal" ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Create VA
+              </Button>
             </CardHeader>
             <CardContent>
               {walletInfo?.user_wallet ? (
                 <div className="space-y-4">
                   <div>
                     <div className="text-2xl font-bold">
-                      {walletInfo.user_wallet.currency} {walletInfo.user_wallet.balance.toLocaleString()}
+                      {walletInfo.user_wallet.currency} {Number(walletInfo.user_wallet.balance).toLocaleString()}
                     </div>
                     <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
-                  <div className="pt-4 border-t">
+                  
+                  {/* Virtual Accounts */}
+                  <div className="space-y-3 pt-3 border-t">
                     <div className="flex items-center justify-between">
-                      <p className="text-sm font-medium">Virtual Account</p>
-                       <Button 
-                        variant="ghost" 
-                        size="icon" 
-                        className="h-6 w-6" 
-                        onClick={onCreateVirtualAccount}
-                        loading={creatingVaLoading}
-                        title="Create/Retry Virtual Account"
-                      >
-                        <RefreshCw className="h-3 w-3" />
-                      </Button>
+                      <p className="text-sm font-medium">Virtual Accounts</p>
                     </div>
-                    {walletInfo.user_wallet.account_number === "Not Created" && !walletInfo.user_wallet.virtual_account_number ? (
-                      <Button 
-                        variant="outline" 
-                        className="w-full mt-2"
-                        onClick={onCreateVirtualAccount}
-                        disabled={creatingVaLoading}
-                      >
-                        {creatingVaLoading ? (
-                           <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                        ) : (
-                           <Plus className="mr-2 h-4 w-4" /> 
-                        )}
-                        Create Virtual Account
-                      </Button>
+                    
+                    {walletInfo.user_wallet.virtual_accounts.length === 0 ? (
+                      <div className="text-sm text-muted-foreground py-4 text-center">
+                        No virtual accounts yet. Click "Create VA" to create one.
+                      </div>
                     ) : (
-                      <>
-                        <div className="flex items-center justify-between mt-1">
-                          <span className="text-lg font-mono">{walletInfo.user_wallet.virtual_account_number || walletInfo.user_wallet.account_number}</span>
-                          <span className="text-xs text-muted-foreground">{walletInfo.user_wallet.bank_name || "Providus Bank"}</span>
+                      walletInfo.user_wallet.virtual_accounts.map((va) => (
+                        <div
+                          key={va.id}
+                          className={cn(
+                            "p-3 rounded-lg border transition-all",
+                            va.is_active
+                              ? "border-green-500 bg-green-50 dark:bg-green-950/20"
+                              : "border-red-500 bg-red-50 dark:bg-red-950/20"
+                          )}
+                        >
+                          {va.is_active && (
+                            <div className="flex items-center gap-1 mb-2 text-green-700 dark:text-green-400 text-xs font-semibold">
+                              <CheckCircle2 className="h-3 w-3" />
+                              Active - Use This Account
+                            </div>
+                          )}
+                          {!va.is_active && (
+                            <div className="flex items-center gap-1 mb-2 text-red-700 dark:text-red-400 text-xs font-semibold">
+                              <AlertCircle className="h-3 w-3" />
+                              Inactive - Do Not Use
+                            </div>
+                          )}
+                          
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-lg font-mono">{va.virtual_account_number}</span>
+                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">{va.account_name}</p>
+                            <p className="text-xs text-muted-foreground">Provider: {va.payment_provider}</p>
+                          </div>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1">Transfer to this account to fund wallet</p>
-                      </>
+                      ))
                     )}
                   </div>
-                   <Button 
-                    className="w-full mt-4" 
-                    onClick={() => {
+                  
+                  <div className="flex flex-col gap-2 pt-3">
+                    <Button 
+                      className="w-full" 
+                      onClick={() => {
                         setSelectedWalletType("user");
                         setFundWalletOpen(true);
-                    }}
-                   >
-                    <CreditCard className="mr-2 h-4 w-4" /> Fund via Card
-                  </Button>
-                   <Button 
-                    variant="outline"
-                    className="w-full mt-2" 
-                    onClick={() => {
+                      }}
+                    >
+                      <CreditCard className="mr-2 h-4 w-4" /> Fund via Card
+                    </Button>
+                    <Button 
+                      variant="outline"
+                      className="w-full" 
+                      onClick={() => {
                         setSelectedWalletType("user");
                         setTransferOpen(true);
                         if (walletInfo?.user_wallet?.id) {
-                            transferForm.setValue("wallet_id", walletInfo.user_wallet.id);
+                          transferForm.setValue("wallet_id", walletInfo.user_wallet.id);
                         }
-                    }}
-                   >
-                    <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
-                  </Button>
+                      }}
+                    >
+                      <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
+                    </Button>
+                  </div>
                 </div>
               ) : (
                 <div className="flex items-center justify-center h-32">
-                   <p className="text-muted-foreground">No wallet found. Complete KYC.</p>
+                   <p className="text-muted-foreground">No personal wallet found.</p>
                 </div>
               )}
             </CardContent>
           </Card>
 
           {/* Business Wallet Card */}
-          <Card className="md:col-span-2 lg:col-span-2">
-             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
-              <CardTitle className="text-sm font-medium">Business Wallet</CardTitle>
-              <Building2 className="h-4 w-4 text-muted-foreground" />
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+              <CardTitle className="text-sm font-medium flex items-center gap-2">
+                <Building2 className="h-4 w-4 text-muted-foreground" />
+                Business Wallet
+              </CardTitle>
+              <Button
+                variant="ghost"
+                size="sm"
+                onClick={() => onCreateVirtualAccount("Business")}
+                disabled={creatingVaLoading === "Business"}
+              >
+                {creatingVaLoading === "Business" ? (
+                  <Loader2 className="h-4 w-4 animate-spin mr-2" />
+                ) : (
+                  <RefreshCw className="h-4 w-4 mr-2" />
+                )}
+                Create VA
+              </Button>
             </CardHeader>
             <CardContent>
               {walletInfo?.business_wallet ? (
                 <div className="space-y-4">
-                   <div>
+                  <div>
                     <div className="text-2xl font-bold">
-                      {walletInfo.business_wallet.currency} {walletInfo.business_wallet.balance.toLocaleString()}
+                      {walletInfo.business_wallet.currency} {Number(walletInfo.business_wallet.balance).toLocaleString()}
                     </div>
-                    <p className="text-xs text-muted-foreground">{walletInfo.business_wallet.business_name}</p>
+                    <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
-                   <div className="pt-4 border-t">
-                    <p className="text-sm font-medium">Virtual Account</p>
-                    <div className="flex items-center justify-between mt-1">
-                       <span className="text-lg font-mono">{walletInfo.business_wallet.account_number}</span>
-                       <span className="text-xs text-muted-foreground">{walletInfo.business_wallet.bank_name}</span>
+                  
+                  {/* Virtual Accounts */}
+                  <div className="space-y-3 pt-3 border-t">
+                    <div className="flex items-center justify-between">
+                      <p className="text-sm font-medium">Virtual Accounts</p>
                     </div>
-                     <p className="text-xs text-muted-foreground mt-1">Transfer to this account to fund wallet</p>
+                    
+                    {walletInfo.business_wallet.virtual_accounts.length === 0 ? (
+                      <div className="text-sm text-muted-foreground py-4 text-center">
+                        No virtual accounts yet. Click "Create VA" to create one.
+                      </div>
+                    ) : (
+                      walletInfo.business_wallet.virtual_accounts.map((va) => (
+                        <div
+                          key={va.id}
+                          className={cn(
+                            "p-3 rounded-lg border transition-all",
+                            va.is_active
+                              ? "border-green-500 bg-green-50 dark:bg-green-950/20"
+                              : "border-red-500 bg-red-50 dark:bg-red-950/20"
+                          )}
+                        >
+                          {va.is_active && (
+                            <div className="flex items-center gap-1 mb-2 text-green-700 dark:text-green-400 text-xs font-semibold">
+                              <CheckCircle2 className="h-3 w-3" />
+                              Active - Use This Account
+                            </div>
+                          )}
+                          {!va.is_active && (
+                            <div className="flex items-center gap-1 mb-2 text-red-700 dark:text-red-400 text-xs font-semibold">
+                              <AlertCircle className="h-3 w-3" />
+                              Inactive - Do Not Use
+                            </div>
+                          )}
+                          
+                          <div className="space-y-1">
+                            <div className="flex items-center justify-between">
+                              <span className="text-lg font-mono">{va.virtual_account_number}</span>
+                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
+                            </div>
+                            <p className="text-xs text-muted-foreground">{va.account_name}</p>
+                            <p className="text-xs text-muted-foreground">Provider: {va.payment_provider}</p>
+                          </div>
+                        </div>
+                      ))
+                    )}
                   </div>
-                   <div className="flex flex-col gap-2 mt-4">
-                       <Button 
-                        className="w-fit" 
-                        onClick={() => {
-                            setSelectedWalletType("business");
-                            setFundWalletOpen(true);
-                        }}
-                       >
-                        <CreditCard className="mr-2 h-4 w-4" /> Fund via Card
-                      </Button>
-                       <Button 
-                        variant="outline"
-                        className="w-fit" 
-                        onClick={() => {
-                            setSelectedWalletType("business");
-                            setTransferOpen(true);
-                             if (walletInfo?.business_wallet?.id) {
-                                transferForm.setValue("wallet_id", walletInfo.business_wallet.id);
-                            }
-                        }}
-                       >
-                        <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
-                      </Button>
-                   </div>
+                  
+                  <div className="flex flex-col gap-2 pt-3">
+                    <Button 
+                      className="w-full" 
+                      onClick={() => {
+                        setSelectedWalletType("business");
+                        setFundWalletOpen(true);
+                      }}
+                    >
+                      <CreditCard className="mr-2 h-4 w-4" /> Fund via Card
+                    </Button>
+                    <Button 
+                      variant="outline"
+                      className="w-full" 
+                      onClick={() => {
+                        setSelectedWalletType("business");
+                        setTransferOpen(true);
+                        if (walletInfo?.business_wallet?.id) {
+                          transferForm.setValue("wallet_id", walletInfo.business_wallet.id);
+                        }
+                      }}
+                    >
+                      <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
+                    </Button>
+                  </div>
                 </div>
               ) : (
-                <div className="space-y-6">
-                   <div>
-                      <h3 className="text-lg font-semibold">Create Business Wallet</h3>
-                      <p className="text-sm text-muted-foreground">Complete the steps below to create a business wallet.</p>
-                   </div>
-
-                   {/* Stepper Indicator */}
-                   <div className="flex items-center gap-4 text-sm">
-                      <div className={`flex items-center gap-2 ${createStep === 'kyc' ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-                         <div className={`h-6 w-6 rounded-full flex items-center justify-center border ${createStep === 'kyc' ? 'border-primary bg-primary text-primary-foreground' : (createStep === 'details' ? 'border-green-600 bg-green-600 text-white' : 'border-muted')}`}>
-                            {createStep === 'details' ? <CheckCircle className="h-4 w-4" /> : '1'}
-                         </div>
-                         Proof of Address
-                      </div>
-                      <div className="h-px w-8 bg-border" />
-                      <div className={`flex items-center gap-2 ${createStep === 'details' ? 'text-primary font-medium' : 'text-muted-foreground'}`}>
-                         <div className={`h-6 w-6 rounded-full flex items-center justify-center border ${createStep === 'details' ? 'border-primary bg-primary text-primary-foreground' : 'border-muted'}`}>
-                            2
-                         </div>
-                         Business Details
-                      </div>
-                   </div>
-
-                   {createStep === 'kyc' && (
-                     <div className="space-y-4 max-w-xl">
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                          <div className="space-y-2">
-                            <Label htmlFor="country">Country *</Label>
-                            <Select
-                              value={addressData.country}
-                              onValueChange={(value) => setAddressData({ ...addressData, country: value })}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder="Select Country" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {countries.map((c) => (
-                                  <SelectItem key={c.name} value={c.name}>
-                                    {c.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label htmlFor="state">State *</Label>
-                            <Select
-                              value={addressData.state}
-                              onValueChange={(value) => setAddressData({ ...addressData, state: value })}
-                              disabled={!addressData.country || loadingLocation}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder={loadingLocation ? "Loading..." : "Select State"} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {states.map((s) => (
-                                  <SelectItem key={s.name} value={s.name}>
-                                    {s.name}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-                        </div>
-
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                           <div className="space-y-2">
-                            <Label htmlFor="city">City *</Label>
-                            <Select
-                              value={addressData.city}
-                              onValueChange={(value) => setAddressData({ ...addressData, city: value })}
-                              disabled={!addressData.state || loadingLocation}
-                            >
-                              <SelectTrigger>
-                                <SelectValue placeholder={loadingLocation ? "Loading..." : "Select City"} />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {cities.map((c) => (
-                                  <SelectItem key={c} value={c}>
-                                    {c}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          </div>
-
-                          <div className="space-y-2">
-                            <Label htmlFor="street">Street *</Label>
-                            <Input
-                              id="street"
-                              placeholder="Street Name"
-                              value={addressData.street}
-                              onChange={(e) => setAddressData({ ...addressData, street: e.target.value })}
-                            />
-                          </div>
-                        </div>
-
-                        <div className="space-y-2">
-                            <Label htmlFor="house_number">House Number *</Label>
-                            <Input
-                              id="house_number"
-                              placeholder="House Number"
-                              value={addressData.house_number}
-                              onChange={(e) => setAddressData({ ...addressData, house_number: e.target.value })}
-                            />
-                        </div>
-
-                        <div className="space-y-2">
-                          <Label htmlFor="proof_of_address">Proof of Address (Utility Bill/Bank Statement) *</Label>
-                          <p className="text-xs font-normal text-muted-foreground mt-1">
-                            Must be a recent one not later than 3 months.
-                          </p>
-                          <div className="mt-1 flex items-center gap-2">
-                             <Input
-                              id="proof_of_address"
-                              type="file"
-                              accept=".pdf,.jpg,.jpeg,.png"
-                              onChange={handleFileChange}
-                              className="cursor-pointer"
-                            />
-                          </div>
-                          <p className="text-xs text-muted-foreground">
-                            Supported formats: PDF, JPG, PNG
-                          </p>
-                        </div>
-
-                        <Button
-                          onClick={handleAddressSubmit}
-                          disabled={kycLoading}
-                          className="w-full md:w-auto"
-                        >
-                          {kycLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                          Next: Business Details
-                        </Button>
-                     </div>
-                   )}
-
-                   {createStep === 'details' && (
-                     <Form {...businessWalletForm}>
-                        <form onSubmit={businessWalletForm.handleSubmit(onCreateBusinessWallet)} className="space-y-4 max-w-xl">
-                          <FormField
-                            control={businessWalletForm.control}
-                            name="business_name"
-                            render={({ field }) => (
-                              <FormItem>
-                                <FormLabel>Business Name</FormLabel>
-                                <FormControl>
-                                  <Input placeholder="My Corp" {...field} />
-                                </FormControl>
-                                <FormMessage />
-                              </FormItem>
-                            )}
-                          />
-                           <FormField
-                            control={businessWalletForm.control}
-                            name="gtb_account_number"
-                            render={({ field }) => (
-                              <FormItem>
-                                <FormLabel>GTBank Account Number</FormLabel>
-                                <FormControl>
-                                  <Input placeholder="0123456789" {...field} maxLength={10} />
-                                </FormControl>
-                                <FormMessage />
-                              </FormItem>
-                            )}
-                          />
-                          <div className="flex gap-4">
-                            <Button 
-                              type="button" 
-                              variant="outline" 
-                              onClick={() => setCreateStep('kyc')}
-                            >
-                              Back
-                            </Button>
-                            <Button type="submit">Create Business Wallet</Button>
-                          </div>
-                        </form>
-                     </Form>
-                   )}
+                <div className="flex items-center justify-center h-32">
+                   <p className="text-muted-foreground">Business wallet will be created automatically after KYC approval.</p>
                 </div>
               )}
             </CardContent>
@@ -916,17 +635,13 @@ export default function Wallet() {
                                   variant="outline"
                                   role="combobox"
                                   aria-expanded={bankOpen}
-                                  className={cn(
-                                    "w-full justify-between",
-                                    !field.value && "text-muted-foreground"
-                                  )}
+                                  className="w-full justify-between"
                                 >
                                   {field.value
                                     ? banks.find(
                                         (bank) => bank.code === field.value
                                       )?.name
                                     : "Select bank"}
-                                  <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
                                 </Button>
                               </FormControl>
                             </PopoverTrigger>
@@ -945,14 +660,6 @@ export default function Wallet() {
                                            setBankOpen(false);
                                          }}
                                        >
-                                        <Check
-                                          className={cn(
-                                            "mr-2 h-4 w-4",
-                                            bank.code === field.value
-                                              ? "opacity-100"
-                                              : "opacity-0"
-                                          )}
-                                        />
                                         {bank.name}
                                       </CommandItem>
                                     ))}
@@ -990,11 +697,10 @@ export default function Wallet() {
                           <FormLabel>Account Name</FormLabel>
                           <FormControl>
                             <Input 
-                                placeholder="Account Name" 
+                                placeholder="Verified account name will appear here" 
                                 {...field} 
-                                // Read only if lookup was successful (lookupName is set), otherwise editable
-                                readOnly={!!lookupName}
-                                className={lookupName ? "bg-muted" : ""}
+                                readOnly
+                                className="bg-muted"
                             />
                           </FormControl>
                           <FormMessage />
@@ -1004,7 +710,7 @@ export default function Wallet() {
 
                     {lookupError && (
                         <p className="text-sm text-destructive mt-1">
-                            {lookupError} - Please enter name manually
+                            {lookupError}
                         </p>
                     )}
 
@@ -1013,15 +719,15 @@ export default function Wallet() {
                       name="amount"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Amount</FormLabel>
+                          <FormLabel>Amount (NGN)</FormLabel>
                           <FormControl>
-                            <Input type="number" placeholder="5000" {...field} />
+                            <Input type="number" placeholder="10000" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
-                    
+
                     <FormField
                       control={transferForm.control}
                       name="remark"
@@ -1029,7 +735,7 @@ export default function Wallet() {
                         <FormItem>
                           <FormLabel>Remark (Optional)</FormLabel>
                           <FormControl>
-                            <Input placeholder="Transfer" {...field} />
+                            <Input placeholder="Transfer description" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>
@@ -1037,7 +743,7 @@ export default function Wallet() {
                     />
 
                     <DialogFooter>
-                      <Button type="submit" loading={otpLoading} disabled={lookupLoading}>
+                      <Button type="submit" loading={otpLoading} disabled={!!lookupError || !lookupName}>
                         Request OTP
                       </Button>
                     </DialogFooter>
@@ -1045,32 +751,40 @@ export default function Wallet() {
                 </Form>
             ) : (
                 <div className="space-y-4">
-                    <div className="space-y-2">
-                        <Label>Enter OTP</Label>
-                        <Input 
-                            value={otp} 
-                            onChange={(e) => setOtp(e.target.value)} 
-                            placeholder="Enter OTP" 
-                        />
-                        <p className="text-xs text-muted-foreground">
-                            Enter the OTP sent to your registered contact.
-                        </p>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleResendOTP}
-                            disabled={otpLoading || isActive}
-                            className="w-full mt-2"
-                        >
-                            {otpLoading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
-                        </Button>
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setTransferStep("details")}>Back</Button>
-                        <Button onClick={onFinalizeTransfer} loading={transferLoading}>
-                            Confirm Transfer
-                        </Button>
-                    </DialogFooter>
+                  <div className="space-y-2">
+                    <Label>Enter OTP</Label>
+                    <Input 
+                      placeholder="123456" 
+                      value={otp} 
+                      onChange={(e) => setOtp(e.target.value)} 
+                      maxLength={6}
+                    />
+                  </div>
+                  
+                  <Button 
+                    variant="ghost" 
+                    size="sm" 
+                    onClick={handleResendOTP} 
+                    disabled={isActive || otpLoading}
+                    className="w-full"
+                  >
+                    {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                  </Button>
+
+                  <DialogFooter>
+                    <Button 
+                      variant="outline" 
+                      onClick={() => setTransferStep("details")}
+                    >
+                      Back
+                    </Button>
+                    <Button 
+                      onClick={onFinalizeTransfer} 
+                      loading={transferLoading}
+                    >
+                      Confirm Transfer
+                    </Button>
+                  </DialogFooter>
                 </div>
             )}
           </DialogContent>

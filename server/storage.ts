@@ -132,8 +132,8 @@ export class MemStorage implements IStorage {
     
     this.businesses.set(businessId, {
       id: businessId,
-      name: "MetroFlow Demo",
-      email: "demo@metroflow.com",
+      name: "Metricorex Demo",
+      email: "demo@Metricorex.com",
       createdAt: new Date().toISOString(),
       updatedAt: new Date().toISOString()
     });
@@ -141,7 +141,7 @@ export class MemStorage implements IStorage {
     this.users.set(userId, {
       id: userId,
       businessId: businessId,
-      email: "demo@metroflow.com",
+      email: "demo@Metricorex.com",
       name: "Demo User",
       role: "admin",
       status: "active",

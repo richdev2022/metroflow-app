@@ -226,27 +226,72 @@ export interface KycVerifyOtpInput {
 }
 
 // Wallet Types
+export interface VirtualAccount {
+  id: string;
+  wallet_id: string;
+  payment_provider: string;
+  virtual_account_number: string;
+  bank_code: string;
+  account_name: string;
+  customer_identifier: string;
+  beneficiary_account: string;
+  provider_metadata: any;
+  created_at: string;
+  updated_at: string;
+  is_active: boolean;
+}
+
 export interface Wallet {
   id: string;
-  balance: number;
+  business_id?: string | null;
+  user_id?: string | null;
+  balance: string;
   currency: string;
-  account_number: string;
-  bank_name: string;
-  type: "user" | "business";
+  status: string;
+  created_at: string;
+  updated_at: string;
+  virtual_accounts: VirtualAccount[];
+  // Keep old fields for backward compatibility
+  account_number?: string;
+  bank_name?: string;
+  type?: "user" | "business";
 }
 
 export interface BusinessWallet extends Wallet {
-  business_name: string;
+  business_name?: string;
 }
 
 export interface WalletInfo {
-  user_wallet: Wallet;
-  business_wallet?: BusinessWallet;
+  success: boolean;
+  user_wallet?: Wallet;
+  business_wallet?: Wallet;
+}
+
+export interface CreateVirtualAccountInput {
+  accountType: "Personal" | "Business";
 }
 
 export interface FundWalletInput {
   amount: number;
-  wallet_type: "business" | "user";
+  wallet_id: string;
+  redirect_url: string;
+}
+
+// New types from Payroll docs
+export interface Epic {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface TransferItem {
+  recipient_account: string;
+  recipient_bank: string;
+  recipient_name: string;
+  amount: number;
+  remark?: string;
+  source_type?: string;
+  source_id?: string;
 }
 
 export interface CreateBusinessWalletInput {
@@ -263,6 +308,7 @@ export interface PayrollEmployee {
   salary: number | string;
   salary_currency: string;
   bank_account_number?: string | null;
+  account_number?: string | null;
   bank_code?: string | null;
   account_name?: string | null;
   role: string;
@@ -271,6 +317,7 @@ export interface PayrollEmployee {
   net_salary: number;
   next_pay_date: string;
   salary_calculation_status: string;
+  contract_start_date?: string;
   adjustments?: {
     bonuses: number;
     deductions: number;

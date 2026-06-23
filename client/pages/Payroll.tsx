@@ -1,15 +1,17 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { PayrollEmployee, PayrollUpdateInput, PayrollAdjustmentInput, BulkTransferInput, Transfer, WalletInfo, PayrollAdjustment, PayrollConfig } from "@shared/api";
+import { PayrollEmployee, Transfer, WalletInfo, PayrollAdjustment, PayrollConfig, Epic, TransferItem } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, DollarSign, Plus, Minus, Send, RefreshCw, Check, ChevronsUpDown, MoreHorizontal, Trash2, Search as SearchIcon, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon, Settings, User, CreditCard, FileText } from "lucide-react";
+import { Loader2, DollarSign, Plus, Minus, Check, ChevronsUpDown, MoreHorizontal, Trash2, Search as SearchIcon, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon, Settings, User, CreditCard, FileText, Users, ArrowRightLeft } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -44,13 +46,15 @@ const adjustmentSchema = z.object({
 
 const bulkTransferSchema = z.object({
   source_wallet_id: z.string().min(1, "Source wallet is required"),
-  type: z.enum(["salary", "manual", "sprint", "task"]),
+  type: z.enum(["salary", "epic"]),
   otp: z.string().optional(),
+  epic_id: z.string().optional(),
 });
 
 export default function Payroll() {
   const [employees, setEmployees] = useState<PayrollEmployee[]>([]);
   const [wallets, setWallets] = useState<WalletInfo | null>(null);
+  const [epics, setEpics] = useState<Epic[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   
@@ -58,8 +62,8 @@ export default function Payroll() {
   const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
   const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
   const [detailDialogOpen, setDetailDialogOpen] = useState(false);
+  const [bulkTransferDialogOpen, setBulkTransferDialogOpen] = useState(false);
   const [employeeAdjustments, setEmployeeAdjustments] = useState<PayrollAdjustment[]>([]);
-  const [runPayrollOpen, setRunPayrollOpen] = useState(false);
   const [banks, setBanks] = useState<{code: string, name: string}[]>([]);
   const [accountName, setAccountName] = useState<string>("");
   const [openBank, setOpenBank] = useState(false);
@@ -69,7 +73,7 @@ export default function Payroll() {
   const [payrollConfig, setPayrollConfig] = useState<PayrollConfig | null>(null);
   const [isUpdating, setIsUpdating] = useState(false);
 
-  // Filter & Pagination States
+  // Filter & Pagination States - Payroll
   const [searchQuery, setSearchQuery] = useState("");
   const [roleFilter, setRoleFilter] = useState("all");
   const [startDate, setStartDate] = useState("");
@@ -77,6 +81,18 @@ export default function Payroll() {
   const [page, setPage] = useState(1);
   const [limit, setLimit] = useState(10);
   
+  // Filter & Pagination States - Transfers
+  const [transfers, setTransfers] = useState<Transfer[]>([]);
+  const [transferPage, setTransferPage] = useState(1);
+  const [transferTotal, setTransferTotal] = useState(0);
+  const [transferSearch, setTransferSearch] = useState("");
+  const [transferStatus, setTransferStatus] = useState("all");
+  const [transferLimit, setTransferLimit] = useState(10);
+  const [retryingId, setRetryingId] = useState<string | null>(null);
+  
+  // Bulk Transfer State
+  const [epicTransferItems, setEpicTransferItems] = useState<TransferItem[]>([]);
+  const [bulkTransferStep, setBulkTransferStep] = useState<"select" | "otp">("select");
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
   const { seconds, isActive, startCountdown } = useCountdown();
@@ -101,21 +117,23 @@ export default function Payroll() {
         if (watchBankCode && watchAccountNumber && watchAccountNumber.length === 10) {
             setAccountName("Verifying...");
             try {
-                const res = await api.post("/transfers/lookup", {
-                    bankCode: watchBankCode,
-                    accountNumber: watchAccountNumber
+                const res = await api.post("/transfers/account-lookup", {
+                    bank_code: watchBankCode,
+                    account_number: watchAccountNumber
                 });
                 if (res.data.success) {
-                    setAccountName(res.data.data.account_name);
-                    updateForm.setValue("account_name", res.data.data.account_name);
+                    let name = "";
+                    if (res.data.data?.responseBody?.accountName) {
+                        name = res.data.data.responseBody.accountName;
+                    } else if (res.data.data?.account_name) {
+                        name = res.data.data.account_name;
+                    } else if (res.data.data?.accountName) {
+                        name = res.data.data.accountName;
+                    }
+                    setAccountName(name);
+                    updateForm.setValue("account_name", name);
                 } else {
                      setAccountName("Not found");
-                     // Keep existing value or clear if needed, but user might want to manual entry so maybe don't clear if they typed it?
-                     // Actually user said "Incase name enquiry failed, allow manual input".
-                     // So we shouldn't overwrite if the user is typing, but here we are in automatic lookup.
-                     // We can set it to empty if not found, or leave it. 
-                     // Let's set it to empty to prompt manual entry if they haven't typed anything yet?
-                     // Better yet, just show "Not found" in the helper text and let them type.
                 }
             } catch (e) {
                 setAccountName("Lookup failed");
@@ -133,9 +151,9 @@ export default function Payroll() {
     defaultValues: { type: "bonus", amount: "", reason: "" },
   });
 
-  const runPayrollForm = useForm<z.infer<typeof bulkTransferSchema>>({
+  const bulkTransferForm = useForm<z.infer<typeof bulkTransferSchema>>({
     resolver: zodResolver(bulkTransferSchema),
-    defaultValues: { source_wallet_id: "", type: "salary" },
+    defaultValues: { source_wallet_id: "", type: "salary", epic_id: "" },
   });
 
   const fetchEmployees = async (currentPage = page) => {
@@ -148,10 +166,12 @@ export default function Payroll() {
       queryParams.append("page", currentPage.toString());
       queryParams.append("limit", limit.toString());
 
-      const res = await api.get<{success: boolean, payroll: PayrollEmployee[]}>(`/payroll/summary?${queryParams.toString()}`);
-      const payrollData = res.data;
-      const employeesData = Array.isArray(payrollData) ? payrollData : (Array.isArray(payrollData?.payroll) ? payrollData.payroll : []);
-      setEmployees(employeesData);
+      const res = await api.get<{success: boolean, data: PayrollEmployee[], pagination: any}>(`/payroll/summary?${queryParams.toString()}`);
+      if (res.data.success) {
+        setEmployees(res.data.data || []);
+      } else {
+        setEmployees([]);
+      }
     } catch (error) {
       console.error("Failed to fetch employees", error);
       toast({
@@ -167,8 +187,6 @@ export default function Payroll() {
       const queryParams = new URLSearchParams();
       if (transferSearch) queryParams.append("search", transferSearch);
       if (transferStatus && transferStatus !== "all") queryParams.append("status", transferStatus);
-      if (transferStartDate) queryParams.append("startDate", transferStartDate);
-      if (transferEndDate) queryParams.append("endDate", transferEndDate);
       queryParams.append("page", currentPage.toString());
       queryParams.append("limit", transferLimit.toString());
 
@@ -194,23 +212,29 @@ export default function Payroll() {
     }
   };
 
-  const handleTransferSearch = () => {
-    setTransferPage(1);
-    fetchTransfers(1);
-  };
-
   const fetchConfig = async () => {
     try {
-        const res = await api.get<{success: boolean, config: PayrollConfig}>("/payroll/config");
+        const res = await api.get<{success: boolean, data: PayrollConfig}>("/payroll/config");
         if (res.data.success) {
-            setPayrollConfig(res.data.config);
+            setPayrollConfig(res.data.data);
             configForm.reset({
-                salary_interval: res.data.config.salary_interval,
-                salary_custom_date: res.data.config.salary_custom_date
+                salary_interval: res.data.data.salary_interval,
+                salary_custom_date: res.data.data.salary_custom_date
             });
         }
     } catch (error) {
         console.error("Failed to fetch config");
+    }
+  };
+
+  const fetchEpics = async () => {
+    try {
+      const res = await api.get<{success: boolean, data: Epic[]}>("/epics");
+      if (res.data.success) {
+        setEpics(res.data.data || []);
+      }
+    } catch (error) {
+      console.error("Failed to fetch epics");
     }
   };
 
@@ -229,9 +253,9 @@ export default function Payroll() {
 
   const fetchData = async () => {
     try {
-      // Load initial employees (page 1, no filters yet or default filters)
       fetchEmployees(1);
       fetchConfig();
+      fetchEpics();
 
       const [walletRes, banksRes] = await Promise.all([
         api.get<WalletInfo>("/wallet"),
@@ -239,7 +263,6 @@ export default function Payroll() {
       ]);
       
       setWallets(walletRes.data);
-      // Transfers are handled by fetchTransfers
       if (banksRes.data.success) {
         setBanks(banksRes.data.data);
       }
@@ -266,16 +289,21 @@ export default function Payroll() {
     }
   }, [page]);
 
-  const handleSearch = () => {
+  const handlePayrollSearch = () => {
     setPage(1);
     fetchEmployees(1);
   };
 
+  const handleTransferSearch = () => {
+    setTransferPage(1);
+    fetchTransfers(1);
+  };
+
   const fetchAdjustments = async (userId: string) => {
     try {
-      const res = await api.get<{success: boolean, adjustments: PayrollAdjustment[]}>(`/payroll/adjustments?userId=${userId}`);
+      const res = await api.get<{success: boolean, data: PayrollAdjustment[]}>(`/payroll/adjustments?userId=${userId}`);
       if (res.data.success) {
-        setEmployeeAdjustments(res.data.adjustments);
+        setEmployeeAdjustments(res.data.data);
       }
     } catch (e) {
       console.error("Failed to fetch adjustments");
@@ -302,7 +330,6 @@ export default function Payroll() {
       await api.put(`/payroll/user/${selectedEmployee.id}`, {
         ...values,
         salary: Number(values.salary),
-        // account_name is now in values
       });
       toast({ title: "Success", description: "Payroll details updated" });
       setUpdateDialogOpen(false);
@@ -321,6 +348,7 @@ export default function Payroll() {
         userId: selectedEmployee.id,
         ...values,
         amount: Number(values.amount),
+        currency: "NGN",
       });
       toast({ title: "Success", description: "Adjustment added" });
       setAdjustmentDialogOpen(false);
@@ -330,40 +358,17 @@ export default function Payroll() {
     }
   };
 
-  const onRunPayroll = async (values: z.infer<typeof bulkTransferSchema>) => {
+  const handleResendOTP = async () => {
     try {
-      if (!otpSent) {
-        // Step 1: Request OTP
-        setOtpLoading(true);
-        try {
-          // Use the source wallet ID for the request
-          await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
-          setOtpSent(true);
-          startCountdown();
-          toast({ title: "OTP Sent", description: "Please enter the OTP sent to your registered contact." });
-        } catch (error) {
-           toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
-        } finally {
-           setOtpLoading(false);
-        }
-        return;
-      }
-
-      // Step 2: Submit with OTP
-      if (!values.otp) {
-        toast({ title: "Error", description: "Please enter the OTP", variant: "destructive" });
-        return;
-      }
-
-      await api.post("/transfers/bulk", values);
-      toast({ title: "Success", description: "Payroll run initiated" });
-      setRunPayrollOpen(false);
-      setOtpSent(false); // Reset for next time
-      runPayrollForm.reset();
-      fetchData();
-    } catch (error: any) {
-      const msg = error.response?.data?.message || "Failed to run payroll";
-      toast({ title: "Error", description: msg, variant: "destructive" });
+      setOtpLoading(true);
+      const values = bulkTransferForm.getValues();
+      await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
+      toast({ title: "OTP Sent", description: "New OTP sent." });
+      startCountdown();
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to resend OTP", variant: "destructive" });
+    } finally {
+      setOtpLoading(false);
     }
   };
 
@@ -372,11 +377,74 @@ export default function Payroll() {
     try {
       await api.post(`/transfers/${id}/retry`);
       toast({ title: "Success", description: "Transfer retry initiated" });
-      fetchData();
+      fetchTransfers();
     } catch (error) {
       toast({ title: "Error", description: "Failed to retry transfer", variant: "destructive" });
     } finally {
       setRetryingId(null);
+    }
+  };
+
+  const openBulkTransfer = () => {
+    setBulkTransferStep("select");
+    setOtpSent(false);
+    setEpicTransferItems([]);
+    bulkTransferForm.reset();
+    setBulkTransferDialogOpen(true);
+  };
+
+  const onInitiateBulkTransfer = async (values: z.infer<typeof bulkTransferSchema>) => {
+    try {
+      setOtpLoading(true);
+      await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
+      setOtpSent(true);
+      setBulkTransferStep("otp");
+      startCountdown();
+      toast({ title: "OTP Sent", description: "Please enter the OTP sent to your registered contact." });
+    } catch (error) {
+      toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const onFinalizeBulkTransfer = async (otp: string) => {
+    if (!otp) {
+      toast({ title: "Error", description: "Please enter OTP", variant: "destructive" });
+      return;
+    }
+    try {
+      const values = bulkTransferForm.getValues();
+      let payload: any = {
+        type: values.type,
+        otp: otp,
+        source_wallet_id: values.source_wallet_id,
+      };
+
+      if (values.type === "salary") {
+        // For salary, we send all employees
+        const items = employees.map(emp => ({
+          recipient_account: emp.bank_account_number || emp.account_number || "",
+          recipient_bank: emp.bank_code || "",
+          recipient_name: emp.account_name || "",
+          amount: emp.net_salary,
+          remark: "Salary Payment",
+          source_type: "salary",
+        }));
+        payload.items = items;
+      } else if (values.type === "epic" && epicTransferItems.length > 0) {
+        payload.items = epicTransferItems;
+        payload.epic_id = values.epic_id;
+      }
+
+      await api.post("/transfers/bulk", payload);
+      toast({ title: "Success", description: "Bulk transfer initiated" });
+      setBulkTransferDialogOpen(false);
+      setOtpSent(false);
+      fetchData();
+      fetchTransfers();
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.message || "Failed to initiate bulk transfer", variant: "destructive" });
     }
   };
 
@@ -395,160 +463,282 @@ export default function Payroll() {
       <div className="p-8 space-y-8">
         <div className="flex justify-between items-center">
           <div>
-            <h2 className="text-3xl font-bold tracking-tight">Payroll & Transfers</h2>
-            <p className="text-muted-foreground">Manage salaries and bulk transfers.</p>
+            <h2 className="text-3xl font-bold tracking-tight">Payroll</h2>
+            <p className="text-muted-foreground">Manage payroll, transfers, and employee salaries.</p>
           </div>
           <div className="flex gap-2">
              <Button variant="outline" onClick={() => setConfigDialogOpen(true)}>
                <Settings className="mr-2 h-4 w-4" /> Configuration
              </Button>
-             <Button onClick={() => setRunPayrollOpen(true)}>
-               <Send className="mr-2 h-4 w-4" /> Run Payroll
+             <Button onClick={openBulkTransfer}>
+               <ArrowRightLeft className="mr-2 h-4 w-4" /> Bulk Transfer
              </Button>
            </div>
         </div>
 
-        <div className="space-y-4">
-            <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
-              <div className="grid w-full max-w-sm items-center gap-1.5">
-                <p className="text-sm font-medium">Search</p>
-                <div className="relative">
-                   <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                   <Input 
-                      placeholder="Name or Email" 
-                      className="pl-8" 
-                      value={searchQuery}
-                      onChange={(e) => setSearchQuery(e.target.value)}
-                   />
+        <Tabs defaultValue="payroll" className="w-full">
+          <TabsList>
+            <TabsTrigger value="payroll">
+              <Users className="mr-2 h-4 w-4" />
+              Payroll
+            </TabsTrigger>
+            <TabsTrigger value="transfers">
+              <ArrowRightLeft className="mr-2 h-4 w-4" />
+              Transfers
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Payroll Tab */}
+          <TabsContent value="payroll" className="space-y-6">
+            <div className="space-y-4">
+                <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
+                  <div className="grid w-full max-w-sm items-center gap-1.5">
+                    <p className="text-sm font-medium">Search</p>
+                    <div className="relative">
+                       <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                       <Input 
+                          placeholder="Name or Email" 
+                          className="pl-8" 
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                       />
+                    </div>
+                  </div>
+                  
+                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
+                     <p className="text-sm font-medium">Role</p>
+                     <Select value={roleFilter} onValueChange={setRoleFilter}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="All Roles" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All Roles</SelectItem>
+                          <SelectItem value="admin">Admin</SelectItem>
+                          <SelectItem value="manager">Manager</SelectItem>
+                          <SelectItem value="member">Member</SelectItem>
+                        </SelectContent>
+                     </Select>
+                  </div>
+
+                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
+                     <p className="text-sm font-medium">Start Date</p>
+                     <Input 
+                        type="date" 
+                        value={startDate}
+                        onChange={(e) => setStartDate(e.target.value)}
+                     />
+                  </div>
+
+                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
+                     <p className="text-sm font-medium">End Date</p>
+                     <Input 
+                        type="date" 
+                        value={endDate}
+                        onChange={(e) => setEndDate(e.target.value)}
+                     />
+                  </div>
+
+                  <Button onClick={handlePayrollSearch}>
+                    <Filter className="mr-2 h-4 w-4" /> Filter
+                  </Button>
                 </div>
-              </div>
-              
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">Role</p>
-                 <Select value={roleFilter} onValueChange={setRoleFilter}>
-                    <SelectTrigger>
-                      <SelectValue placeholder="All Roles" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="all">All Roles</SelectItem>
-                      <SelectItem value="admin">Admin</SelectItem>
-                      <SelectItem value="manager">Manager</SelectItem>
-                      <SelectItem value="member">Member</SelectItem>
-                    </SelectContent>
-                 </Select>
-              </div>
 
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">Start Date</p>
-                 <Input 
-                    type="date" 
-                    value={startDate}
-                    onChange={(e) => setStartDate(e.target.value)}
-                 />
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Employee Payroll</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Name</TableHead>
+                          <TableHead>Role</TableHead>
+                          <TableHead>Net Pay</TableHead>
+                          <TableHead>Next Pay Date</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {Array.isArray(employees) && employees.map((emp) => (
+                          <TableRow key={emp.id}>
+                            <TableCell>
+                                <div className="font-medium">{emp.name}</div>
+                                <div className="text-xs text-muted-foreground">{emp.email}</div>
+                            </TableCell>
+                            <TableCell className="capitalize">{emp.role}</TableCell>
+                            <TableCell className="font-bold">{emp.salary_currency} {Number(emp.net_salary).toLocaleString()}</TableCell>
+                            <TableCell>{emp.next_pay_date}</TableCell>
+                            <TableCell>
+                                <Badge variant={emp.salary_calculation_status === 'ready' ? 'default' : 'secondary'}>
+                                    {emp.salary_calculation_status || 'standard'}
+                                </Badge>
+                            </TableCell>
+                            <TableCell>
+                              <div className="flex space-x-2">
+                                 <Button variant="ghost" size="icon" onClick={() => {
+                                  setSelectedEmployee(emp);
+                                  fetchAdjustments(emp.id);
+                                  setDetailDialogOpen(true);
+                                }}>
+                                  <MoreHorizontal className="h-4 w-4" />
+                                </Button>
+                                <Button variant="outline" size="sm" onClick={() => {
+                                  setSelectedEmployee(emp);
+                                  updateForm.reset({
+                                    salary: emp.salary.toString(),
+                                    salary_currency: emp.salary_currency,
+                                    bank_code: emp.bank_code || "",
+                                    bank_account_number: emp.bank_account_number || emp.account_number || "",
+                                    account_name: emp.account_name || "",
+                                    contract_start_date: emp.contract_start_date ? emp.contract_start_date.split('T')[0] : "",
+                                  });
+                                  setUpdateDialogOpen(true);
+                                }}>Edit</Button>
+                                <Button variant="ghost" size="sm" onClick={() => {
+                                  setSelectedEmployee(emp);
+                                  adjustmentForm.reset();
+                                  setAdjustmentDialogOpen(true);
+                                }}>Adjust</Button>
+                              </div>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    
+                    <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage(p => Math.max(1, p - 1))}
+                          disabled={page === 1}
+                        >
+                          <ChevronLeft className="h-4 w-4 mr-1" />
+                          Previous
+                        </Button>
+                        <div className="text-sm font-medium">Page {page}</div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setPage(p => p + 1)}
+                          disabled={employees.length < limit}
+                        >
+                          Next
+                          <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                    </div>
+                  </CardContent>
+                </Card>
               </div>
+          </TabsContent>
 
-              <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                 <p className="text-sm font-medium">End Date</p>
-                 <Input 
-                    type="date" 
-                    value={endDate}
-                    onChange={(e) => setEndDate(e.target.value)}
-                 />
-              </div>
+          {/* Transfers Tab */}
+          <TabsContent value="transfers" className="space-y-6">
+            <div className="space-y-4">
+                <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
+                  <div className="grid w-full max-w-sm items-center gap-1.5">
+                    <p className="text-sm font-medium">Search</p>
+                    <div className="relative">
+                       <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                       <Input 
+                          placeholder="Recipient Name" 
+                          className="pl-8" 
+                          value={transferSearch}
+                          onChange={(e) => setTransferSearch(e.target.value)}
+                       />
+                    </div>
+                  </div>
+                  
+                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
+                     <p className="text-sm font-medium">Status</p>
+                     <Select value={transferStatus} onValueChange={setTransferStatus}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="All" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">All</SelectItem>
+                          <SelectItem value="pending">Pending</SelectItem>
+                          <SelectItem value="success">Success</SelectItem>
+                          <SelectItem value="failed">Failed</SelectItem>
+                        </SelectContent>
+                     </Select>
+                  </div>
 
-              <Button onClick={handleSearch}>
-                <Filter className="mr-2 h-4 w-4" /> Filter
-              </Button>
-            </div>
-
-            <Card>
-              <CardHeader>
-                <CardTitle>Employee Payroll</CardTitle>
-              </CardHeader>
-              <CardContent>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Name</TableHead>
-                      <TableHead>Role</TableHead>
-                      <TableHead>Net Pay</TableHead>
-                      <TableHead>Next Pay Date</TableHead>
-                      <TableHead>Status</TableHead>
-                      <TableHead>Actions</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {Array.isArray(employees) && employees.map((emp) => (
-                      <TableRow key={emp.id}>
-                        <TableCell>
-                            <div className="font-medium">{emp.name}</div>
-                            <div className="text-xs text-muted-foreground">{emp.email}</div>
-                        </TableCell>
-                        <TableCell className="capitalize">{emp.role}</TableCell>
-                        <TableCell className="font-bold">{emp.salary_currency} {Number(emp.net_salary).toLocaleString()}</TableCell>
-                        <TableCell>{emp.next_pay_date}</TableCell>
-                        <TableCell>
-                            <Badge variant={emp.salary_calculation_status === 'standard' ? 'default' : 'secondary'}>
-                                {emp.salary_calculation_status || 'standard'}
-                            </Badge>
-                        </TableCell>
-                        <TableCell>
-                          <div className="flex space-x-2">
-                             <Button variant="ghost" size="icon" onClick={() => {
-                              setSelectedEmployee(emp);
-                              fetchAdjustments(emp.id);
-                              setDetailDialogOpen(true);
-                            }}>
-                              <MoreHorizontal className="h-4 w-4" />
-                            </Button>
-                            <Button variant="outline" size="sm" onClick={() => {
-                              setSelectedEmployee(emp);
-                              updateForm.reset({
-                                salary: emp.salary.toString(),
-                                salary_currency: emp.salary_currency,
-                                bank_code: emp.bank_code || "",
-                                bank_account_number: emp.bank_account_number || emp.account_number || "",
-                                account_name: emp.account_name || "",
-                                contract_start_date: emp.contract_start_date ? emp.contract_start_date.split('T')[0] : "",
-                              });
-                              setUpdateDialogOpen(true);
-                            }}>Edit</Button>
-                            <Button variant="ghost" size="sm" onClick={() => {
-                              setSelectedEmployee(emp);
-                              adjustmentForm.reset();
-                              setAdjustmentDialogOpen(true);
-                            }}>Adjust</Button>
-                          </div>
-                        </TableCell>
-                      </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
-                
-                <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage(p => Math.max(1, p - 1))}
-                      disabled={page === 1}
-                    >
-                      <ChevronLeft className="h-4 w-4 mr-1" />
-                      Previous
-                    </Button>
-                    <div className="text-sm font-medium">Page {page}</div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={() => setPage(p => p + 1)}
-                      disabled={employees.length < limit}
-                    >
-                      Next
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </Button>
+                  <Button onClick={handleTransferSearch}>
+                    <Filter className="mr-2 h-4 w-4" /> Filter
+                  </Button>
                 </div>
-              </CardContent>
-            </Card>
-          </div>
+
+                <Card>
+                  <CardHeader>
+                    <CardTitle>Transfer History</CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>Recipient</TableHead>
+                          <TableHead>Amount</TableHead>
+                          <TableHead>Status</TableHead>
+                          <TableHead>Date</TableHead>
+                          <TableHead>Actions</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {Array.isArray(transfers) && transfers.map((transfer) => (
+                          <TableRow key={transfer.id}>
+                            <TableCell>
+                                <div className="font-medium">{transfer.recipient_name}</div>
+                            </TableCell>
+                            <TableCell className="font-bold">{transfer.currency} {Number(transfer.amount).toLocaleString()}</TableCell>
+                            <TableCell>
+                                <Badge variant={
+                                    transfer.status === 'success' ? 'default' : 
+                                    transfer.status === 'failed' ? 'destructive' : 'secondary'
+                                }>
+                                    {transfer.status}
+                                </Badge>
+                            </TableCell>
+                            <TableCell>{transfer.created_at ? format(new Date(transfer.created_at), "MMM d, yyyy") : ""}</TableCell>
+                            <TableCell>
+                              {transfer.status === 'failed' && (
+                                <Button variant="ghost" size="sm" onClick={() => retryTransfer(transfer.id)} disabled={retryingId === transfer.id}>
+                                  {retryingId === transfer.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Retry"}
+                                </Button>
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
+                    
+                    <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setTransferPage(p => Math.max(1, p - 1))}
+                          disabled={transferPage === 1}
+                        >
+                          <ChevronLeft className="h-4 w-4 mr-1" />
+                          Previous
+                        </Button>
+                        <div className="text-sm font-medium">Page {transferPage}</div>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          onClick={() => setTransferPage(p => p + 1)}
+                          disabled={transfers.length < transferLimit}
+                        >
+                          Next
+                          <ChevronRight className="h-4 w-4 ml-1" />
+                        </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+          </TabsContent>
+        </Tabs>
 
         {/* Detail Dialog */}
         <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
@@ -581,7 +771,7 @@ export default function Payroll() {
                         </div>
                         <div>
                             <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Status</h4>
-                            <Badge variant={selectedEmployee.salary_calculation_status === 'standard' ? 'default' : 'secondary'} className="mt-1">
+                            <Badge variant={selectedEmployee.salary_calculation_status === 'ready' ? 'default' : 'secondary'} className="mt-1">
                                 {selectedEmployee.salary_calculation_status || 'standard'}
                             </Badge>
                         </div>
@@ -709,10 +899,10 @@ export default function Payroll() {
                     </div>
                 </div>
 
-                {/* Legacy Adjustments (Optional/Collapsible) */}
+                {/* Legacy Adjustments */}
                 {employeeAdjustments.length > 0 && (
                      <div className="border-t pt-4">
-                        <h4 className="font-semibold mb-2 text-sm text-muted-foreground">Legacy Manual Adjustments</h4>
+                        <h4 className="font-semibold mb-2 text-sm text-muted-foreground">Manual Adjustments</h4>
                         <Table>
                             <TableHeader>
                                 <TableRow>
@@ -833,7 +1023,7 @@ export default function Payroll() {
             </DialogContent>
         </Dialog>
 
-        {/* Update Dialog */}
+        {/* Update Payroll Dialog */}
         <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
           <DialogContent className="w-[90vw] max-h-[85vh] overflow-y-auto">
             <DialogHeader>
@@ -842,134 +1032,134 @@ export default function Payroll() {
             <Form {...updateForm}>
               <form onSubmit={updateForm.handleSubmit(onUpdatePayroll)} className="space-y-4">
                  <FormField
-                  control={updateForm.control}
-                  name="salary"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Salary</FormLabel>
-                      <FormControl><Input type="number" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="salary"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Salary</FormLabel>
+                            <FormControl><Input type="number" {...field} /></FormControl>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                  <FormField
-                  control={updateForm.control}
-                  name="salary_currency"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Currency</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          <SelectItem value="NGN">NGN</SelectItem>
-                          <SelectItem value="USD">USD</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="salary_currency"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Currency</FormLabel>
+                            <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                <SelectContent>
+                                    <SelectItem value="NGN">NGN</SelectItem>
+                                    <SelectItem value="USD">USD</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                  <FormField
-                  control={updateForm.control}
-                  name="bank_code"
-                  render={({ field }) => (
-                    <FormItem className="flex flex-col">
-                      <FormLabel>Bank</FormLabel>
-                      <Popover open={openBank} onOpenChange={setOpenBank}>
-                        <PopoverTrigger asChild>
-                          <FormControl>
-                            <Button
-                              variant="outline"
-                              role="combobox"
-                              aria-expanded={openBank}
-                              className={cn(
-                                "w-full justify-between",
-                                !field.value && "text-muted-foreground"
-                              )}
-                            >
-                              {field.value
-                                ? banks.find((bank) => bank.code === field.value)?.name
-                                : "Select Bank"}
-                              <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                            </Button>
-                          </FormControl>
-                        </PopoverTrigger>
-                        <PopoverContent className="w-[--radix-popover-trigger-width] p-0" side="bottom" align="start">
-                          <Command className="h-auto">
-                            <CommandInput placeholder="Search bank..." />
-                            <CommandList className="max-h-[200px] overflow-y-auto">
-                                <CommandEmpty>No bank found.</CommandEmpty>
-                                <CommandGroup>
-                                {banks.map((bank) => (
-                                    <CommandItem
-                                    value={bank.name}
-                                    key={bank.code}
-                                    onSelect={() => {
-                                        updateForm.setValue("bank_code", bank.code)
-                                        setOpenBank(false)
-                                    }}
-                                    >
-                                    <Check
-                                        className={cn(
-                                        "mr-2 h-4 w-4",
-                                        bank.code === field.value
-                                            ? "opacity-100"
-                                            : "opacity-0"
-                                        )}
-                                    />
-                                    {bank.name}
-                                    </CommandItem>
-                                ))}
-                                </CommandGroup>
-                            </CommandList>
-                          </Command>
-                        </PopoverContent>
-                      </Popover>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="bank_code"
+                    render={({ field }) => (
+                        <FormItem className="flex flex-col">
+                            <FormLabel>Bank</FormLabel>
+                            <Popover open={openBank} onOpenChange={setOpenBank}>
+                                <PopoverTrigger asChild>
+                                    <FormControl>
+                                        <Button
+                                            variant="outline"
+                                            role="combobox"
+                                            aria-expanded={openBank}
+                                            className={cn(
+                                                "w-full justify-between",
+                                                !field.value && "text-muted-foreground"
+                                            )}
+                                        >
+                                            {field.value
+                                                ? banks.find((bank) => bank.code === field.value)?.name
+                                                : "Select Bank"}
+                                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                        </Button>
+                                    </FormControl>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" side="bottom" align="start">
+                                    <Command className="h-auto">
+                                        <CommandInput placeholder="Search bank..." />
+                                        <CommandList className="max-h-[200px] overflow-y-auto">
+                                            <CommandEmpty>No bank found.</CommandEmpty>
+                                            <CommandGroup>
+                                            {banks.map((bank) => (
+                                                <CommandItem
+                                                    value={bank.name}
+                                                    key={bank.code}
+                                                    onSelect={() => {
+                                                        updateForm.setValue("bank_code", bank.code)
+                                                        setOpenBank(false)
+                                                    }}
+                                                >
+                                                    <Check
+                                                        className={cn(
+                                                            "mr-2 h-4 w-4",
+                                                            bank.code === field.value
+                                                                ? "opacity-100"
+                                                                : "opacity-0"
+                                                        )}
+                                                    />
+                                                    {bank.name}
+                                                </CommandItem>
+                                            ))}
+                                            </CommandGroup>
+                                        </CommandList>
+                                    </Command>
+                                </PopoverContent>
+                            </Popover>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                  <FormField
-                  control={updateForm.control}
-                  name="bank_account_number"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Account Number</FormLabel>
-                      <FormControl><Input {...field} maxLength={10} /></FormControl>
-                      {accountName && <p className="text-sm text-muted-foreground mt-1">Verified: {accountName}</p>}
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="bank_account_number"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Account Number</FormLabel>
+                            <FormControl><Input {...field} maxLength={10} /></FormControl>
+                            {accountName && <p className="text-sm text-muted-foreground mt-1">Verified: {accountName}</p>}
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
 
                 <FormField
-                  control={updateForm.control}
-                  name="account_name"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Account Name</FormLabel>
-                      <FormControl><Input {...field} placeholder="Account Name" /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="account_name"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Account Name</FormLabel>
+                            <FormControl><Input {...field} placeholder="Verified account name will appear here" readOnly className="bg-muted" /></FormControl>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
 
                 <FormField
-                  control={updateForm.control}
-                  name="contract_start_date"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Contract Start Date</FormLabel>
-                      <FormControl><Input type="date" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={updateForm.control}
+                    name="contract_start_date"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Contract Start Date</FormLabel>
+                            <FormControl><Input type="date" {...field} /></FormControl>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                 <DialogFooter>
-                  <Button type="submit" disabled={isUpdating}>
-                    {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                    Update
-                  </Button>
+                    <Button type="submit" disabled={isUpdating}>
+                        {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Update
+                    </Button>
                 </DialogFooter>
               </form>
             </Form>
@@ -985,134 +1175,194 @@ export default function Payroll() {
             <Form {...adjustmentForm}>
               <form onSubmit={adjustmentForm.handleSubmit(onAddAdjustment)} className="space-y-4">
                  <FormField
-                  control={adjustmentForm.control}
-                  name="type"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Type</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                        <SelectContent>
-                          <SelectItem value="bonus">Bonus</SelectItem>
-                          <SelectItem value="deduction">Deduction</SelectItem>
-                        </SelectContent>
-                      </Select>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={adjustmentForm.control}
+                    name="type"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Type</FormLabel>
+                            <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                <SelectContent>
+                                    <SelectItem value="bonus">Bonus</SelectItem>
+                                    <SelectItem value="deduction">Deduction</SelectItem>
+                                </SelectContent>
+                            </Select>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                  <FormField
-                  control={adjustmentForm.control}
-                  name="amount"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Amount</FormLabel>
-                      <FormControl><Input type="number" {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={adjustmentForm.control}
+                    name="amount"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Amount</FormLabel>
+                            <FormControl><Input type="number" {...field} /></FormControl>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                  <FormField
-                  control={adjustmentForm.control}
-                  name="reason"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Reason</FormLabel>
-                      <FormControl><Input {...field} /></FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
+                    control={adjustmentForm.control}
+                    name="reason"
+                    render={({ field }) => (
+                        <FormItem>
+                            <FormLabel>Reason</FormLabel>
+                            <FormControl><Input {...field} /></FormControl>
+                            <FormMessage />
+                        </FormItem>
+                    )}
                 />
                 <DialogFooter>
-                  <Button type="submit">Add</Button>
+                    <Button type="submit">Add</Button>
                 </DialogFooter>
               </form>
             </Form>
           </DialogContent>
         </Dialog>
-        
-        {/* Run Payroll Dialog (Simplified) */}
-        <Dialog open={runPayrollOpen} onOpenChange={setRunPayrollOpen}>
-            <DialogContent>
+
+        {/* Bulk Transfer Dialog */}
+        <Dialog open={bulkTransferDialogOpen} onOpenChange={(open) => {
+            setBulkTransferDialogOpen(open);
+            if (!open) {
+                setBulkTransferStep("select");
+                setOtpSent(false);
+                setEpicTransferItems([]);
+            }
+        }}>
+            <DialogContent className="sm:max-w-[500px]">
                 <DialogHeader>
-                    <DialogTitle>Run Payroll</DialogTitle>
+                    <DialogTitle>Bulk Transfer</DialogTitle>
                     <DialogDescription>
-                        Initiate bulk transfer for all employees?
+                        Select transfer type and complete the process.
                     </DialogDescription>
                 </DialogHeader>
-                <Form {...runPayrollForm}>
-                    <form onSubmit={runPayrollForm.handleSubmit(onRunPayroll)} className="space-y-4">
-                        <FormField
-                            control={runPayrollForm.control}
-                            name="source_wallet_id"
-                            render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>Source Wallet</FormLabel>
-                                    <Select onValueChange={field.onChange} defaultValue={field.value} disabled={otpSent}>
-                                        <FormControl>
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Select wallet" />
-                                            </SelectTrigger>
-                                        </FormControl>
-                                        <SelectContent>
-                                            {wallets?.business_wallet && (
-                                                <SelectItem value={wallets.business_wallet.id}>
-                                                    Business Wallet ({wallets.business_wallet.currency} {wallets.business_wallet.balance.toLocaleString()})
-                                                </SelectItem>
-                                            )}
-                                            {wallets?.user_wallet && (
-                                                <SelectItem value={wallets.user_wallet.id}>
-                                                    Personal Wallet ({wallets.user_wallet.currency} {wallets.user_wallet.balance.toLocaleString()})
-                                                </SelectItem>
-                                            )}
-                                        </SelectContent>
-                                    </Select>
-                                    <FormMessage />
-                                </FormItem>
-                            )}
-                        />
-                        
-                        {otpSent && (
-                             <FormField
-                                control={runPayrollForm.control}
-                                name="otp"
+
+                {bulkTransferStep === "select" ? (
+                    <Form {...bulkTransferForm}>
+                        <form onSubmit={bulkTransferForm.handleSubmit(onInitiateBulkTransfer)} className="space-y-4">
+                            <FormField
+                                control={bulkTransferForm.control}
+                                name="type"
                                 render={({ field }) => (
                                     <FormItem>
-                                        <FormLabel>Enter OTP</FormLabel>
-                                        <FormControl>
-                                            <Input {...field} placeholder="Enter 6-digit OTP" maxLength={6} />
-                                        </FormControl>
-                                        <Button
-                                            type="button"
-                                            variant="ghost"
-                                            size="sm"
-                                            onClick={handleResendOTP}
-                                            disabled={otpLoading || isActive}
-                                            className="w-full mt-2"
-                                        >
-                                            {otpLoading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
-                                        </Button>
+                                        <FormLabel>Transfer Type</FormLabel>
+                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                            <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
+                                            <SelectContent>
+                                                <SelectItem value="salary">Salary Transfer</SelectItem>
+                                                <SelectItem value="epic">Epic Transfer</SelectItem>
+                                            </SelectContent>
+                                        </Select>
                                         <FormMessage />
                                     </FormItem>
                                 )}
                             />
-                        )}
 
-                        <DialogFooter>
-                            {otpSent ? (
-                                <Button type="submit" disabled={runPayrollForm.formState.isSubmitting}>
-                                    {runPayrollForm.formState.isSubmitting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                    Confirm Transfer
-                                </Button>
-                            ) : (
+                            {bulkTransferForm.watch("type") === "epic" && (
+                                <FormField
+                                    control={bulkTransferForm.control}
+                                    name="epic_id"
+                                    render={({ field }) => (
+                                        <FormItem>
+                                            <FormLabel>Select Epic</FormLabel>
+                                            <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                <FormControl><SelectTrigger><SelectValue placeholder="Select epic" /></SelectTrigger></FormControl>
+                                                <SelectContent>
+                                                    {epics.map(epic => (
+                                                        <SelectItem key={epic.id} value={epic.id}>{epic.name}</SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                            <FormMessage />
+                                        </FormItem>
+                                    )}
+                                />
+                            )}
+
+                            <FormField
+                                control={bulkTransferForm.control}
+                                name="source_wallet_id"
+                                render={({ field }) => (
+                                    <FormItem>
+                                        <FormLabel>Source Wallet</FormLabel>
+                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                            <FormControl><SelectTrigger><SelectValue placeholder="Select wallet" /></SelectTrigger></FormControl>
+                                            <SelectContent>
+                                                {wallets?.business_wallet && (
+                                                    <SelectItem value={wallets.business_wallet.id}>
+                                                        Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
+                                                    </SelectItem>
+                                                )}
+                                                {wallets?.user_wallet && (
+                                                    <SelectItem value={wallets.user_wallet.id}>
+                                                        Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
+                                                    </SelectItem>
+                                                )}
+                                            </SelectContent>
+                                        </Select>
+                                        <FormMessage />
+                                    </FormItem>
+                                )}
+                            />
+
+                            {bulkTransferForm.watch("type") === "salary" && (
+                                <div className="bg-muted p-3 rounded-lg">
+                                    <p className="text-sm font-medium mb-2">Summary</p>
+                                    <p className="text-sm text-muted-foreground">
+                                        {employees.length} employees will receive a total of {employees.reduce((acc, emp) => acc + Number(emp.net_salary), 0).toLocaleString()} NGN
+                                    </p>
+                                </div>
+                            )}
+
+                            <DialogFooter>
                                 <Button type="submit" disabled={otpLoading}>
                                     {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                    Send OTP & Continue
+                                    Request OTP
                                 </Button>
-                            )}
+                            </DialogFooter>
+                        </form>
+                    </Form>
+                ) : (
+                    <div className="space-y-4">
+                        <div className="space-y-2">
+                            <Label>Enter OTP</Label>
+                            <Input 
+                                placeholder="123456" 
+                                maxLength={6}
+                                onChange={(e) => bulkTransferForm.setValue("otp", e.target.value)}
+                            />
+                        </div>
+
+                        <Button 
+                            variant="ghost" 
+                            size="sm" 
+                            onClick={handleResendOTP} 
+                            disabled={isActive || otpLoading}
+                            className="w-full"
+                        >
+                            {otpLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
+                            {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                        </Button>
+
+                        <DialogFooter>
+                            <Button 
+                                variant="outline" 
+                                onClick={() => {
+                                    setBulkTransferStep("select");
+                                    setOtpSent(false);
+                                }}
+                            >
+                                Back
+                            </Button>
+                            <Button 
+                                onClick={() => onFinalizeBulkTransfer(bulkTransferForm.getValues("otp") || "")}
+                            >
+                                Confirm Transfer
+                            </Button>
                         </DialogFooter>
-                    </form>
-                </Form>
+                    </div>
+                )}
             </DialogContent>
         </Dialog>
 

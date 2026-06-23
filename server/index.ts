@@ -60,8 +60,21 @@ app.use((req, res, next) => {
     res.status(status).json({ message });
   });
 
-  const PORT = process.env.PORT || 3000;
-  server.listen(PORT, () => {
-    console.log(`serving on port ${PORT}`);
-  });
+  // Try to start server on default or specified port
+  const startServer = (port: number) => {
+    server.listen(port, () => {
+      console.log(`serving on port ${port}`);
+    }).on('error', (err: any) => {
+      if (err.code === 'EADDRINUSE') {
+        console.error(`Port ${port} is already in use. Trying port ${port + 1}...`);
+        startServer(port + 1);
+      } else {
+        console.error('Server error:', err);
+      }
+    });
+  };
+
+  const DEFAULT_PORT = 8081; // Use 8081 to avoid conflicts with Vite's default 8080
+  const PORT = process.env.PORT ? parseInt(process.env.PORT) : DEFAULT_PORT;
+  startServer(PORT);
 })();

@@ -151,8 +151,8 @@ export default function Login() {
             className="flex items-center justify-center gap-3 mb-4 cursor-pointer"
             onClick={() => window.location.href = import.meta.env.VITE_SITE_URL}
           >
-            <img src="/Assets/logo.png" alt="MetricFlow Logo" className="h-10 w-auto" />
-            <span className="font-bold text-xl">MetricFlow</span>
+            <img src="/Assets/logo.png" alt="Metricorex Logo" className="h-10 w-auto" />
+            <span className="font-bold text-xl">Metricorex</span>
           </div>
           <CardTitle className="text-center">
             {step === "login" ? "Login to Your Account" : "Verify Email"}
