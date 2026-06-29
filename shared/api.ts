@@ -278,11 +278,6 @@ export interface FundWalletInput {
 }
 
 // New types from Payroll docs
-export interface Epic {
-  id: string;
-  name: string;
-  description?: string;
-}
 
 export interface TransferItem {
   recipient_account: string;
@@ -375,20 +370,62 @@ export interface PayrollAdjustmentInput {
   reason: string;
 }
 
+export interface BulkTransferItem {
+  amount: number;
+  bankCode: string;
+  accountNumber: string;
+  accountName: string;
+  remark?: string;
+}
+
 export interface BulkTransferInput {
-  type: "salary" | "manual" | "sprint" | "task";
+  type: "Salary" | "Epic" | "manual" | "sprint" | "task";
   source_wallet_id: string;
-  data?: any;
+  otp: string;
+  data: {
+    items: BulkTransferItem[];
+  };
+}
+
+export interface BulkTransferResponseData {
+  queued: number;
+  type: string;
+  walletId: string;
+  totals: {
+    amount: number;
+    fee: number;
+    total: number;
+  };
+  transfers: Transfer[];
+}
+
+export interface BulkTransferResponse {
+  success: boolean;
+  message: string;
+  data: BulkTransferResponseData;
 }
 
 export interface Transfer {
   id: string;
-  amount: number;
-  currency: string;
-  status: "pending" | "success" | "failed";
+  business_id: string;
+  reference: string;
+  recipient_account?: string;
+  recipient_bank?: string;
   recipient_name: string;
+  amount: number | string;
+  currency: string;
+  remark?: string;
+  status: "pending" | "success" | "failed";
   failure_reason?: string;
+  source_type?: string;
+  source_id?: string | null;
+  meta_data?: any;
   created_at: string;
+  updated_at: string;
+  wallet_id: string;
+  fee?: string;
+  payment_provider?: string;
+  provider_metadata?: any;
 }
 
 export interface LoginInput {

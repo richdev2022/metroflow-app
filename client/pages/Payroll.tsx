@@ -11,7 +11,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, DollarSign, Plus, Minus, Check, ChevronsUpDown, MoreHorizontal, Trash2, Search as SearchIcon, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon, Settings, User, CreditCard, FileText, Users, ArrowRightLeft } from "lucide-react";
+import { Loader2, DollarSign, Plus, Minus, Check, ChevronsUpDown, MoreHorizontal, Trash2, Search as SearchIcon, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon, Settings, User, CreditCard, FileText, Users, ArrowRightLeft, AlertCircle } from "lucide-react";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import * as z from "zod";
@@ -89,13 +89,85 @@ export default function Payroll() {
   const [transferStatus, setTransferStatus] = useState("all");
   const [transferLimit, setTransferLimit] = useState(10);
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
+  const [transferDetailDialogOpen, setTransferDetailDialogOpen] = useState(false);
   
   // Bulk Transfer State
   const [epicTransferItems, setEpicTransferItems] = useState<TransferItem[]>([]);
-  const [bulkTransferStep, setBulkTransferStep] = useState<"select" | "otp">("select");
+  const [bulkTransferStep, setBulkTransferStep] = useState<"select" | "review" | "otp" | "success">("select");
   const [otpSent, setOtpSent] = useState(false);
   const [otpLoading, setOtpLoading] = useState(false);
+  const [transferSuccessData, setTransferSuccessData] = useState<any>(null);
+  const [epicTransferMode, setEpicTransferMode] = useState<"single" | "bulk">("bulk");
+  const [editingRecipientId, setEditingRecipientId] = useState<string | null>(null);
+  const [openBankPopover, setOpenBankPopover] = useState<number | null>(null);
+  // Add lookup status per recipient (index-based)
+  const [recipientLookupStatus, setRecipientLookupStatus] = useState<Record<number, { loading: boolean; success: boolean; name: string; error?: string }>>({});
   const { seconds, isActive, startCountdown } = useCountdown();
+  
+  // Effect to auto-lookup recipient accounts
+  useEffect(() => {
+    const lookupRecipients = async () => {
+      for (let index = 0; index < epicTransferItems.length; index++) {
+        const item = epicTransferItems[index];
+        const currentStatus = recipientLookupStatus[index];
+        
+        // If we have both bank and account number (10 digits)
+        if (item.recipient_bank && item.recipient_account && item.recipient_account.length === 10) {
+          // Don't re-lookup if we already have a success or are loading
+          if (currentStatus?.success || currentStatus?.loading) continue;
+          
+          // Mark as loading
+          setRecipientLookupStatus(prev => ({
+            ...prev,
+            [index]: { loading: true, success: false, name: "" }
+          }));
+          
+          try {
+            const res = await api.post("/transfers/account-lookup", {
+              bank_code: item.recipient_bank,
+              account_number: item.recipient_account
+            });
+            
+            let name = "";
+            if (res.data.data?.responseBody?.accountName) {
+              name = res.data.data.responseBody.accountName;
+            } else if (res.data.data?.account_name) {
+              name = res.data.data.account_name;
+            } else if (res.data.data?.accountName) {
+              name = res.data.data.accountName;
+            }
+            
+            // Update recipient name and status
+            updateRecipient(`recipient_${index}`, "recipient_name", name);
+            setRecipientLookupStatus(prev => ({
+              ...prev,
+              [index]: { loading: false, success: true, name }
+            }));
+          } catch (error: any) {
+            // Update status to failed
+            const errorMsg = error.response?.data?.error || error.response?.data?.message || "Could not verify account name";
+            setRecipientLookupStatus(prev => ({
+              ...prev,
+              [index]: { loading: false, success: false, name: "", error: errorMsg }
+            }));
+          }
+        } else {
+          // Reset status if conditions aren't met
+          if (currentStatus) {
+            setRecipientLookupStatus(prev => {
+              const newStatus = { ...prev };
+              delete newStatus[index];
+              return newStatus;
+            });
+            updateRecipient(`recipient_${index}`, "recipient_name", "");
+          }
+        }
+      }
+    };
+    
+    lookupRecipients();
+  }, [epicTransferItems]);
 
   const updateForm = useForm<z.infer<typeof updatePayrollSchema>>({
     resolver: zodResolver(updatePayrollSchema),
@@ -166,17 +238,17 @@ export default function Payroll() {
       queryParams.append("page", currentPage.toString());
       queryParams.append("limit", limit.toString());
 
-      const res = await api.get<{success: boolean, data: PayrollEmployee[], pagination: any}>(`/payroll/summary?${queryParams.toString()}`);
+      const res = await api.get<{success: boolean, payroll: PayrollEmployee[], pagination: any}>(`/payroll/summary?${queryParams.toString()}`);
       if (res.data.success) {
-        setEmployees(res.data.data || []);
+        setEmployees(res.data.payroll || []);
       } else {
         setEmployees([]);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch employees", error);
       toast({
         title: "Error",
-        description: "Failed to load employee data",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load employee data",
         variant: "destructive",
       });
     }
@@ -202,11 +274,11 @@ export default function Payroll() {
       } else {
           setTransfers([]);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch transfers", error);
       toast({
         title: "Error",
-        description: "Failed to load transfer history",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load transfer history",
         variant: "destructive",
       });
     }
@@ -246,9 +318,9 @@ export default function Payroll() {
               setConfigDialogOpen(false);
               fetchConfig();
           }
-      } catch (error) {
-          toast({ title: "Error", description: "Failed to update configuration", variant: "destructive" });
-      }
+      } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to update configuration", variant: "destructive" });
+    }
   };
 
   const fetchData = async () => {
@@ -256,6 +328,7 @@ export default function Payroll() {
       fetchEmployees(1);
       fetchConfig();
       fetchEpics();
+      fetchTransfers(1);
 
       const [walletRes, banksRes] = await Promise.all([
         api.get<WalletInfo>("/wallet"),
@@ -266,11 +339,11 @@ export default function Payroll() {
       if (banksRes.data.success) {
         setBanks(banksRes.data.data);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch data", error);
       toast({
         title: "Error",
-        description: "Failed to load data",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load data",
         variant: "destructive",
       });
     } finally {
@@ -303,7 +376,7 @@ export default function Payroll() {
     try {
       const res = await api.get<{success: boolean, data: PayrollAdjustment[]}>(`/payroll/adjustments?userId=${userId}`);
       if (res.data.success) {
-        setEmployeeAdjustments(res.data.data);
+        setEmployeeAdjustments(res.data.data || []);
       }
     } catch (e) {
       console.error("Failed to fetch adjustments");
@@ -318,8 +391,8 @@ export default function Payroll() {
         fetchAdjustments(selectedEmployee.id);
         fetchData();
       }
-    } catch (e) {
-      toast({ title: "Error", description: "Failed to delete adjustment", variant: "destructive" });
+    } catch (e: any) {
+      toast({ title: "Error", description: e.response?.data?.error || e.response?.data?.message || "Failed to delete adjustment", variant: "destructive" });
     }
   };
 
@@ -334,8 +407,8 @@ export default function Payroll() {
       toast({ title: "Success", description: "Payroll details updated" });
       setUpdateDialogOpen(false);
       fetchData();
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to update details", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to update details", variant: "destructive" });
     } finally {
       setIsUpdating(false);
     }
@@ -353,8 +426,8 @@ export default function Payroll() {
       toast({ title: "Success", description: "Adjustment added" });
       setAdjustmentDialogOpen(false);
       fetchData();
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to add adjustment", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to add adjustment", variant: "destructive" });
     }
   };
 
@@ -365,8 +438,8 @@ export default function Payroll() {
       await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
       toast({ title: "OTP Sent", description: "New OTP sent." });
       startCountdown();
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to resend OTP", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to resend OTP", variant: "destructive" });
     } finally {
       setOtpLoading(false);
     }
@@ -378,33 +451,198 @@ export default function Payroll() {
       await api.post(`/transfers/${id}/retry`);
       toast({ title: "Success", description: "Transfer retry initiated" });
       fetchTransfers();
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to retry transfer", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to retry transfer", variant: "destructive" });
     } finally {
       setRetryingId(null);
     }
+  };
+
+  const printReceipt = () => {
+    const printContents = document.getElementById('receipt-content')?.innerHTML;
+    if (!printContents) return;
+
+    const originalContents = document.body.innerHTML;
+
+    const printWindow = window.open('', '', 'width=800,height=600');
+    if (!printWindow) return;
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>Transfer Receipt</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              padding: 2rem;
+              max-width: 800px;
+              margin: 0 auto;
+            }
+            .receipt-header {
+              text-align: center;
+              border-bottom: 2px solid #e5e7eb;
+              padding-bottom: 1rem;
+              margin-bottom: 1rem;
+            }
+            .receipt-section {
+              margin-bottom: 1rem;
+            }
+            .receipt-label {
+              font-size: 0.875rem;
+              color: #6b7280;
+              text-transform: uppercase;
+              letter-spacing: 0.05em;
+            }
+            .receipt-value {
+              font-size: 1rem;
+              font-weight: 500;
+            }
+            .receipt-grid {
+              display: grid;
+              grid-template-columns: repeat(2, 1fr);
+              gap: 1rem;
+            }
+            .status-success {
+              color: #10b981;
+            }
+            .status-failed {
+              color: #ef4444;
+            }
+            .status-pending {
+              color: #f59e0b;
+            }
+          </style>
+        </head>
+        <body>
+          ${printContents}
+        </body>
+      </html>
+    `);
+
+    printWindow.document.close();
+    printWindow.focus();
+
+    setTimeout(() => {
+      printWindow.print();
+    }, 500);
   };
 
   const openBulkTransfer = () => {
     setBulkTransferStep("select");
     setOtpSent(false);
     setEpicTransferItems([]);
+    setEpicTransferMode("bulk");
+    setEditingRecipientId(null);
     bulkTransferForm.reset();
     setBulkTransferDialogOpen(true);
   };
 
-  const onInitiateBulkTransfer = async (values: z.infer<typeof bulkTransferSchema>) => {
+  const onGoToReviewStep = async (values: z.infer<typeof bulkTransferSchema>) => {
     try {
       setOtpLoading(true);
+      // Start with appropriate recipients for epic transfers
+      if (values.type === "epic") {
+        if (epicTransferMode === "single") {
+          // Single mode starts with one recipient
+          setEpicTransferItems([
+            {
+              recipient_account: "",
+              recipient_bank: "",
+              recipient_name: "",
+              amount: 0,
+              remark: epics.find(e => e.id === values.epic_id)?.name || "",
+              source_type: "epic",
+              source_id: values.epic_id || ""
+            }
+          ]);
+        } else {
+          // Bulk mode starts empty
+          setEpicTransferItems([]);
+        }
+      }
+      setBulkTransferStep("review");
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to proceed", variant: "destructive" });
+    } finally {
+      setOtpLoading(false);
+    }
+  };
+
+  const onRequestOtp = async () => {
+    try {
+      setOtpLoading(true);
+      const values = bulkTransferForm.getValues();
       await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
       setOtpSent(true);
       setBulkTransferStep("otp");
       startCountdown();
       toast({ title: "OTP Sent", description: "Please enter the OTP sent to your registered contact." });
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP", variant: "destructive" });
     } finally {
       setOtpLoading(false);
+    }
+  };
+
+  const addRecipient = () => {
+    const values = bulkTransferForm.getValues();
+    const selectedEpic = epics.find(e => e.id === values.epic_id);
+    setEpicTransferItems([
+      ...epicTransferItems,
+      {
+        recipient_account: "",
+        recipient_bank: "",
+        recipient_name: "",
+        amount: 0,
+        remark: selectedEpic?.name || "",
+        source_type: "epic",
+        source_id: values.epic_id || ""
+      }
+    ]);
+  };
+
+  const removeRecipient = (id: string) => {
+    setEpicTransferItems(epicTransferItems.filter((_, index) => `recipient_${index}` !== id));
+  };
+
+  const updateRecipient = (id: string, field: keyof TransferItem, value: any) => {
+    if (field === "remark") return; // Don't allow changing remark
+    setEpicTransferItems(
+      epicTransferItems.map((item, index) => {
+        if (`recipient_${index}` === id) {
+          return { ...item, [field]: value };
+        }
+        return item;
+      })
+    );
+  };
+
+  const verifyRecipientAccount = async (id: string) => {
+    const recipient = epicTransferItems.find((_, index) => `recipient_${index}` === id);
+    if (!recipient || !recipient.recipient_bank || !recipient.recipient_account) {
+      toast({ title: "Error", description: "Please select a bank and enter account number", variant: "destructive" });
+      return;
+    }
+    try {
+      const res = await api.post("/transfers/account-lookup", {
+        bank_code: recipient.recipient_bank,
+        account_number: recipient.recipient_account
+      });
+      if (res.data.success) {
+        let name = "";
+        if (res.data.data?.responseBody?.accountName) {
+          name = res.data.data.responseBody.accountName;
+        } else if (res.data.data?.account_name) {
+          name = res.data.data.account_name;
+        } else if (res.data.data?.accountName) {
+          name = res.data.data.accountName;
+        }
+        updateRecipient(id, "recipient_name", name);
+        toast({ title: "Success", description: "Account verified successfully" });
+      }
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to verify account", variant: "destructive" });
     }
   };
 
@@ -415,36 +653,81 @@ export default function Payroll() {
     }
     try {
       const values = bulkTransferForm.getValues();
-      let payload: any = {
-        type: values.type,
-        otp: otp,
-        source_wallet_id: values.source_wallet_id,
-      };
+      let items: any[] = [];
+      let transferType: "Salary" | "Epic" = "Salary";
 
       if (values.type === "salary") {
-        // For salary, we send all employees
-        const items = employees.map(emp => ({
-          recipient_account: emp.bank_account_number || emp.account_number || "",
-          recipient_bank: emp.bank_code || "",
-          recipient_name: emp.account_name || "",
+        transferType = "Salary";
+        items = employees.map(emp => ({
+          bankCode: emp.bank_code || "",
+          accountNumber: emp.bank_account_number || emp.account_number || "",
+          accountName: emp.account_name || emp.name,
           amount: emp.net_salary,
-          remark: "Salary Payment",
-          source_type: "salary",
+          remark: "Salary Payment"
         }));
-        payload.items = items;
       } else if (values.type === "epic" && epicTransferItems.length > 0) {
-        payload.items = epicTransferItems;
-        payload.epic_id = values.epic_id;
+        transferType = "Epic";
+        const selectedEpic = epics.find(e => e.id === values.epic_id);
+        items = epicTransferItems.map(item => ({
+          bankCode: item.recipient_bank,
+          accountNumber: item.recipient_account,
+          accountName: item.recipient_name,
+          amount: item.amount,
+          remark: selectedEpic?.name || ""
+        }));
       }
 
-      await api.post("/transfers/bulk", payload);
-      toast({ title: "Success", description: "Bulk transfer initiated" });
-      setBulkTransferDialogOpen(false);
-      setOtpSent(false);
-      fetchData();
-      fetchTransfers();
+      // Check if it's single transfer mode
+      if (values.type === "epic" && epicTransferMode === "single" && items.length === 1) {
+        const item = items[0];
+        const payload = {
+          bankCode: item.bankCode,
+          accountNumber: item.accountNumber,
+          accountName: item.accountName,
+          amount: item.amount,
+          remark: item.remark,
+          otp: otp,
+          wallet_id: values.source_wallet_id
+        };
+        
+        const response = await api.post("/transfers/single", payload);
+        if (response.data.success) {
+          setTransferSuccessData({
+            queued: 1,
+            type: "Single Epic",
+            message: response.data.message,
+            totals: {
+              amount: item.amount,
+              fee: response.data.data.fee || 0,
+              total: (Number(item.amount) || 0) + (response.data.data.fee || 0)
+            },
+            transfers: [response.data.data]
+          });
+          setBulkTransferStep("success");
+          fetchData();
+          fetchTransfers();
+        }
+      } else {
+        const payload: any = {
+          type: transferType,
+          otp: otp,
+          source_wallet_id: values.source_wallet_id,
+          data: { items }
+        };
+
+        const response = await api.post("/transfers/bulk", payload);
+        if (response.data.success) {
+          setTransferSuccessData({
+            ...response.data.data,
+            message: response.data.message
+          });
+          setBulkTransferStep("success");
+          fetchData();
+          fetchTransfers();
+        }
+      }
     } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.message || "Failed to initiate bulk transfer", variant: "destructive" });
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate transfer", variant: "destructive" });
     }
   };
 
@@ -687,7 +970,14 @@ export default function Payroll() {
                       </TableHeader>
                       <TableBody>
                         {Array.isArray(transfers) && transfers.map((transfer) => (
-                          <TableRow key={transfer.id}>
+                          <TableRow 
+                            key={transfer.id} 
+                            className="cursor-pointer hover:bg-muted/50"
+                            onClick={() => {
+                              setSelectedTransfer(transfer);
+                              setTransferDetailDialogOpen(true);
+                            }}
+                          >
                             <TableCell>
                                 <div className="font-medium">{transfer.recipient_name}</div>
                             </TableCell>
@@ -701,7 +991,7 @@ export default function Payroll() {
                                 </Badge>
                             </TableCell>
                             <TableCell>{transfer.created_at ? format(new Date(transfer.created_at), "MMM d, yyyy") : ""}</TableCell>
-                            <TableCell>
+                            <TableCell onClick={(e) => e.stopPropagation()}>
                               {transfer.status === 'failed' && (
                                 <Button variant="ghost" size="sm" onClick={() => retryTransfer(transfer.id)} disabled={retryingId === transfer.id}>
                                   {retryingId === transfer.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Retry"}
@@ -864,11 +1154,11 @@ export default function Payroll() {
 
                     <div className="space-y-4">
                         {/* Bonus List */}
-                        {selectedEmployee.adjustments?.bonus_list && selectedEmployee.adjustments.bonus_list.length > 0 ? (
+                        {(selectedEmployee.adjustments?.bonus_list || []).length > 0 ? (
                             <div className="border rounded-md overflow-hidden">
                                 <div className="bg-muted px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Bonus Details</div>
                                 <div className="divide-y">
-                                    {selectedEmployee.adjustments.bonus_list.map((item, idx) => (
+                                    {(selectedEmployee.adjustments?.bonus_list || []).map((item, idx) => (
                                         <div key={idx} className="flex justify-between items-center p-3 text-sm">
                                             <span>{item.type === 'bonus' ? 'Bonus' : item.type}</span>
                                             <span className="font-medium text-green-600">+{item.currency} {Number(item.amount).toLocaleString()}</span>
@@ -881,11 +1171,11 @@ export default function Payroll() {
                         )}
 
                         {/* Deduction List */}
-                        {selectedEmployee.adjustments?.deduction_list && selectedEmployee.adjustments.deduction_list.length > 0 ? (
+                        {(selectedEmployee.adjustments?.deduction_list || []).length > 0 ? (
                             <div className="border rounded-md overflow-hidden">
                                 <div className="bg-muted px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Deduction Details</div>
                                 <div className="divide-y">
-                                    {selectedEmployee.adjustments.deduction_list.map((item, idx) => (
+                                    {(selectedEmployee.adjustments?.deduction_list || []).map((item, idx) => (
                                         <div key={idx} className="flex justify-between items-center p-3 text-sm">
                                             <span>{item.type === 'deduction' ? 'Deduction' : item.type}</span>
                                             <span className="font-medium text-red-600">-{item.currency} {Number(item.amount).toLocaleString()}</span>
@@ -900,7 +1190,7 @@ export default function Payroll() {
                 </div>
 
                 {/* Legacy Adjustments */}
-                {employeeAdjustments.length > 0 && (
+                {(employeeAdjustments || []).length > 0 && (
                      <div className="border-t pt-4">
                         <h4 className="font-semibold mb-2 text-sm text-muted-foreground">Manual Adjustments</h4>
                         <Table>
@@ -930,6 +1220,145 @@ export default function Payroll() {
                     </div>
                 )}
 
+              </div>
+            )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Transfer Detail Dialog */}
+        <Dialog open={transferDetailDialogOpen} onOpenChange={setTransferDetailDialogOpen}>
+          <DialogContent className="w-[90vw] max-h-[85vh] overflow-y-auto sm:max-w-[600px]">
+            <DialogHeader>
+              <DialogTitle>Transfer Receipt</DialogTitle>
+              <DialogDescription>Complete details of the transfer transaction.</DialogDescription>
+            </DialogHeader>
+            {selectedTransfer && (
+              <div className="space-y-6">
+                {/* Receipt Content */}
+                <div id="receipt-content">
+                  {/* Header */}
+                  <div className="receipt-header text-center border-b border-gray-200 pb-4 mb-4">
+                    <h2 className="text-xl font-bold">Transfer Receipt</h2>
+                    <p className="text-sm text-muted-foreground">{format(new Date(selectedTransfer.created_at), "MMMM d, yyyy")}</p>
+                  </div>
+
+                  {/* Transaction Details */}
+                  <div className="receipt-section mb-4">
+                    <h3 className="text-lg font-semibold mb-3">Transaction Details</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Reference</div>
+                        <div className="font-medium font-mono">{selectedTransfer.reference}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Status</div>
+                        <div className={`font-semibold ${
+                          selectedTransfer.status === 'success' ? 'text-green-600' : 
+                          selectedTransfer.status === 'failed' ? 'text-red-600' : 'text-yellow-600'
+                        }`}>
+                          {selectedTransfer.status.toUpperCase()}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Source Type</div>
+                        <div className="font-medium">{selectedTransfer.source_type || "N/A"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Payment Provider</div>
+                        <div className="font-medium">{selectedTransfer.payment_provider || "N/A"}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Recipient Details */}
+                  <div className="receipt-section mb-4">
+                    <h3 className="text-lg font-semibold mb-3">Recipient Details</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Name</div>
+                        <div className="font-medium">{selectedTransfer.recipient_name}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Account Number</div>
+                        <div className="font-medium font-mono">{selectedTransfer.recipient_account || "N/A"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Bank Code</div>
+                        <div className="font-medium font-mono">{selectedTransfer.recipient_bank || "N/A"}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Bank Name</div>
+                        <div className="font-medium">
+                          {selectedTransfer.recipient_bank 
+                            ? (banks.find(b => b.code === selectedTransfer.recipient_bank)?.name || selectedTransfer.recipient_bank) 
+                            : "N/A"}
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Amount Details */}
+                  <div className="receipt-section mb-4">
+                    <h3 className="text-lg font-semibold mb-3">Amount Details</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Amount</div>
+                        <div className="text-xl font-bold">
+                          {selectedTransfer.currency} {Number(selectedTransfer.amount).toLocaleString()}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Fee</div>
+                        <div className="font-medium">{selectedTransfer.currency} {selectedTransfer.fee || "0.00"}</div>
+                      </div>
+                    </div>
+                    {selectedTransfer.remark && (
+                      <div className="mt-3">
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Remark</div>
+                        <div className="font-medium">{selectedTransfer.remark}</div>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Additional Details */}
+                  <div className="receipt-section mb-4">
+                    <h3 className="text-lg font-semibold mb-3">Additional Details</h3>
+                    <div className="grid grid-cols-2 gap-4">
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Created At</div>
+                        <div className="font-medium">{format(new Date(selectedTransfer.created_at), "MMM d, yyyy h:mm a")}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Updated At</div>
+                        <div className="font-medium">{format(new Date(selectedTransfer.updated_at), "MMM d, yyyy h:mm a")}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Wallet ID</div>
+                        <div className="font-medium font-mono text-sm truncate" title={selectedTransfer.wallet_id}>{selectedTransfer.wallet_id}</div>
+                      </div>
+                      <div>
+                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Transaction ID</div>
+                        <div className="font-medium font-mono text-sm truncate" title={selectedTransfer.id}>{selectedTransfer.id}</div>
+                      </div>
+                    </div>
+                    {selectedTransfer.failure_reason && (
+                      <div className="mt-3 p-3 bg-red-50 rounded-md border border-red-100">
+                        <div className="text-xs text-red-700 uppercase tracking-wider">Failure Reason</div>
+                        <div className="font-medium text-red-700">{selectedTransfer.failure_reason}</div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <DialogFooter className="flex gap-2">
+                  <Button variant="outline" onClick={printReceipt}>
+                    Print Receipt
+                  </Button>
+                  <Button onClick={() => setTransferDetailDialogOpen(false)}>
+                    Close
+                  </Button>
+                </DialogFooter>
               </div>
             )}
           </DialogContent>
@@ -1037,7 +1466,7 @@ export default function Payroll() {
                     render={({ field }) => (
                         <FormItem>
                             <FormLabel>Salary</FormLabel>
-                            <FormControl><Input type="number" {...field} /></FormControl>
+                            <FormControl><Input type="number" placeholder="100" {...field} /></FormControl>
                             <FormMessage />
                         </FormItem>
                     )}
@@ -1197,7 +1626,7 @@ export default function Payroll() {
                     render={({ field }) => (
                         <FormItem>
                             <FormLabel>Amount</FormLabel>
-                            <FormControl><Input type="number" {...field} /></FormControl>
+                            <FormControl><Input type="number" placeholder="100" {...field} /></FormControl>
                             <FormMessage />
                         </FormItem>
                     )}
@@ -1228,9 +1657,10 @@ export default function Payroll() {
                 setBulkTransferStep("select");
                 setOtpSent(false);
                 setEpicTransferItems([]);
+                setTransferSuccessData(null);
             }
         }}>
-            <DialogContent className="sm:max-w-[500px]">
+            <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
                 <DialogHeader>
                     <DialogTitle>Bulk Transfer</DialogTitle>
                     <DialogDescription>
@@ -1240,7 +1670,7 @@ export default function Payroll() {
 
                 {bulkTransferStep === "select" ? (
                     <Form {...bulkTransferForm}>
-                        <form onSubmit={bulkTransferForm.handleSubmit(onInitiateBulkTransfer)} className="space-y-4">
+                        <form onSubmit={bulkTransferForm.handleSubmit(onGoToReviewStep)} className="space-y-4">
                             <FormField
                                 control={bulkTransferForm.control}
                                 name="type"
@@ -1260,24 +1690,47 @@ export default function Payroll() {
                             />
 
                             {bulkTransferForm.watch("type") === "epic" && (
-                                <FormField
-                                    control={bulkTransferForm.control}
-                                    name="epic_id"
-                                    render={({ field }) => (
-                                        <FormItem>
-                                            <FormLabel>Select Epic</FormLabel>
-                                            <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                <FormControl><SelectTrigger><SelectValue placeholder="Select epic" /></SelectTrigger></FormControl>
-                                                <SelectContent>
-                                                    {epics.map(epic => (
-                                                        <SelectItem key={epic.id} value={epic.id}>{epic.name}</SelectItem>
-                                                    ))}
-                                                </SelectContent>
-                                            </Select>
-                                            <FormMessage />
-                                        </FormItem>
-                                    )}
-                                />
+                                <>
+                                    <FormField
+                                        control={bulkTransferForm.control}
+                                        name="epic_id"
+                                        render={({ field }) => (
+                                            <FormItem>
+                                                <FormLabel>Select Epic</FormLabel>
+                                                <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                                    <FormControl><SelectTrigger><SelectValue placeholder="Select epic" /></SelectTrigger></FormControl>
+                                                    <SelectContent>
+                                                        {epics.map(epic => (
+                                                            <SelectItem key={epic.id} value={epic.id}>{epic.name}</SelectItem>
+                                                        ))}
+                                                    </SelectContent>
+                                                </Select>
+                                                <FormMessage />
+                                            </FormItem>
+                                        )}
+                                    />
+                                    <div className="space-y-2">
+                                        <Label>Transfer Mode</Label>
+                                        <div className="flex gap-2">
+                                            <Button
+                                                type="button"
+                                                variant={epicTransferMode === "single" ? "default" : "outline"}
+                                                onClick={() => setEpicTransferMode("single")}
+                                                className="flex-1"
+                                            >
+                                                Single
+                                            </Button>
+                                            <Button
+                                                type="button"
+                                                variant={epicTransferMode === "bulk" ? "default" : "outline"}
+                                                onClick={() => setEpicTransferMode("bulk")}
+                                                className="flex-1"
+                                            >
+                                                Bulk
+                                            </Button>
+                                        </div>
+                                    </div>
+                                </>
                             )}
 
                             <FormField
@@ -1308,7 +1761,7 @@ export default function Payroll() {
 
                             {bulkTransferForm.watch("type") === "salary" && (
                                 <div className="bg-muted p-3 rounded-lg">
-                                    <p className="text-sm font-medium mb-2">Summary</p>
+                                    <p className="text-sm font-medium mb-2">Preview</p>
                                     <p className="text-sm text-muted-foreground">
                                         {employees.length} employees will receive a total of {employees.reduce((acc, emp) => acc + Number(emp.net_salary), 0).toLocaleString()} NGN
                                     </p>
@@ -1318,12 +1771,212 @@ export default function Payroll() {
                             <DialogFooter>
                                 <Button type="submit" disabled={otpLoading}>
                                     {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                    Request OTP
+                                    Continue
                                 </Button>
                             </DialogFooter>
                         </form>
                     </Form>
-                ) : (
+                ) : bulkTransferStep === "review" ? (
+                    <div className="space-y-4">
+                        {bulkTransferForm.watch("type") === "salary" ? (
+                            <div className="space-y-4">
+                                <div className="bg-muted p-3 rounded-lg">
+                                    <h3 className="font-semibold mb-2">Salary Transfer Preview</h3>
+                                    <div className="space-y-2 max-h-60 overflow-y-auto">
+                                        {employees.map((employee) => (
+                                            <div key={employee.id} className="flex justify-between items-center p-2 bg-background rounded border">
+                                                <div>
+                                                    <p className="font-medium">{employee.name}</p>
+                                                    <p className="text-xs text-muted-foreground">{employee.email}</p>
+                                                </div>
+                                                <p className="font-semibold">
+                                                    {employee.salary_currency} {Number(employee.net_salary).toLocaleString()}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="flex justify-between items-center p-2 border-t mt-2 pt-2">
+                                        <p className="font-semibold">Total Amount</p>
+                                        <p className="font-bold text-primary text-lg">
+                                            {employees[0]?.salary_currency || "NGN"} {employees.reduce((acc, emp) => acc + Number(emp.net_salary), 0).toLocaleString()}
+                                        </p>
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className="space-y-4">
+                                <div className="flex justify-between items-center">
+                                    <h3 className="font-semibold">Recipients</h3>
+                                    <Button type="button" size="sm" onClick={addRecipient} disabled={epicTransferMode === "single" && epicTransferItems.length >= 1}>
+                                        <Plus className="mr-1 h-4 w-4" /> Add Recipient
+                                    </Button>
+                                </div>
+                                <div className="space-y-3 max-h-80 overflow-y-auto">
+                                    {(() => {
+                                        const values = bulkTransferForm.getValues();
+                                        const selectedEpic = epics.find(e => e.id === values.epic_id);
+                                        return epicTransferItems.map((item, index) => {
+                                            const id = `recipient_${index}`;
+                                            const status = recipientLookupStatus[index];
+                                            return (
+                                                <div key={id} className="bg-muted p-3 rounded-lg border space-y-3">
+                                                    <div className="flex justify-between items-start">
+                                                        <div className="flex-1 space-y-3">
+                                                            <div className="flex flex-col">
+                                                                <Label>Bank</Label>
+                                                                <Popover open={openBankPopover === index} onOpenChange={(open) => setOpenBankPopover(open ? index : null)}>
+                                                                    <PopoverTrigger asChild>
+                                                                        <Button
+                                                                            variant="outline"
+                                                                            role="combobox"
+                                                                            aria-expanded={openBankPopover === index}
+                                                                            className="w-full justify-between"
+                                                                        >
+                                                                            {item.recipient_bank
+                                                                                ? banks.find((bank) => bank.code === item.recipient_bank)?.name
+                                                                                : "Select bank"}
+                                                                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                                                        </Button>
+                                                                    </PopoverTrigger>
+                                                                    <PopoverContent className="w-[--radix-popover-trigger-width] p-0" side="bottom" align="start">
+                                                                        <Command className="h-auto">
+                                                                            <CommandInput placeholder="Search bank..." />
+                                                                            <CommandList className="max-h-[200px] overflow-y-auto">
+                                                                                <CommandEmpty>No bank found.</CommandEmpty>
+                                                                                <CommandGroup>
+                                                                                    {banks.map((bank) => (
+                                                                                        <CommandItem
+                                                                                            value={bank.name}
+                                                                                            key={bank.code}
+                                                                                            onSelect={() => {
+                                                                                                updateRecipient(id, "recipient_bank", bank.code);
+                                                                                                setOpenBankPopover(null);
+                                                                                            }}
+                                                                                        >
+                                                                                            <Check
+                                                                                                className={cn(
+                                                                                                    "mr-2 h-4 w-4",
+                                                                                                    bank.code === item.recipient_bank
+                                                                                                        ? "opacity-100"
+                                                                                                        : "opacity-0"
+                                                                                                )}
+                                                                                            />
+                                                                                            {bank.name}
+                                                                                        </CommandItem>
+                                                                                    ))}
+                                                                                </CommandGroup>
+                                                                            </CommandList>
+                                                                        </Command>
+                                                                    </PopoverContent>
+                                                                </Popover>
+                                                            </div>
+                                                            <div>
+                                                                <Label>Account Number</Label>
+                                                                <Input
+                                                                    value={item.recipient_account}
+                                                                    maxLength={10}
+                                                                    onChange={(e) => updateRecipient(id, "recipient_account", e.target.value)}
+                                                                />
+                                                            </div>
+                                                            
+                                                            {status?.loading && (
+                                                                <div className="text-sm text-muted-foreground flex items-center gap-1">
+                                                                    <Loader2 className="h-4 w-4 animate-spin" />
+                                                                    Verifying account...
+                                                                </div>
+                                                            )}
+                                                            
+                                                            {status?.success && status.name && (
+                                                                <div className="text-sm text-green-600 flex items-center gap-1">
+                                                                    <Check className="h-4 w-4" />
+                                                                    Verified: {status.name}
+                                                                </div>
+                                                            )}
+                                                            
+                                                            {status?.error && (
+                                                                <div className="text-sm text-destructive flex items-center gap-1">
+                                                                    <AlertCircle className="h-4 w-4" />
+                                                                    {status.error}
+                                                                </div>
+                                                            )}
+                                                            
+                                                            <div>
+                                                                <Label>Amount</Label>
+                                                                <Input
+                                                                    type="number"
+                                                                    value={item.amount}
+                                                                    onChange={(e) => updateRecipient(id, "amount", Number(e.target.value))}
+                                                                />
+                                                            </div>
+                                                            <div>
+                                                                <Label>Remark</Label>
+                                                                <Input
+                                                                    value={selectedEpic?.name || ""}
+                                                                    readOnly
+                                                                    className="bg-muted"
+                                                                />
+                                                            </div>
+                                                        </div>
+                                                        {epicTransferMode === "bulk" && (
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="icon"
+                                                                className="ml-2"
+                                                                onClick={() => removeRecipient(id)}
+                                                            >
+                                                                <Trash2 className="h-4 w-4 text-destructive" />
+                                                            </Button>
+                                                        )}
+                                                    </div>
+                                                </div>
+                                            );
+                                        });
+                                    })()}
+                                </div>
+                                {epicTransferItems.length === 0 && (
+                                    <div className="text-center text-muted-foreground">
+                                        No recipients added. Click "Add Recipient" to start.
+                                    </div>
+                                )}
+                                {epicTransferItems.length > 0 && (
+                                    <div className="bg-primary/10 p-3 rounded-lg border border-primary/20">
+                                        <div className="flex justify-between items-center">
+                                            <p className="font-semibold">Total Amount</p>
+                                            <p className="font-bold text-primary text-lg">
+                                                NGN {epicTransferItems.reduce((acc, item) => acc + (Number(item.amount) || 0), 0).toLocaleString()}
+                                            </p>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
+                        )}
+                        <DialogFooter>
+                            <Button
+                                variant="outline"
+                                onClick={() => setBulkTransferStep("select")}
+                            >
+                                Back
+                            </Button>
+                            <Button
+                                type="button"
+                                onClick={onRequestOtp}
+                                disabled={
+                                    (bulkTransferForm.watch("type") === "epic" && 
+                                        (epicTransferItems.length === 0 || 
+                                        epicTransferItems.some((_, index) => {
+                                            const status = recipientLookupStatus[index];
+                                            return status?.error || status?.loading || !status?.success;
+                                        }) 
+                                    )) 
+                                    || otpLoading
+                                }
+                            >
+                                {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                                Request OTP
+                            </Button>
+                        </DialogFooter>
+                    </div>
+                ) : bulkTransferStep === "otp" ? (
                     <div className="space-y-4">
                         <div className="space-y-2">
                             <Label>Enter OTP</Label>
@@ -1349,7 +2002,7 @@ export default function Payroll() {
                             <Button 
                                 variant="outline" 
                                 onClick={() => {
-                                    setBulkTransferStep("select");
+                                    setBulkTransferStep("review");
                                     setOtpSent(false);
                                 }}
                             >
@@ -1359,6 +2012,76 @@ export default function Payroll() {
                                 onClick={() => onFinalizeBulkTransfer(bulkTransferForm.getValues("otp") || "")}
                             >
                                 Confirm Transfer
+                            </Button>
+                        </DialogFooter>
+                    </div>
+                ) : (
+                    // Success screen
+                    <div className="space-y-6">
+                        <div className="text-center space-y-2">
+                            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
+                                <Check className="w-8 h-8 text-green-600" />
+                            </div>
+                            <h3 className="text-xl font-bold">Transfer Successful!</h3>
+                            <p className="text-muted-foreground">{transferSuccessData?.message}</p>
+                        </div>
+
+                        <div className="bg-muted p-4 rounded-lg space-y-3">
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Queued Transfers:</span>
+                                <span className="font-semibold">{transferSuccessData?.queued}</span>
+                            </div>
+                            <div className="flex justify-between">
+                                <span className="text-muted-foreground">Type:</span>
+                                <span className="font-semibold">{transferSuccessData?.type}</span>
+                            </div>
+                            <div className="border-t pt-3 space-y-2">
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Total Amount:</span>
+                                    <span className="font-semibold">{transferSuccessData?.totals?.amount?.toLocaleString()}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                    <span className="text-muted-foreground">Fee:</span>
+                                    <span className="font-semibold">{transferSuccessData?.totals?.fee?.toLocaleString()}</span>
+                                </div>
+                                <div className="flex justify-between text-lg">
+                                    <span className="font-medium">Total:</span>
+                                    <span className="font-bold text-primary">{transferSuccessData?.totals?.total?.toLocaleString()}</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        {transferSuccessData?.transfers && transferSuccessData.transfers.length > 0 && (
+                            <div className="max-h-[250px] overflow-y-auto">
+                                <h4 className="text-sm font-medium mb-2">Transfers:</h4>
+                                <div className="space-y-2">
+                                    {transferSuccessData.transfers.map((transfer: any) => (
+                                        <div key={transfer.id} className="p-3 bg-background border rounded-lg flex justify-between items-center">
+                                            <div>
+                                                <p className="font-medium">{transfer.recipient_name}</p>
+                                                <p className="text-xs text-muted-foreground">{transfer.reference}</p>
+                                            </div>
+                                            <div className="text-right">
+                                                <p className="font-semibold">{transfer.currency} {Number(transfer.amount).toLocaleString()}</p>
+                                                <Badge variant={transfer.status === "success" ? "default" : transfer.status === "failed" ? "destructive" : "secondary"}>
+                                                    {transfer.status}
+                                                </Badge>
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
+
+                        <DialogFooter>
+                            <Button onClick={() => {
+                                setBulkTransferDialogOpen(false);
+                                setBulkTransferStep("select");
+                                setOtpSent(false);
+                                setEpicTransferItems([]);
+                                setTransferSuccessData(null);
+                            }}>
+                                Done
                             </Button>
                         </DialogFooter>
                     </div>

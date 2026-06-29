@@ -129,10 +129,10 @@ export default function Wallet() {
         setLookupName(name);
         transferForm.setValue("accountName", name);
       } catch (error: any) {
-        setLookupName(null);
-        setLookupError(error.response?.data?.message || "Could not verify account name");
-        transferForm.setValue("accountName", ""); 
-      } finally {
+      setLookupName(null);
+      setLookupError(error.response?.data?.error || error.response?.data?.message || "Could not verify account name");
+      transferForm.setValue("accountName", ""); 
+    } finally {
         setLookupLoading(false);
       }
     }
@@ -166,11 +166,11 @@ export default function Wallet() {
             description: "Please enter the OTP sent to your email/phone",
         });
     } catch (error: any) {
-        toast({
-            title: "Error",
-            description: error.response?.data?.message || "Failed to request OTP",
-            variant: "destructive"
-        });
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to request OTP",
+        variant: "destructive"
+      });
     } finally {
         setOtpLoading(false);
     }
@@ -212,12 +212,12 @@ export default function Wallet() {
           setOtp("");
           fetchWalletInfo();
       } catch (error: any) {
-          toast({
-              title: "Error",
-              description: error.response?.data?.message || "Transfer failed",
-              variant: "destructive"
-          });
-      } finally {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Transfer failed",
+        variant: "destructive"
+      });
+    } finally {
           setTransferLoading(false);
       }
   };
@@ -229,8 +229,8 @@ export default function Wallet() {
         await api.post("/transfers/otp/request", { wallet_id: values.wallet_id });
         toast({ title: "OTP Sent", description: "New OTP sent." });
         startCountdown();
-    } catch (error) {
-        toast({ title: "Error", description: "Failed to resend OTP", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to resend OTP", variant: "destructive" });
     } finally {
         setOtpLoading(false);
     }
@@ -240,11 +240,11 @@ export default function Wallet() {
     try {
       const response = await api.get<WalletInfo>("/wallet");
       setWalletInfo(response.data);
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch wallet info", error);
       toast({
         title: "Error",
-        description: "Failed to load wallet information",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load wallet information",
         variant: "destructive",
       });
     } finally {
@@ -285,10 +285,10 @@ export default function Wallet() {
           variant: "destructive",
         });
       }
-    } catch (error) {
+    } catch (error: any) {
       toast({
         title: "Error",
-        description: "Failed to initiate payment",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate payment",
         variant: "destructive",
       });
     } finally {
@@ -308,7 +308,7 @@ export default function Wallet() {
     } catch (error: any) {
       toast({
         title: "Error",
-        description: error.response?.data?.error || "Failed to create virtual account",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to create virtual account",
         variant: "destructive",
       });
     } finally {
@@ -585,7 +585,7 @@ export default function Wallet() {
                     <FormItem>
                       <FormLabel>Amount (NGN)</FormLabel>
                       <FormControl>
-                        <Input type="number" placeholder="5000" {...field} />
+                        <Input type="number" placeholder="100" {...field} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -721,7 +721,7 @@ export default function Wallet() {
                         <FormItem>
                           <FormLabel>Amount (NGN)</FormLabel>
                           <FormControl>
-                            <Input type="number" placeholder="10000" {...field} />
+                            <Input type="number" placeholder="100" {...field} />
                           </FormControl>
                           <FormMessage />
                         </FormItem>

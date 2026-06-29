@@ -49,11 +49,11 @@ export default function TransferHistory() {
       } else {
           setTransfers([]);
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch transfers", error);
       toast({
         title: "Error",
-        description: "Failed to load transfer history",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load transfer history",
         variant: "destructive",
       });
     } finally {
@@ -72,8 +72,8 @@ export default function TransferHistory() {
       await api.post(`/transfers/${id}/retry`);
       toast({ title: "Success", description: "Transfer retry initiated" });
       fetchTransfers();
-    } catch (error) {
-      toast({ title: "Error", description: "Failed to retry transfer", variant: "destructive" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to retry transfer", variant: "destructive" });
     } finally {
       setRetryingId(null);
     }

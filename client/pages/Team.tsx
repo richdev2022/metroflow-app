@@ -59,16 +59,16 @@ export default function Team() {
   const fetchTeamMembers = async () => {
     try {
       setLoading(true);
-      const response = await api.get("/team");
+      const response = await api.get('/team');
       const data = response.data as ApiResponse<TeamMember[]>;
 
       if (data.success && data.data) {
         setTeamMembers(data.data);
       } else {
-        setError(data.error || "Failed to fetch team members");
+        setError(data.error || 'Failed to fetch team members');
       }
-    } catch (err) {
-      setError("Failed to load team members");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || 'Failed to load team members');
       console.error(err);
     } finally {
       setLoading(false);
@@ -119,8 +119,8 @@ export default function Team() {
       } else {
         setError(data.error || "Failed to send invitation");
       }
-    } catch (err) {
-      setError("Failed to send invitation");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || 'Failed to send invitation');
       console.error(err);
     } finally {
       setInviting(false);
@@ -142,8 +142,8 @@ export default function Team() {
       } else {
         setError(data.error || "Failed to update status");
       }
-    } catch (err) {
-      setError("Failed to update status");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || 'Failed to update status');
       console.error(err);
     }
   };
@@ -168,8 +168,8 @@ export default function Team() {
       } else {
         setError(data.error || "Failed to delete team member");
       }
-    } catch (err) {
-      setError("Failed to delete team member");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || 'Failed to delete team member');
       console.error(err);
     }
   };

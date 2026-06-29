@@ -33,13 +33,11 @@ import {
 import {
   Pagination,
   PaginationContent,
-  PaginationEllipsis,
   PaginationItem,
-  PaginationLink,
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { CheckCircle2, AlertTriangle, CreditCard, Shield, Users, History, Loader2, Trash2, Star, Plus, Eye, Search, CalendarIcon, Download } from "lucide-react";
+import { CheckCircle2, AlertTriangle, CreditCard, Users, History, Loader2, Trash2, Plus, Eye, Search, CalendarIcon, Download } from "lucide-react";
 
 import { format } from "date-fns";
 import { DateRange } from "react-day-picker";
@@ -52,7 +50,6 @@ import {
 } from "@/components/ui/popover";
 import {
   Tabs,
-  TabsContent,
   TabsList,
   TabsTrigger,
 } from "@/components/ui/tabs";
@@ -135,12 +132,12 @@ export default function Subscription() {
         title: "Export Successful",
         description: "Your transactions have been exported to CSV."
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to export transactions", error);
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to export transactions"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to export transactions"
       });
     } finally {
       setExporting(false);
@@ -167,7 +164,7 @@ export default function Subscription() {
         setTotalPages(response.data.pagination?.totalPages || response.data.meta?.last_page || (response.data.transactions?.length < perPage ? page : page + 1));
       }
     } catch (error: any) {
-      const message = error.message || "Failed to load transactions";
+      const message = error.response?.data?.error || error.response?.data?.message || error.message || "Failed to load transactions";
       // Only log unexpected errors
       if (!message.includes("Unable to connect")) {
          console.error("Failed to fetch transactions", error);
@@ -199,12 +196,12 @@ export default function Subscription() {
       if (subRes.data.success) setSubscription(subRes.data.subscription);
       if (cardsRes.data.success) setCards(cardsRes.data.cards || []);
 
-    } catch (error) {
+    } catch (error: any) {
       console.error("Failed to fetch data", error);
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to load subscription details"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to load subscription details"
       });
     } finally {
       setLoading(false);
@@ -226,11 +223,11 @@ export default function Subscription() {
         description: "Your subscription has been cancelled successfully."
       });
       fetchInitialData();
-    } catch (error) {
+    } catch (error: any) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Failed to cancel subscription"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to cancel subscription"
       });
     } finally {
       setProcessingId(null);
@@ -252,7 +249,7 @@ export default function Subscription() {
         toast({
           variant: "destructive",
           title: "Error",
-          description: error.response?.data?.error || "Failed to downgrade plan"
+          description: error.response?.data?.error || error.response?.data?.message || "Failed to downgrade plan"
         });
       } finally {
         setProcessingId(null);
@@ -293,7 +290,7 @@ export default function Subscription() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.response?.data?.error || "Failed to initiate payment"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate payment"
       });
       setProcessingId(null); // Only stop loading if failed, otherwise we redirect
     }
@@ -315,7 +312,7 @@ export default function Subscription() {
        toast({
         variant: "destructive",
         title: "Error",
-        description: error.response?.data?.error || "Failed to initiate card addition"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate card addition"
       });
       setProcessingId(null);
     }
@@ -333,7 +330,7 @@ export default function Subscription() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.response?.data?.error || "Failed to remove card"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to remove card"
       });
     } finally {
       setProcessingId(null);
@@ -355,7 +352,7 @@ export default function Subscription() {
       toast({
         variant: "destructive",
         title: "Error",
-        description: error.response?.data?.error || "Failed to update card"
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to update card"
       });
     } finally {
       setProcessingId(null);
@@ -450,10 +447,10 @@ export default function Subscription() {
                 </div>
               </div>
               
-              {subscription.subscription_status === 'inactive' && (
+              {(subscription.subscription_status === 'cancelled' || subscription.subscription_status === 'past_due') && (
                 <div className="flex items-center gap-2 text-destructive bg-destructive/10 p-3 rounded-md">
                   <AlertTriangle className="h-5 w-5" />
-                  <span>Your subscription is inactive. Please upgrade to continue using all features.</span>
+                  <span>Your subscription is {subscription.subscription_status}. Please upgrade to continue using all features.</span>
                 </div>
               )}
             </CardContent>
@@ -678,7 +675,6 @@ export default function Subscription() {
                 </PopoverTrigger>
                 <PopoverContent className="w-auto p-0" align="start">
                   <Calendar
-                    initialFocus
                     mode="range"
                     defaultMonth={date?.from}
                     selected={date}

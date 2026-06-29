@@ -1,13 +1,12 @@
 import { 
-  User, Business, 
+  User, Business, Task, KPISummary, TeamMember, Comment, 
   KycStatus, Wallet, BusinessWallet, WalletInfo, 
-  PayrollEmployee, Transfer, KycInitiateInput,
+  PayrollEmployee, Transfer, KycInitiateInput, KycVerifyOtpInput,
   CreateBusinessWalletInput, FundWalletInput, BulkTransferInput,
   PayrollConfig, PayrollConfigUpdateInput,
   BusinessProfile, UpdateBusinessProfileInput,
   RequestContactUpdateOtpInput, OtpPreferenceResponse, UpdateOtpPreferenceInput,
-  FeeConfig, SingleTransferWithOtpInput, BulkTransferWithOtpInput,
-  Epic, TransferItem
+  FeeConfig, SingleTransferWithOtpInput, BulkTransferWithOtpInput
 } from "../shared/api";
 
 export interface InsertUser {
@@ -44,9 +43,7 @@ export interface IStorage {
   // Payroll
   getPayrollSummary(businessId: string): Promise<{success: boolean, payroll: PayrollEmployee[], pagination: any}>;
   updatePayrollDetails(userId: string, data: Partial<PayrollEmployee>): Promise<PayrollEmployee>;
-  addPayrollAdjustment(userId: string, type: "bonus" | "deduction", amount: number, reason: string): Promise<any>;
-  getPayrollAdjustments(userId: string): Promise<any[]>;
-  deletePayrollAdjustment(adjustmentId: string): Promise<void>;
+  addPayrollAdjustment(userId: string, type: "bonus" | "deduction", amount: number, reason: string): Promise<void>;
   getPayrollConfig(businessId: string): Promise<PayrollConfig>;
   updatePayrollConfig(businessId: string, config: PayrollConfigUpdateInput): Promise<PayrollConfig>;
   
@@ -84,10 +81,6 @@ export interface IStorage {
   
   // 6. Pre-Registration KYC
   submitBusinessKyc(data: any): Promise<string>; // Returns reference ID
-  
-  // Epics
-  getEpics(businessId: string): Promise<Epic[]>;
-  getEpicTransferItems(epicId: string): Promise<TransferItem[]>;
 }
 
 export class MemStorage implements IStorage {
@@ -101,7 +94,6 @@ export class MemStorage implements IStorage {
   private transfers: Map<string, Transfer[]>;
   private otps: Map<string, string>; // userId -> otp
   private kycPendingType: Map<string, 'bvn' | 'nin'>;
-  private adjustments: Map<string, any[]>; // userId -> adjustments
   
   // New Maps
   private businessProfiles: Map<string, BusinessProfile>;
@@ -109,8 +101,6 @@ export class MemStorage implements IStorage {
   private contactUpdateOtps: Map<string, { otp: string, type: "email" | "phone", value: string }>;
   private transferOtps: Map<string, string>;
   private tempKycData: Map<string, any>;
-  private epics: Map<string, Epic[]>; // businessId -> epics
-  private epicTransferItems: Map<string, TransferItem[]>; // epicId -> transfer items
 
   constructor() {
     this.users = new Map();
@@ -123,7 +113,6 @@ export class MemStorage implements IStorage {
     this.transfers = new Map();
     this.otps = new Map();
     this.kycPendingType = new Map();
-    this.adjustments = new Map();
     
     // New Maps Init
     this.businessProfiles = new Map();
@@ -131,8 +120,6 @@ export class MemStorage implements IStorage {
     this.contactUpdateOtps = new Map();
     this.transferOtps = new Map();
     this.tempKycData = new Map();
-    this.epics = new Map();
-    this.epicTransferItems = new Map();
     
     // Seed some data
     this.seed();
@@ -164,107 +151,10 @@ export class MemStorage implements IStorage {
     });
     
     this.passwords.set(userId, "password123");
-
-    // Seed some mock transfers for userId
-    const now = new Date().toISOString();
-    this.transfers.set(userId, [
-      {
-        id: "trf_1",
-        business_id: "biz_123",
-        reference: "REF-001",
-        amount: 305000,
-        currency: "NGN",
-        status: "success",
-        recipient_name: "Ogbonna Anthony Ezeoyili",
-        recipient_account: "0123456789",
-        recipient_bank: "000004",
-        created_at: new Date(Date.now() - 86400000).toISOString(), // yesterday
-        updated_at: new Date(Date.now() - 86400000).toISOString(),
-        wallet_id: "w_demo_user_123"
-      },
-      {
-        id: "trf_2",
-        business_id: "biz_123",
-        reference: "REF-002",
-        amount: 150000,
-        currency: "NGN",
-        status: "pending",
-        recipient_name: "Jane Doe",
-        recipient_account: "9876543210",
-        recipient_bank: "000001",
-        created_at: new Date(Date.now() - 172800000).toISOString(), // 2 days ago
-        updated_at: new Date(Date.now() - 172800000).toISOString(),
-        wallet_id: "w_demo_user_123"
-      },
-      {
-        id: "trf_3",
-        business_id: "biz_123",
-        reference: "REF-003",
-        amount: 75000,
-        currency: "NGN",
-        status: "failed",
-        recipient_name: "John Smith",
-        recipient_account: "1234567890",
-        recipient_bank: "000013",
-        failure_reason: "Insufficient funds",
-        created_at: new Date(Date.now() - 259200000).toISOString(), // 3 days ago
-        updated_at: new Date(Date.now() - 259200000).toISOString(),
-        wallet_id: "w_demo_user_123"
-      }
-    ]);
-
-    // Seed mock epics
-    this.epics.set(businessId, [
-      {
-        id: "epic_1",
-        businessId,
-        name: "Mobile Bug Issues",
-        description: "Bug fixes for mobile app",
-        status: "active",
-        createdAt: now,
-        updatedAt: now
-      },
-      {
-        id: "epic_2",
-        businessId,
-        name: "Web Redesign",
-        description: "Complete website redesign",
-        status: "active",
-        createdAt: now,
-        updatedAt: now
-      }
-    ]);
-
-    // Seed mock transfer items for epics
-    this.epicTransferItems.set("epic_1", [
-      {
-        recipient_account: "0123456789",
-        recipient_bank: "000004",
-        recipient_name: "Ogbonna Anthony Ezeoyili",
-        amount: 50000,
-        remark: "Bug fix 1"
-      },
-      {
-        recipient_account: "9876543210",
-        recipient_bank: "000001",
-        recipient_name: "Jane Doe",
-        amount: 30000,
-        remark: "Bug fix 2"
-      }
-    ]);
-    this.epicTransferItems.set("epic_2", [
-      {
-        recipient_account: "1234567890",
-        recipient_bank: "000013",
-        recipient_name: "John Smith",
-        amount: 100000,
-        remark: "Web redesign phase 1"
-      }
-    ]);
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
-    const id = `user_${Math.random().toString(36).slice(2, 11)}`;
+    const id = `user_${Math.random().toString(36).substr(2, 9)}`;
     const user: User = {
       id,
       businessId: insertUser.businessId,
@@ -284,7 +174,7 @@ export class MemStorage implements IStorage {
   }
 
   async createBusiness(insertBusiness: InsertBusiness): Promise<Business> {
-    const id = `biz_${Math.random().toString(36).slice(2, 11)}`;
+    const id = `biz_${Math.random().toString(36).substr(2, 9)}`;
     const business: Business = {
       id,
       name: insertBusiness.name,
@@ -371,21 +261,14 @@ export class MemStorage implements IStorage {
 
   private async ensureWallet(userId: string) {
     if (!this.wallets.has(userId)) {
-      const now = new Date().toISOString();
       this.wallets.set(userId, {
-        success: true,
         user_wallet: {
           id: `w_${userId}`,
-          user_id: userId,
-          balance: "0",
+          balance: 0,
           currency: "NGN",
           account_number: "99" + Math.floor(Math.random() * 100000000),
           bank_name: "Metro Bank",
-          type: "user",
-          status: "active",
-          created_at: now,
-          updated_at: now,
-          virtual_accounts: []
+          type: "user"
         }
       });
     }
@@ -399,21 +282,15 @@ export class MemStorage implements IStorage {
     if (kyc.user_kyc_status === 'verified' && !this.wallets.has(userId)) {
         await this.ensureWallet(userId);
     }
-    const now = new Date().toISOString();
+    
     return this.wallets.get(userId) || {
-        success: true,
         user_wallet: { // Return a default one for demo if not strictly enforced yet
              id: `w_demo_${userId}`,
-             user_id: userId,
-             balance: "0",
+             balance: 0,
              currency: "NGN",
              account_number: "Not Created",
              bank_name: "N/A",
-             type: "user",
-             status: "active",
-             created_at: now,
-             updated_at: now,
-             virtual_accounts: []
+             type: "user"
         }
     };
   }
@@ -423,11 +300,10 @@ export class MemStorage implements IStorage {
     await this.ensureWallet(userId);
     const wallet = this.wallets.get(userId)!;
     
-    // Fund based on wallet_id
-    if (wallet.user_wallet && wallet.user_wallet.id === data.wallet_id) {
-        wallet.user_wallet.balance = String(Number(wallet.user_wallet.balance) + data.amount);
-    } else if (wallet.business_wallet && wallet.business_wallet.id === data.wallet_id) {
-        wallet.business_wallet.balance = String(Number(wallet.business_wallet.balance) + data.amount);
+    if (data.wallet_type === 'user') {
+        wallet.user_wallet.balance += data.amount;
+    } else if (wallet.business_wallet) {
+        wallet.business_wallet.balance += data.amount;
     }
     
     this.wallets.set(userId, wallet);
@@ -438,20 +314,15 @@ export class MemStorage implements IStorage {
     await this.ensureWallet(userId);
     console.log("Creating business wallet with KYC ID:", data.kycReferenceId);
     const walletInfo = this.wallets.get(userId)!;
-    const now = new Date().toISOString();
+    
     const newBusinessWallet: BusinessWallet = {
       id: `bw_${userId}`,
-      business_id: "biz_123",
-      balance: "0",
+      balance: 0,
       currency: "NGN",
       account_number: data.gtb_account_number,
       bank_name: "GTBank",
       type: "business",
-      business_name: data.business_name,
-      status: "active",
-      created_at: now,
-      updated_at: now,
-      virtual_accounts: []
+      business_name: data.business_name
     };
 
     walletInfo.business_wallet = newBusinessWallet;
@@ -584,7 +455,7 @@ export class MemStorage implements IStorage {
       if (idx !== -1) {
         employees[idx] = { ...employees[idx], ...data };
         // Recalculate net
-        employees[idx].net_salary = Number(employees[idx].salary) + employees[idx].bonuses_total - employees[idx].deductions_total;
+        employees[idx].net_salary = employees[idx].salary + employees[idx].bonuses_total - employees[idx].deductions_total;
         this.payrolls.set(bid, employees);
         return employees[idx];
       }
@@ -592,62 +463,16 @@ export class MemStorage implements IStorage {
     throw new Error("Employee not found");
   }
 
-  async addPayrollAdjustment(userId: string, type: "bonus" | "deduction", amount: number, reason: string): Promise<any> {
-    const adjustment = {
-      id: `adj_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`,
-      user_id: userId,
-      type,
-      amount,
-      reason,
-      created_at: new Date().toISOString()
-    };
-
-    if (!this.adjustments.has(userId)) {
-      this.adjustments.set(userId, []);
-    }
-    this.adjustments.get(userId)!.push(adjustment);
-
-    // Update employee's totals
-    for (const [bid, employees] of this.payrolls.entries()) {
+  async addPayrollAdjustment(userId: string, type: "bonus" | "deduction", amount: number, reason: string): Promise<void> {
+     for (const [bid, employees] of this.payrolls.entries()) {
       const idx = employees.findIndex(e => e.id === userId);
       if (idx !== -1) {
         if (type === 'bonus') employees[idx].bonuses_total += amount;
         else employees[idx].deductions_total += amount;
         
-        employees[idx].net_salary = Number(employees[idx].salary) + employees[idx].bonuses_total - employees[idx].deductions_total;
+        employees[idx].net_salary = employees[idx].salary + employees[idx].bonuses_total - employees[idx].deductions_total;
         this.payrolls.set(bid, employees);
-        break;
-      }
-    }
-
-    return adjustment;
-  }
-
-  async getPayrollAdjustments(userId: string): Promise<any[]> {
-    return this.adjustments.get(userId) || [];
-  }
-
-  async deletePayrollAdjustment(adjustmentId: string): Promise<void> {
-    // Find the adjustment and update employee totals
-    for (const [userId, adjs] of this.adjustments.entries()) {
-      const idx = adjs.findIndex(a => a.id === adjustmentId);
-      if (idx !== -1) {
-        const adj = adjs[idx];
-        // Remove from adjustments
-        adjs.splice(idx, 1);
-        this.adjustments.set(userId, adjs);
-        // Update employee totals
-        for (const [bid, employees] of this.payrolls.entries()) {
-          const empIdx = employees.findIndex(e => e.id === userId);
-          if (empIdx !== -1) {
-            if (adj.type === 'bonus') employees[empIdx].bonuses_total -= adj.amount;
-            else employees[empIdx].deductions_total -= adj.amount;
-            employees[empIdx].net_salary = Number(employees[empIdx].salary) + employees[empIdx].bonuses_total - employees[empIdx].deductions_total;
-            this.payrolls.set(bid, employees);
-            break;
-          }
-        }
-        break;
+        return;
       }
     }
   }
@@ -655,42 +480,20 @@ export class MemStorage implements IStorage {
   // Transfers
   async initiateBulkTransfer(userId: string, data: BulkTransferInput): Promise<void> {
     const transfers = this.transfers.get(userId) || [];
-    const now = new Date().toISOString();
-
-    // For demo purposes, if no items, just create a bulk one, otherwise create individual
-    if (data.data && data.data.items && Array.isArray(data.data.items)) {
-      data.data.items.forEach((item: any, index: number) => {
-        transfers.push({
-          id: `trf_${Date.now()}_${index}`,
-          business_id: "biz_123",
-          reference: `REF-${Date.now()}-${index}`,
-          recipient_name: item.recipient_name || "Unknown Recipient",
-          recipient_account: item.recipient_account || "",
-          recipient_bank: item.recipient_bank || "",
-          amount: item.amount,
-          currency: "NGN",
-          status: "success",
-          created_at: now,
-          updated_at: now,
-          wallet_id: data.source_wallet_id
-        });
-      });
-    } else {
-      // Fallback to single bulk transfer
-      transfers.push({
-        id: `trf_${Date.now()}`,
-        business_id: "biz_123",
-        reference: `REF-${Date.now()}`,
-        amount: 650000, // Sum of mock salaries
-        currency: "NGN",
-        status: "success",
-        recipient_name: "Bulk Payroll Run",
-        created_at: now,
-        updated_at: now,
-        wallet_id: data.source_wallet_id
-      });
-    }
-
+    
+    // Simulate creating transfers based on payroll
+    // In real app, this would use data.source_wallet_id to debit
+    
+    // Just create a mock transfer record
+    transfers.push({
+      id: `trf_${Date.now()}`,
+      amount: 650000, // Sum of mock salaries
+      currency: "NGN",
+      status: "success",
+      recipient_name: "Bulk Payroll Run",
+      created_at: new Date().toISOString()
+    });
+    
     this.transfers.set(userId, transfers);
   }
 
@@ -722,7 +525,7 @@ export class MemStorage implements IStorage {
     ];
   }
 
-  async resolveAccount(_bankCode: string, accountNumber: string): Promise<{account_name: string, account_number: string}> {
+  async resolveAccount(bankCode: string, accountNumber: string): Promise<{account_name: string, account_number: string}> {
     // Mock resolution
     if (accountNumber.length === 10) {
       return {
@@ -845,7 +648,7 @@ export class MemStorage implements IStorage {
   }
 
   // 5. Transfer Authorization
-  async requestTransferOtp(userId: string, _walletId?: string): Promise<{ otp: string, fee_charged: number }> {
+  async requestTransferOtp(userId: string, walletId?: string): Promise<{ otp: string, fee_charged: number }> {
     const otp = "123456";
     this.transferOtps.set(userId, otp);
     
@@ -871,21 +674,13 @@ export class MemStorage implements IStorage {
     
     // Process transfer
     const transfers = this.transfers.get(userId) || [];
-    const now = new Date().toISOString();
     transfers.push({
       id: `trf_${Date.now()}`,
-      business_id: "biz_123",
-      reference: `REF-${Date.now()}`,
       amount: data.amount,
       currency: "NGN",
       status: "success",
       recipient_name: data.accountName,
-      recipient_account: data.accountNumber,
-      recipient_bank: data.bankCode,
-      remark: data.remark,
-      created_at: now,
-      updated_at: now,
-      wallet_id: data.wallet_id
+      created_at: new Date().toISOString()
     });
     this.transfers.set(userId, transfers);
     
@@ -896,35 +691,21 @@ export class MemStorage implements IStorage {
   async initiateBulkTransferWithOtp(userId: string, data: BulkTransferWithOtpInput): Promise<void> {
     const storedOtp = this.transferOtps.get(userId);
     if (storedOtp !== data.otp) {
-      throw new Error("Invalid OTP");
+        throw new Error("Invalid OTP");
     }
 
-    // Process bulk transfer: create individual transfers for each item
+    // Process bulk transfer
     const transfers = this.transfers.get(userId) || [];
-    const now = new Date().toISOString();
-
-    data.data.items.forEach((item, index) => {
-      // Try to map bankCode/accountNumber to recipient_account/recipient_bank
-      const recipientAccount = (item as any).accountNumber || (item as any).recipient_account || "";
-      const recipientBank = (item as any).bankCode || (item as any).recipient_bank || "";
-
-      transfers.push({
-        id: `trf_${Date.now()}_${index}`,
-        business_id: "biz_123",
-        reference: `REF-${Date.now()}-${index}`,
-        recipient_name: (item as any).accountName || (item as any).recipient_name || "Unknown Recipient",
-        recipient_account: recipientAccount,
-        recipient_bank: recipientBank,
-        amount: item.amount,
+    const totalAmount = data.data.items.reduce((sum, item) => sum + item.amount, 0);
+    
+    transfers.push({
+        id: `trf_bulk_${Date.now()}`,
+        amount: totalAmount,
         currency: "NGN",
         status: "success",
-        remark: (item as any).remark,
-        created_at: now,
-        updated_at: now,
-        wallet_id: data.source_wallet_id
-      });
+        recipient_name: `Bulk Transfer (${data.data.items.length} items)`,
+        created_at: new Date().toISOString()
     });
-
     this.transfers.set(userId, transfers);
     
     this.transferOtps.delete(userId);
@@ -932,20 +713,12 @@ export class MemStorage implements IStorage {
 
   // 6. Pre-Registration KYC
   async submitBusinessKyc(data: any): Promise<string> {
-    const kycId = `kyc_${Date.now()}_${Math.random().toString(36).slice(2, 11)}`;
+    const kycId = `kyc_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
     this.tempKycData.set(kycId, {
       ...data,
       submittedAt: new Date().toISOString()
     });
     return kycId;
-  }
-
-  async getEpics(businessId: string): Promise<Epic[]> {
-    return this.epics.get(businessId) || [];
-  }
-
-  async getEpicTransferItems(epicId: string): Promise<TransferItem[]> {
-    return this.epicTransferItems.get(epicId) || [];
   }
 }
 

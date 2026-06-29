@@ -195,7 +195,13 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const userId = getUserId(req);
       await storage.initiateSingleTransferWithOtp(userId, req.body);
-      res.json({ success: true, message: "Transfer initiated successfully" });
+      const transfers = await storage.getTransfers(userId);
+      const newTransfer = transfers[transfers.length - 1];
+      res.json({ 
+        success: true, 
+        message: "Transfer initiated successfully",
+        data: newTransfer
+      });
     } catch (err: any) {
       res.status(400).json({ success: false, message: err.message || "Transfer failed" });
     }
@@ -334,7 +340,12 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const businessId = getBusinessId(req);
       const summary = await storage.getPayrollSummary(businessId);
-      res.json(summary);
+      // Map "payroll" to "data" as expected by the client
+      res.json({
+        success: summary.success,
+        data: summary.payroll,
+        pagination: summary.pagination
+      });
     } catch (err) {
       res.status(500).json({ error: "Failed to get payroll summary" });
     }
@@ -344,9 +355,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const businessId = getBusinessId(req);
       const config = await storage.getPayrollConfig(businessId);
-      res.json({ success: true, config });
+      res.json({ success: true, data: config });
     } catch (err) {
       res.status(500).json({ error: "Failed to get payroll config" });
+    }
+  });
+
+  // Add /api/transfers/account-lookup endpoint (used by client)
+  app.post("/api/transfers/account-lookup", async (req, res) => {
+    try {
+      const { bank_code, account_number } = req.body;
+      const account = await storage.resolveAccount(bank_code, account_number);
+      res.json({ success: true, data: account });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to resolve account" });
     }
   });
 
@@ -369,13 +391,35 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/payroll/adjustments", async (req, res) => {
+    try {
+      const { userId } = req.query;
+      if (!userId) {
+        return res.status(400).json({ error: "userId is required" });
+      }
+      const adjustments = await storage.getPayrollAdjustments(userId as string);
+      res.json({ success: true, data: adjustments });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get adjustments" });
+    }
+  });
+
   app.post("/api/payroll/adjustments", async (req, res) => {
     try {
       const { userId, type, amount, reason } = req.body;
-      await storage.addPayrollAdjustment(userId, type, amount, reason);
-      res.json({ success: true });
+      const adjustment = await storage.addPayrollAdjustment(userId, type, amount, reason);
+      res.json({ success: true, data: adjustment });
     } catch (err) {
       res.status(500).json({ error: "Failed to add adjustment" });
+    }
+  });
+
+  app.delete("/api/payroll/adjustments/:id", async (req, res) => {
+    try {
+      await storage.deletePayrollAdjustment(req.params.id);
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete adjustment" });
     }
   });
 
@@ -385,7 +429,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (req.body.otp) {
         // New OTP based flow
         await storage.initiateBulkTransferWithOtp(userId, req.body);
-        res.json({ success: true, message: "Queued " + req.body.data.items.length + " transfers for processing" });
+        const transfers = await storage.getTransfers(userId);
+        // Get the latest transfers (the ones we just added)
+        const newTransfers = transfers.slice(-req.body.data.items.length);
+        // Calculate totals
+        const totalAmount = req.body.data.items.reduce((sum: number, item: any) => sum + (item.amount || 0), 0);
+        const totalFee = 0; // Mock fee calculation
+        
+        res.json({ 
+          success: true, 
+          message: "Queued " + req.body.data.items.length + " transfers for processing",
+          data: {
+            queued: req.body.data.items.length,
+            type: req.body.type,
+            walletId: req.body.source_wallet_id,
+            totals: {
+              amount: totalAmount,
+              fee: totalFee,
+              total: totalAmount + totalFee
+            },
+            transfers: newTransfers
+          }
+        });
       } else {
         // Existing flow (fallback)
         await storage.initiateBulkTransfer(userId, req.body);
@@ -400,7 +465,15 @@ export async function registerRoutes(app: Express): Promise<Server> {
     try {
       const userId = getUserId(req);
       const transfers = await storage.getTransfers(userId);
-      res.json(transfers);
+      res.json({
+        success: true,
+        data: transfers,
+        pagination: {
+          total: transfers.length,
+          page: 1,
+          limit: 10
+        }
+      });
     } catch (err) {
       res.status(500).json({ error: "Failed to get transfers" });
     }
@@ -468,12 +541,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // --- Epics Routes (Mock) ---
+  // --- Epics Routes ---
   app.get("/api/epics", async (req, res) => {
     try {
-      res.json({ success: true, data: [] });
+      const businessId = getBusinessId(req);
+      const epics = await storage.getEpics(businessId);
+      res.json({ success: true, data: epics });
     } catch (err) {
       res.status(500).json({ error: "Failed to get epics" });
+    }
+  });
+
+  app.get("/api/epics/:epicId/transfer-items", async (req, res) => {
+    try {
+      const items = await storage.getEpicTransferItems(req.params.epicId);
+      res.json({ success: true, data: items });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get epic transfer items" });
     }
   });
 

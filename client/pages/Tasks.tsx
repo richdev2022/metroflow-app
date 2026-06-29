@@ -98,6 +98,9 @@ export default function Tasks() {
                     <Badge key={id} variant="secondary" className="text-xs">
                       {member?.name}
                       <button
+                        type="button"
+                        aria-label={`Remove ${member?.name}`}
+                        title={`Remove ${member?.name}`}
                         className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -246,8 +249,13 @@ export default function Tasks() {
       if (data.success && data.data) {
         setEpicsList(data.data);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to fetch epics", err);
+      toast({
+        title: "Error",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to fetch epics",
+        variant: "destructive",
+      });
     }
   };
 
@@ -265,8 +273,13 @@ export default function Tasks() {
           { id: "3", name: "Bob Johnson", email: "bob@example.com", role: "manager", status: "active" },
         ]);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
+      toast({
+        title: "Error",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to fetch team members",
+        variant: "destructive",
+      });
       // Fallback mock team members
       setTeamMembers([
         { id: "1", name: "John Doe", email: "john@example.com", role: "member", status: "active" },
@@ -292,8 +305,8 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to fetch tasks");
       }
-    } catch (err) {
-      setError("Failed to load tasks");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to load tasks");
       console.error(err);
     } finally {
       setLoading(false);
@@ -378,8 +391,8 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to create tasks");
       }
-    } catch (err) {
-      setError("Failed to create tasks");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to create tasks");
       console.error(err);
     } finally {
       setIsCreatingTasks(false);
@@ -454,8 +467,8 @@ export default function Tasks() {
         title: `${bulkTasks.length} tasks imported`,
         description: "Review and create the tasks",
       });
-    } catch (err) {
-      setError("Failed to import tasks");
+    } catch (err: any) {
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to import tasks");
       console.error(err);
     }
   };
@@ -487,9 +500,9 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to delete task");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to delete task");
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to delete task");
     } finally {
       setIsDeletingTask(false);
     }
@@ -526,9 +539,9 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to delete tasks");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to delete tasks");
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to delete tasks");
     }
   };
 
@@ -563,9 +576,9 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to update task");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to update task");
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to update task");
     } finally {
       setIsUpdatingTask(false);
     }
@@ -615,9 +628,9 @@ export default function Tasks() {
       } else {
         setError(data.error || "Failed to update epic");
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error(err);
-      setError("Failed to update epic");
+      setError(err.response?.data?.error || err.response?.data?.message || "Failed to update epic");
     } finally {
       setIsUpdatingEpic(false);
     }
@@ -655,8 +668,13 @@ export default function Tasks() {
       if (data.success && data.data) {
         setComments(data.data);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to fetch epic comments:", err);
+      toast({
+        title: "Error",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to fetch epic comments",
+        variant: "destructive",
+      });
     } finally {
       setIsLoadingComments(false);
     }
@@ -707,11 +725,11 @@ export default function Tasks() {
           description: "Your comment has been added successfully",
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to add comment:", err);
       toast({
         title: "Error",
-        description: "Failed to add comment",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to add comment",
         variant: "destructive",
       });
     } finally {
@@ -727,8 +745,13 @@ export default function Tasks() {
       if (data.success && data.data) {
         setComments(prev => prev.map(c => c.id === commentId ? { ...c, reactions: data.data } : c));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to toggle reaction", err);
+      toast({
+        title: "Error",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to toggle reaction",
+        variant: "destructive",
+      });
     }
   };
 
@@ -774,8 +797,13 @@ export default function Tasks() {
       if (data.success && data.data) {
         setComments(data.data);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to fetch comments:", err);
+      toast({
+        title: "Error",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to fetch comments",
+        variant: "destructive",
+      });
     } finally {
       setIsLoadingComments(false);
     }
@@ -799,11 +827,11 @@ export default function Tasks() {
           description: "Your comment has been added successfully",
         });
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error("Failed to add comment:", err);
       toast({
         title: "Error",
-        description: "Failed to add comment",
+        description: err.response?.data?.error || err.response?.data?.message || "Failed to add comment",
         variant: "destructive",
       });
     } finally {
@@ -1251,6 +1279,9 @@ export default function Tasks() {
                                     className="w-20 h-20 object-cover rounded border"
                                   />
                                   <button
+                                    type="button"
+                                    aria-label="Remove image"
+                                    title="Remove image"
                                     onClick={() => {
                                       const newUrls = imageUrls.filter((_, i) => i !== imgIndex);
                                       const newImages = images.filter((_, i) => i !== imgIndex);
@@ -1569,6 +1600,9 @@ export default function Tasks() {
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <button 
+                                        type="button"
+                                        aria-label="Like comment"
+                                        title="Like comment"
                                         onClick={() => toggleReaction(comment.id, 'like')}
                                         className={`flex items-center gap-1 text-xs hover:text-primary transition-colors ${comment.reactions?.some(r => r.userId === localStorage.getItem("userId") && r.type === 'like') ? 'text-primary' : 'text-muted-foreground'}`}
                                     >
@@ -1576,6 +1610,9 @@ export default function Tasks() {
                                         <span>{comment.reactions?.filter(r => r.type === 'like').length || 0}</span>
                                     </button>
                                     <button 
+                                        type="button"
+                                        aria-label="Love comment"
+                                        title="Love comment"
                                         onClick={() => toggleReaction(comment.id, 'love')}
                                         className={`flex items-center gap-1 text-xs hover:text-red-500 transition-colors ${comment.reactions?.some(r => r.userId === localStorage.getItem("userId") && r.type === 'love') ? 'text-red-500' : 'text-muted-foreground'}`}
                                     >
@@ -1636,6 +1673,7 @@ export default function Tasks() {
                               .filter(d => d.name.toLowerCase().includes(mentionQuery.toLowerCase()))
                               .map(member => (
                                 <button
+                                  type="button"
                                   key={member.id}
                                   className="w-full text-left px-3 py-2 text-sm hover:bg-muted transition-colors flex items-center gap-2"
                                   onClick={() => handleMentionSelect(member.name)}
@@ -2049,7 +2087,9 @@ export default function Tasks() {
                           <thead>
                             <tr className="border-b border-border">
                               <th className="text-left py-3 px-4 font-semibold w-[50px]">
+                                <span className="sr-only">Select all tasks</span>
                                 <Checkbox
+                                  aria-label="Select all tasks"
                                   checked={selectAll}
                                   onCheckedChange={handleSelectAll}
                                 />
@@ -2136,12 +2176,18 @@ export default function Tasks() {
                                   <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
                                     <div className="flex items-center justify-center gap-2">
                                       <button
+                                        type="button"
+                                        aria-label="Edit task"
+                                        title="Edit task"
                                         onClick={() => openTaskDetail(task)}
                                         className="text-blue-500 hover:text-blue-700 transition-colors"
                                       >
                                         <Edit className="h-4 w-4" />
                                       </button>
                                       <button
+                                        type="button"
+                                        aria-label="Delete task"
+                                        title="Delete task"
                                         onClick={() => deleteTask(task.id)}
                                         className="text-red-500 hover:text-red-700 transition-colors"
                                       >
