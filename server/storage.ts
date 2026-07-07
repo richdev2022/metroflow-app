@@ -78,7 +78,7 @@ export interface IStorage {
   getFeeSchedule(): Promise<FeeConfig[]>;
 
   // 5. Transfer Authorization
-  requestTransferOtp(userId: string, walletId?: string): Promise<{ otp: string, fee_charged: number }>;
+  requestTransferOtp(userId: string, walletId?: string, otpMethod?: string): Promise<{ otp: string, fee_charged: number }>;
   initiateSingleTransferWithOtp(userId: string, data: SingleTransferWithOtpInput): Promise<void>;
   initiateBulkTransferWithOtp(userId: string, data: BulkTransferWithOtpInput): Promise<void>;
   
@@ -88,6 +88,16 @@ export interface IStorage {
   // Epics
   getEpics(businessId: string): Promise<Epic[]>;
   getEpicTransferItems(epicId: string): Promise<TransferItem[]>;
+
+  // 7. OTP Enabled Status
+  getOtpEnabledStatus(businessId: string): Promise<{ success: boolean; otpEnabled: boolean; pinCreated: boolean }>;
+  updateOtpEnabledStatus(businessId: string, enabled: boolean): Promise<void>;
+
+  // 8. Transaction PIN
+  createPin(userId: string, pin: string): Promise<void>;
+  verifyPin(userId: string, pin: string): Promise<boolean>;
+  sendPinUpdateOtp(userId: string): Promise<string>;
+  updatePin(userId: string, newPin: string, otp: string): Promise<void>;
 }
 
 export class MemStorage implements IStorage {
@@ -105,12 +115,17 @@ export class MemStorage implements IStorage {
   
   // New Maps
   private businessProfiles: Map<string, BusinessProfile>;
-  private otpPreferences: Map<string, "email" | "sms" | "both">;
+  private otpPreferences: Map<string, "email" | "sms" | "whatsapp" | "both">;
   private contactUpdateOtps: Map<string, { otp: string, type: "email" | "phone", value: string }>;
   private transferOtps: Map<string, string>;
   private tempKycData: Map<string, any>;
   private epics: Map<string, Epic[]>; // businessId -> epics
   private epicTransferItems: Map<string, TransferItem[]>; // epicId -> transfer items
+  private otpEnabledStatus: Map<string, boolean>; // businessId -> otpEnabled
+  private pins: Map<string, string>; // userId -> pin
+  private pinUpdateOtps: Map<string, string>; // userId -> otp
+  private tasks: Map<string, Task[]>; // businessId -> tasks
+  private taskStatuses: Map<string, TaskStatus[]>; // businessId -> task statuses
 
   constructor() {
     this.users = new Map();
@@ -133,6 +148,11 @@ export class MemStorage implements IStorage {
     this.tempKycData = new Map();
     this.epics = new Map();
     this.epicTransferItems = new Map();
+    this.otpEnabledStatus = new Map();
+    this.pins = new Map();
+    this.pinUpdateOtps = new Map();
+    this.tasks = new Map();
+    this.taskStatuses = new Map();
     
     // Seed some data
     this.seed();
@@ -261,6 +281,91 @@ export class MemStorage implements IStorage {
         remark: "Web redesign phase 1"
       }
     ]);
+
+    // Seed task statuses
+    const now = new Date().toISOString();
+    this.taskStatuses.set(businessId, [
+      {
+        id: "pending",
+        business_id: businessId,
+        name: "pending",
+        color: "#6b7280",
+        is_default: true,
+        sort_order: 0,
+        created_at: now,
+        updated_at: now
+      },
+      {
+        id: "Production",
+        business_id: businessId,
+        name: "Production",
+        color: "#22c55e",
+        is_default: true,
+        sort_order: 1,
+        created_at: now,
+        updated_at: now
+      },
+      {
+        id: "in_progress",
+        business_id: businessId,
+        name: "in_progress",
+        color: "#3b82f6",
+        is_default: true,
+        sort_order: 2,
+        created_at: now,
+        updated_at: now
+      },
+      {
+        id: "completed",
+        business_id: businessId,
+        name: "completed",
+        color: "#22c55e",
+        is_default: true,
+        sort_order: 3,
+        created_at: now,
+        updated_at: now
+      }
+    ]);
+
+    // Seed mock tasks
+    this.tasks.set(businessId, [
+      {
+        id: "479efb90-a0c4-40fb-8a06-d4a9af8c5658",
+        title: "Testing",
+        description: "Testing",
+        epic: "Mobile Bug Issues",
+        epicId: "e848755b-3635-488f-9384-123a2fe15616",
+        sprint: "Sprint 1",
+        targetValue: "0.00",
+        accomplishedValue: "0.00",
+        startDate: "2026-06-07T23:00:00.000Z",
+        endDate: "2026-06-08T23:00:00.000Z",
+        dueDate: null,
+        status: "in_progress",
+        isOverdue: true,
+        createdAt: "2026-06-08T11:04:25.454Z",
+        updatedAt: "2026-06-10T06:23:40.772Z",
+        assignedTo: ["756f12b2-5969-4eae-8aa8-e4cc773cf824"]
+      },
+      {
+        id: "fcef6c13-8ff4-41a3-ae36-9151654a56f7",
+        title: "App logo isn't corresponding with the url",
+        description: null,
+        epic: "Version 1 app stabilization",
+        epicId: null,
+        sprint: "A1",
+        targetValue: "0.00",
+        accomplishedValue: "0.00",
+        startDate: "2026-02-13T23:00:00.000Z",
+        endDate: "2026-02-27T23:00:00.000Z",
+        dueDate: null,
+        status: "in_progress",
+        isOverdue: true,
+        createdAt: "2026-02-13T18:20:50.285Z",
+        updatedAt: "2026-06-30T15:46:43.742Z",
+        assignedTo: ["1847071f-3b48-4765-9801-e7eccc9f6e1c"]
+      }
+    ]);
   }
 
   async createUser(insertUser: InsertUser): Promise<User> {
@@ -334,6 +439,9 @@ export class MemStorage implements IStorage {
     // Update status to pending
     const current = await this.getKycStatus(userId);
     this.kycStatus.set(userId, { ...current, user_kyc_status: "pending" });
+    
+    // otp_method is accepted but not used in this mock implementation
+    // In real app, we would send OTP via the specified method
     
     return otp;
   }
@@ -845,28 +953,75 @@ export class MemStorage implements IStorage {
   }
 
   // 5. Transfer Authorization
-  async requestTransferOtp(userId: string, _walletId?: string): Promise<{ otp: string, fee_charged: number }> {
+  async requestTransferOtp(userId: string, walletId?: string, otpMethod?: string): Promise<{ otp: string, fee_charged: number }> {
     const otp = "123456";
     this.transferOtps.set(userId, otp);
     
-    // Calculate fee based on preference (mock logic)
-    // We need businessId, but storage method signature only has userId.
-    // In real app we'd lookup businessId from userId.
-    // Assuming mock businessId
+    // Calculate fee based on otpMethod or preference (mock logic)
     const businessId = "biz_123"; 
-    const pref = await this.getOtpPreference(businessId);
     let fee = 0;
-    if (pref.preference !== 'email') {
-        fee = 4; // Mock SMS fee
+    
+    if (otpMethod && otpMethod !== 'email') {
+      fee = 4; // Mock SMS/WhatsApp fee
+    } else if (!otpMethod) {
+      const pref = await this.getOtpPreference(businessId);
+      if (pref.preference !== 'email') {
+          fee = 4;
+      }
+    }
+
+    // Deduct fee from wallet if fee > 0
+    if (fee > 0) {
+      const walletInfo = await this.getWalletInfo(userId);
+      let charged = false;
+
+      // Check user wallet first
+      if (walletInfo.user_wallet && (!walletId || walletInfo.user_wallet.id === walletId)) {
+        const newBalance = Number(walletInfo.user_wallet.balance) - fee;
+        if (newBalance < 0) {
+          throw new Error("Insufficient funds in wallet for OTP fee");
+        }
+        walletInfo.user_wallet.balance = String(newBalance);
+        charged = true;
+      } 
+      // Check business wallet
+      else if (walletInfo.business_wallet && (!walletId || walletInfo.business_wallet.id === walletId)) {
+        const newBalance = Number(walletInfo.business_wallet.balance) - fee;
+        if (newBalance < 0) {
+          throw new Error("Insufficient funds in wallet for OTP fee");
+        }
+        walletInfo.business_wallet.balance = String(newBalance);
+        charged = true;
+      }
+
+      if (!charged) {
+        throw new Error("No NGN wallet found to charge OTP fee");
+      }
+
+      this.wallets.set(userId, walletInfo);
     }
 
     return { otp, fee_charged: fee };
   }
 
   async initiateSingleTransferWithOtp(userId: string, data: SingleTransferWithOtpInput): Promise<void> {
-    const storedOtp = this.transferOtps.get(userId);
-    if (storedOtp !== data.otp) {
-        throw new Error("Invalid OTP");
+    // Validate PIN first
+    const isValidPin = await this.verifyPin(userId, data.pin);
+    if (!isValidPin) {
+      throw new Error("Invalid PIN");
+    }
+
+    // Get OTP enabled status
+    const otpEnabled = await this.getOtpEnabledStatus("biz_123");
+    
+    // Validate OTP only if OTP is enabled
+    if (otpEnabled.otpEnabled) {
+      const storedOtp = this.transferOtps.get(userId);
+      if (storedOtp !== data.otp) {
+          throw new Error("Invalid OTP");
+      }
+      // Clear OTP
+      this.transferOtps.delete(userId);
     }
     
     // Process transfer
@@ -888,15 +1043,26 @@ export class MemStorage implements IStorage {
       wallet_id: data.wallet_id
     });
     this.transfers.set(userId, transfers);
-    
-    // Clear OTP
-    this.transferOtps.delete(userId);
   }
 
   async initiateBulkTransferWithOtp(userId: string, data: BulkTransferWithOtpInput): Promise<void> {
-    const storedOtp = this.transferOtps.get(userId);
-    if (storedOtp !== data.otp) {
-      throw new Error("Invalid OTP");
+    // Validate PIN first
+    const isValidPin = await this.verifyPin(userId, data.pin);
+    if (!isValidPin) {
+      throw new Error("Invalid PIN");
+    }
+
+    // Get OTP enabled status
+    const otpEnabled = await this.getOtpEnabledStatus("biz_123");
+    
+    // Validate OTP only if OTP is enabled
+    if (otpEnabled.otpEnabled) {
+      const storedOtp = this.transferOtps.get(userId);
+      if (storedOtp !== data.otp) {
+        throw new Error("Invalid OTP");
+      }
+      // Clear OTP
+      this.transferOtps.delete(userId);
     }
 
     // Process bulk transfer: create individual transfers for each item
@@ -926,8 +1092,6 @@ export class MemStorage implements IStorage {
     });
 
     this.transfers.set(userId, transfers);
-    
-    this.transferOtps.delete(userId);
   }
 
   // 6. Pre-Registration KYC
@@ -946,6 +1110,94 @@ export class MemStorage implements IStorage {
 
   async getEpicTransferItems(epicId: string): Promise<TransferItem[]> {
     return this.epicTransferItems.get(epicId) || [];
+  }
+
+  // 7. OTP Enabled Status
+  async getOtpEnabledStatus(businessId: string): Promise<{ success: boolean; otpEnabled: boolean; pinCreated: boolean }> {
+    if (!this.otpEnabledStatus.has(businessId)) {
+      this.otpEnabledStatus.set(businessId, true);
+    }
+    const otpEnabled = this.otpEnabledStatus.get(businessId) ?? true;
+    
+    // Check if PIN is created (using mock userId for now)
+    const userId = "user_123";
+    const pinCreated = this.pins.has(userId);
+    
+    return {
+      success: true,
+      otpEnabled,
+      pinCreated
+    };
+  }
+
+  async updateOtpEnabledStatus(businessId: string, enabled: boolean): Promise<void> {
+    this.otpEnabledStatus.set(businessId, enabled);
+  }
+
+  // 8. Transaction PIN
+  async createPin(userId: string, pin: string): Promise<void> {
+    this.pins.set(userId, pin);
+  }
+
+  async verifyPin(userId: string, pin: string): Promise<boolean> {
+    const storedPin = this.pins.get(userId);
+    if (!storedPin) {
+      throw new Error("PIN not created. Please create a PIN first.");
+    }
+    return storedPin === pin;
+  }
+
+  async sendPinUpdateOtp(userId: string): Promise<string> {
+    const otp = "123456";
+    this.pinUpdateOtps.set(userId, otp);
+    return otp;
+  }
+
+  async updatePin(userId: string, newPin: string, otp: string): Promise<void> {
+    const storedOtp = this.pinUpdateOtps.get(userId);
+    if (storedOtp !== otp) {
+      throw new Error("Invalid OTP");
+    }
+    this.pins.set(userId, newPin);
+    this.pinUpdateOtps.delete(userId);
+  }
+
+  // New methods for tasks and task statuses
+  async getTasks(businessId: string): Promise<Task[]> {
+    return this.tasks.get(businessId) || [];
+  }
+
+  async getTaskStatuses(businessId: string): Promise<TaskStatus[]> {
+    return this.taskStatuses.get(businessId) || [];
+  }
+
+  async createTaskStatus(businessId: string, data: CreateTaskStatusInput): Promise<TaskStatus> {
+    const now = new Date().toISOString();
+    const newStatus: TaskStatus = {
+      id: `status_${Date.now()}`,
+      business_id: businessId,
+      name: data.name,
+      color: data.color || "#6b7280",
+      is_default: false,
+      sort_order: (this.taskStatuses.get(businessId)?.length || 0),
+      created_at: now,
+      updated_at: now
+    };
+    const currentStatuses = this.taskStatuses.get(businessId) || [];
+    this.taskStatuses.set(businessId, [...currentStatuses, newStatus]);
+    return newStatus;
+  }
+
+  async updateTask(taskId: string, updates: Partial<Task>): Promise<Task | undefined> {
+    for (const [businessId, tasks] of this.tasks.entries()) {
+      const index = tasks.findIndex(t => t.id === taskId);
+      if (index !== -1) {
+        tasks[index] = { ...tasks[index], ...updates, updatedAt: new Date().toISOString() };
+        this.tasks.set(businessId, tasks);
+        return tasks[index];
+      }
+    }
+    return undefined;
   }
 }
 

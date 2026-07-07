@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '@/lib/api-client';
-import { Task, ApiResponse, TeamMember, Comment, CreateCommentInput, Reaction } from '@shared/api';
+import { Task, ApiResponse, TeamMember, Comment, CreateCommentInput, Reaction, TaskStatus, CreateTaskStatusInput } from '@shared/api';
 import Layout from '@/components/layout';
 import {
   DndContext,
@@ -65,16 +65,10 @@ import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
 
 interface Column {
-  id: 'pending' | 'in_progress' | 'completed';
+  id: string;
   title: string;
   color: string;
 }
-
-const columns: Column[] = [
-  { id: 'pending', title: 'To Do', color: 'bg-yellow-100 text-yellow-800' },
-  { id: 'in_progress', title: 'In Progress', color: 'bg-blue-100 text-blue-800' },
-  { id: 'completed', title: 'Done', color: 'bg-green-100 text-green-800' },
-];
 
 const SortableTask = ({
   task,
@@ -208,11 +202,27 @@ const TaskColumn = ({
     id: column.id,
   });
 
+  // Helper to get contrasting text color
+  const getContrastColor = (hexColor: string) => {
+    const r = parseInt(hexColor.slice(1, 3), 16);
+    const g = parseInt(hexColor.slice(3, 5), 16);
+    const b = parseInt(hexColor.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.5 ? '#000000' : '#ffffff';
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <Badge className={column.color}>{column.title}</Badge>
+          <Badge
+            style={{
+              backgroundColor: column.color,
+              color: getContrastColor(column.color),
+            }}
+          >
+            {column.title}
+          </Badge>
           <span className="text-sm text-muted-foreground">({tasks.length})</span>
         </div>
       </div>
@@ -250,12 +260,17 @@ const TaskColumn = ({
 
 export default function Board() {
   const [tasks, setTasks] = useState<Task[]>([]);
+  const [taskStatuses, setTaskStatuses] = useState<TaskStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showTaskDetailModal, setShowTaskDetailModal] = useState(false);
   const [isUpdatingTask, setIsUpdatingTask] = useState(false);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [showCreateColumnModal, setShowCreateColumnModal] = useState(false);
+  const [newColumnName, setNewColumnName] = useState('');
+  const [newColumnColor, setNewColumnColor] = useState('#6b7280');
+  const [showStatusOverview, setShowStatusOverview] = useState(false);
   
   // Comments state
   const [comments, setComments] = useState<Comment[]>([]);
@@ -288,6 +303,7 @@ export default function Board() {
       setLoading(true);
       const response = await api.get('/tasks?limit=10000');
       const data = response.data as ApiResponse<{ tasks: Task[] }>;
+      console.log('Fetched tasks:', data); // Added for debugging
       if (data.success && data.data) {
         setTasks(data.data.tasks);
       }
@@ -300,6 +316,19 @@ export default function Board() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchTaskStatuses = async () => {
+    try {
+      const response = await api.get('/task-statuses');
+      const data = response.data as ApiResponse<TaskStatus[]>;
+      console.log('Fetched task statuses:', data); // Added for debugging
+      if (data.success && data.data) {
+        setTaskStatuses(data.data);
+      }
+    } catch (error) {
+      console.error('Failed to fetch task statuses:', error);
     }
   };
 
@@ -319,6 +348,30 @@ export default function Board() {
         { id: '2', name: 'Jane Smith', email: 'jane@example.com', role: 'member', status: 'active' },
         { id: '3', name: 'Bob Johnson', email: 'bob@example.com', role: 'manager', status: 'active' },
       ]);
+    }
+  };
+
+  const handleCreateColumn = async () => {
+    try {
+      const response = await api.post('/task-statuses', {
+        name: newColumnName,
+        color: newColumnColor,
+      } as CreateTaskStatusInput);
+      const data = response.data as ApiResponse<TaskStatus>;
+      if (data.success && data.data) {
+        setTaskStatuses(prev => [...prev, data.data!]);
+        setShowCreateColumnModal(false);
+        setNewColumnName('');
+        setNewColumnColor('#6b7280');
+        toast({ title: 'Column created', description: 'New status column added successfully' });
+      }
+    } catch (error: any) {
+      console.error('Failed to create column:', error);
+      toast({
+        title: 'Error',
+        description: error.response?.data?.error || error.response?.data?.message || 'Failed to create column',
+        variant: 'destructive',
+      });
     }
   };
 
@@ -349,7 +402,7 @@ export default function Board() {
     }
   };
 
-  const updateTaskStatus = async (taskId: string, newStatus: 'pending' | 'in_progress' | 'completed') => {
+  const updateTaskStatus = async (taskId: string, newStatus: string) => {
     try {
       const response = await api.put(`/tasks/${taskId}`, { status: newStatus });
       const data = response.data as ApiResponse<Task>;
@@ -626,9 +679,22 @@ export default function Board() {
     );
   };
 
+  const taskStatusToColumn = (status: TaskStatus): Column => {
+    // Convert hex color to Tailwind classes (simplified)
+    // For simplicity, let's use a default or create a custom style
+    return {
+      id: status.id,
+      title: status.name,
+      color: status.color,
+    };
+  };
+
+  const columns: Column[] = taskStatuses.map(taskStatusToColumn);
+
   useEffect(() => { 
     fetchTasks();
     fetchTeamMembers();
+    fetchTaskStatuses();
   }, []);
 
   const dropAnimation: DropAnimation = {
@@ -660,31 +726,59 @@ export default function Board() {
             <h1 className="text-3xl font-bold text-foreground">Board</h1>
             <p className="text-muted-foreground mt-2">Drag and drop tasks to update their status</p>
           </div>
-          <Button onClick={() => window.location.href = '/tasks'}>
-            <Plus className="h-4 w-4 mr-2" />
-            Add Task
-          </Button>
+          <div className="flex gap-2">
+            <Button onClick={() => setShowStatusOverview(!showStatusOverview)} variant="outline">
+              {showStatusOverview ? 'Show Board' : 'Get Task Status'}
+            </Button>
+            <Button onClick={() => setShowCreateColumnModal(true)} variant="outline">
+              <Plus className="h-4 w-4 mr-2" />
+              Create Column
+            </Button>
+            <Button onClick={() => window.location.href = '/tasks'}>
+              <Plus className="h-4 w-4 mr-2" />
+              Add Task
+            </Button>
+          </div>
         </div>
 
-        <DndContext
-          sensors={sensors}
-          collisionDetection={closestCenter}
-          onDragStart={handleDragStart}
-          onDragOver={handleDragOver}
-          onDragEnd={handleDragEnd}
-        >
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {showStatusOverview ? (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
             {columns.map((column) => (
-              <TaskColumn
-                key={column.id}
-                column={column}
-                tasks={getTasksByStatus(column.id)}
-                onOpenDetail={openTaskDetail}
-                teamMembers={teamMembers}
-                updateTask={updateTask}
-              />
+              <Card key={column.id} className="p-4">
+                <div className="flex items-center gap-3">
+                  <div
+                    className="w-4 h-4 rounded-full"
+                    style={{ backgroundColor: column.color }}
+                  />
+                  <div className="flex-1">
+                    <h3 className="font-semibold text-lg">{column.title}</h3>
+                    <p className="text-3xl font-bold">{getTasksByStatus(column.id).length}</p>
+                  </div>
+                </div>
+              </Card>
             ))}
           </div>
+        ) : (
+          <DndContext
+            sensors={sensors}
+            collisionDetection={closestCenter}
+            onDragStart={handleDragStart}
+            onDragOver={handleDragOver}
+            onDragEnd={handleDragEnd}
+          >
+            <div className="flex gap-6 overflow-x-auto pb-4">
+              {columns.map((column) => (
+                <div key={column.id} className="min-w-[300px]">
+                  <TaskColumn
+                    column={column}
+                    tasks={getTasksByStatus(column.id)}
+                    onOpenDetail={openTaskDetail}
+                    teamMembers={teamMembers}
+                    updateTask={updateTask}
+                  />
+                </div>
+              ))}
+            </div>
 
           <DragOverlay dropAnimation={dropAnimation}>
             {activeTask ? (
@@ -698,7 +792,8 @@ export default function Board() {
               </div>
             ) : null}
           </DragOverlay>
-        </DndContext>
+          </DndContext>
+        )}
       </div>
 
       {/* Task Detail Modal - Full implementation from Tasks page */}
@@ -737,9 +832,11 @@ export default function Board() {
                               <SelectValue />
                           </SelectTrigger>
                           <SelectContent>
-                              <SelectItem value="pending">Pending</SelectItem>
-                              <SelectItem value="in_progress">In Progress</SelectItem>
-                              <SelectItem value="completed">Completed</SelectItem>
+                              {taskStatuses.map((status) => (
+                                <SelectItem key={status.id} value={status.id}>
+                                  {status.name}
+                                </SelectItem>
+                              ))}
                           </SelectContent>
                       </Select>
                     </div>
@@ -954,6 +1051,64 @@ export default function Board() {
               </ScrollArea>
             </>
           )}
+        </DialogContent>
+      </Dialog>
+
+      {/* Create Column Modal */}
+      <Dialog open={showCreateColumnModal} onOpenChange={setShowCreateColumnModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create New Column</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="column-name">Column Name</Label>
+              <Input
+                id="column-name"
+                value={newColumnName}
+                onChange={(e) => setNewColumnName(e.target.value)}
+                placeholder="Enter column name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="column-color">Column Color</Label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  id="column-color"
+                  title="Choose column color"
+                  value={newColumnColor}
+                  onChange={(e) => setNewColumnColor(e.target.value)}
+                  className="h-10 w-20 cursor-pointer rounded border-0 p-0"
+                />
+                <div className="flex-1">
+                  <Input
+                    id="column-color-hex"
+                    value={newColumnColor}
+                    onChange={(e) => setNewColumnColor(e.target.value)}
+                    placeholder="#000000"
+                  />
+                </div>
+              </div>
+              <div className="text-sm text-muted-foreground">
+                Selected color preview: <span style={{ backgroundColor: newColumnColor, padding: '2px 8px', borderRadius: '4px', color: (() => {
+                  const r = parseInt(newColumnColor.slice(1, 3), 16);
+                  const g = parseInt(newColumnColor.slice(3, 5), 16);
+                  const b = parseInt(newColumnColor.slice(5, 7), 16);
+                  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+                  return luminance > 0.5 ? '#000000' : '#ffffff';
+                })() }}>{newColumnColor}</span>
+              </div>
+            </div>
+          </div>
+          <div className="flex justify-end gap-2">
+            <Button variant="outline" onClick={() => setShowCreateColumnModal(false)}>
+              Cancel
+            </Button>
+            <Button onClick={handleCreateColumn} disabled={!newColumnName.trim()}>
+              Create Column
+            </Button>
+          </div>
         </DialogContent>
       </Dialog>
     </Layout>

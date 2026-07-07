@@ -8,8 +8,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle } from "lucide-react";
-import { AuthResponse, ResendOTPInput, KycStatus } from "@shared/api";
-import { normalizeKycStatus } from "@/lib/kyc-utils";
+import { AuthResponse } from "@shared/api";
 
 type Step = "login" | "otp";
 
@@ -67,15 +66,7 @@ export default function Login() {
           localStorage.setItem("businessId", data.businessId || "");
           localStorage.setItem("userName", loginData.email);
           setSuccessMessage("Login successful! Redirecting...");
-          
-          // Check KYC status after login
-          try {
-            const kycRes = await api.get("/kyc/status");
-            const status = normalizeKycStatus(kycRes.data);
-            setTimeout(() => navigate(status.user_kyc_status === "verified" ? "/dashboard" : "/kyc"), 1500);
-          } catch {
-            setTimeout(() => navigate("/kyc"), 1500);
-          }
+          setTimeout(() => navigate("/dashboard"), 1500);
         } else {
           setError("Login successful but no token received. Please try again.");
         }
@@ -115,15 +106,7 @@ export default function Login() {
         localStorage.setItem("businessId", data.businessId || "");
         localStorage.setItem("userName", otpData.email);
         setSuccessMessage("Verified! Redirecting...");
-        
-        // Check KYC status after OTP verification
-        try {
-          const kycRes = await api.get("/kyc/status");
-          const status = normalizeKycStatus(kycRes.data);
-          setTimeout(() => navigate(status.user_kyc_status === "verified" ? "/dashboard" : "/kyc"), 1500);
-        } catch {
-          setTimeout(() => navigate("/kyc"), 1500);
-        }
+        setTimeout(() => navigate("/dashboard"), 1500);
       } else {
         setError(data.message || "Failed to verify OTP");
       }

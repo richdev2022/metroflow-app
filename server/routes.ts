@@ -179,15 +179,70 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/transfers/otp/request", async (req, res) => {
     try {
       const userId = getUserId(req);
-      const { wallet_id } = req.body;
-      const result = await storage.requestTransferOtp(userId, wallet_id);
+      const { wallet_id, otp_method } = req.body;
+      const result = await storage.requestTransferOtp(userId, wallet_id, otp_method);
       res.json({ 
         success: true, 
         message: "OTP sent successfully", 
         fee_charged: result.fee_charged 
       });
+    } catch (err: any) {
+      res.status(400).json({ success: false, error: err.message || "Failed to request OTP" });
+    }
+  });
+
+  // 6. OTP Enabled Status
+  app.get("/api/settings/otp-enabled", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const result = await storage.getOtpEnabledStatus(businessId);
+      res.json(result);
     } catch (err) {
-      res.status(500).json({ success: false, message: "Failed to request OTP" });
+      res.status(500).json({ success: false, message: "Failed to get OTP enabled status" });
+    }
+  });
+
+  app.put("/api/settings/otp-enabled", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const { enabled } = req.body;
+      await storage.updateOtpEnabledStatus(businessId, enabled);
+      res.json({ success: true, message: enabled ? "OTP enabled successfully" : "OTP disabled successfully" });
+    } catch (err) {
+      res.status(500).json({ success: false, message: "Failed to update OTP status" });
+    }
+  });
+
+  // 7. Transaction PIN
+  app.post("/api/settings/pin", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const { pin } = req.body;
+      await storage.createPin(userId, pin);
+      res.json({ success: true, message: "Transaction PIN created successfully" });
+    } catch (err) {
+      res.status(500).json({ success: false, message: "Failed to create PIN" });
+    }
+  });
+
+  app.post("/api/settings/pin/send-otp", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      await storage.sendPinUpdateOtp(userId);
+      res.json({ success: true, message: "OTP sent successfully" });
+    } catch (err) {
+      res.status(500).json({ success: false, message: "Failed to send OTP" });
+    }
+  });
+
+  app.put("/api/settings/pin", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const { newPin, otp } = req.body;
+      await storage.updatePin(userId, newPin, otp);
+      res.json({ success: true, message: "Transaction PIN updated successfully" });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err.message || "Failed to update PIN" });
     }
   });
 
@@ -257,10 +312,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/kyc/initiate", async (req, res) => {
     try {
       const userId = getUserId(req);
-      const { type, number } = req.body;
-      const otp = await storage.initiateKyc(userId, { type, number });
-      // In real world, SMS/Email is sent. Here we return success message.
-      // We might return OTP in dev mode for convenience, but requirements say "Response: OTP sent message"
+      const { type, number, otp_method } = req.body;
+      const otp = await storage.initiateKyc(userId, { type, number, otp_method });
+      // In real world, SMS/Email/WhatsApp is sent. Here we return success message.
       res.json({ message: "OTP sent successfully" });
     } catch (err) {
       res.status(500).json({ error: "Failed to initiate KYC" });
@@ -561,12 +615,47 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
-  // --- Tasks Routes (Mock) ---
+  // --- Tasks Routes ---
   app.get("/api/tasks", async (req, res) => {
     try {
-       res.json({ success: true, data: [] });
+      const businessId = getBusinessId(req);
+      const tasks = await storage.getTasks(businessId);
+      res.json({ success: true, data: { tasks } });
     } catch (err) {
        res.status(500).json({ error: "Failed to get tasks" });
+    }
+  });
+
+  app.get("/api/task-statuses", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const statuses = await storage.getTaskStatuses(businessId);
+      res.json({ success: true, data: statuses });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get task statuses" });
+    }
+  });
+
+  app.post("/api/task-statuses", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const status = await storage.createTaskStatus(businessId, req.body as CreateTaskStatusInput);
+      res.json({ success: true, data: status });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create task status" });
+    }
+  });
+
+  app.put("/api/tasks/:taskId", async (req, res) => {
+    try {
+      const task = await storage.updateTask(req.params.taskId, req.body);
+      if (task) {
+        res.json({ success: true, data: task });
+      } else {
+        res.status(404).json({ success: false, error: "Task not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update task" });
     }
   });
 

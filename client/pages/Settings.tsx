@@ -1,17 +1,18 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { BusinessProfile, OtpPreferenceResponse, FeeConfig } from "@shared/api";
+import { BusinessProfile, OtpPreferenceResponse, FeeConfig, OtpEnabledResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard } from "lucide-react";
+import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard, ShieldCheck, Lock } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
 import { IndustryCombobox } from "@/components/industry-combobox";
 import { useCountdown } from "@/hooks/useCountdown";
 
@@ -19,6 +20,8 @@ export default function Settings() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
   const [loading, setLoading] = useState(true);
   const [otpPreference, setOtpPreference] = useState<string>("email");
+  const [otpEnabled, setOtpEnabled] = useState(true);
+  const [pinCreated, setPinCreated] = useState(false);
   const [fees, setFees] = useState<FeeConfig[]>([]);
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
@@ -31,6 +34,14 @@ export default function Settings() {
   const [otpSent, setOtpSent] = useState(false);
   const [contactLoading, setContactLoading] = useState(false);
 
+  // PIN Management States
+  const [createPinDialogOpen, setCreatePinDialogOpen] = useState(false);
+  const [updatePinDialogOpen, setUpdatePinDialogOpen] = useState(false);
+  const [newPin, setNewPin] = useState("");
+  const [confirmNewPin, setConfirmNewPin] = useState("");
+  const [pinLoading, setPinLoading] = useState(false);
+  const [updatePinOtpSent, setUpdatePinOtpSent] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -38,14 +49,19 @@ export default function Settings() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [profileRes, prefRes, feesRes] = await Promise.all([
+      const [profileRes, prefRes, otpEnabledRes, feesRes] = await Promise.all([
         api.get<{success: boolean, settings: BusinessProfile}>("/settings"),
         api.get<{success: boolean, preference: string}>("/settings/otp-preference"),
+        api.get<OtpEnabledResponse>("/settings/otp-enabled"),
         api.get<{success: boolean, data: FeeConfig[]}>("/fees")
       ]);
 
       if (profileRes.data.success) setProfile(profileRes.data.settings);
       if (prefRes.data.success) setOtpPreference(prefRes.data.preference);
+      if (otpEnabledRes.data.success) {
+        setOtpEnabled(otpEnabledRes.data.otpEnabled);
+        setPinCreated(otpEnabledRes.data.pinCreated);
+      }
       if (feesRes.data.success) setFees(feesRes.data.data);
 
     } catch (error) {
@@ -78,6 +94,83 @@ export default function Settings() {
     } catch (error: any) {
       const message = error.response?.data?.error || "Failed to update preference";
       toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  };
+
+  const handleToggleOtpEnabled = async (enabled: boolean) => {
+    try {
+      await api.put("/settings/otp-enabled", { enabled });
+      setOtpEnabled(enabled);
+      toast({ title: "Success", description: enabled ? "OTP enabled successfully" : "OTP disabled successfully" });
+    } catch (error: any) {
+      const message = error.response?.data?.error || "Failed to update OTP setting";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    }
+  };
+
+  const handleCreatePin = async () => {
+    if (newPin.length < 4) {
+      toast({ title: "Error", description: "PIN must be at least 4 characters", variant: "destructive" });
+      return;
+    }
+    if (newPin !== confirmNewPin) {
+      toast({ title: "Error", description: "PINs do not match", variant: "destructive" });
+      return;
+    }
+    try {
+      setPinLoading(true);
+      await api.post("/settings/pin", { pin: newPin });
+      setPinCreated(true);
+      setCreatePinDialogOpen(false);
+      setNewPin("");
+      setConfirmNewPin("");
+      toast({ title: "Success", description: "Transaction PIN created successfully" });
+    } catch (error: any) {
+      const message = error.response?.data?.error || "Failed to create PIN";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setPinLoading(false);
+    }
+  };
+
+  const handleSendPinUpdateOtp = async () => {
+    try {
+      setPinLoading(true);
+      await api.post("/settings/pin/send-otp");
+      setUpdatePinOtpSent(true);
+      startCountdown();
+      toast({ title: "Success", description: "OTP sent successfully" });
+    } catch (error: any) {
+      const message = error.response?.data?.error || "Failed to send OTP";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setPinLoading(false);
+    }
+  };
+
+  const handleUpdatePin = async () => {
+    if (newPin.length < 4) {
+      toast({ title: "Error", description: "PIN must be at least 4 characters", variant: "destructive" });
+      return;
+    }
+    if (newPin !== confirmNewPin) {
+      toast({ title: "Error", description: "PINs do not match", variant: "destructive" });
+      return;
+    }
+    try {
+      setPinLoading(true);
+      await api.put("/settings/pin", { newPin, otp });
+      setUpdatePinDialogOpen(false);
+      setUpdatePinOtpSent(false);
+      setNewPin("");
+      setConfirmNewPin("");
+      setOtp("");
+      toast({ title: "Success", description: "Transaction PIN updated successfully" });
+    } catch (error: any) {
+      const message = error.response?.data?.error || "Failed to update PIN";
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setPinLoading(false);
     }
   };
 
@@ -126,6 +219,7 @@ export default function Settings() {
           <TabsList>
             <TabsTrigger value="profile">Business Profile</TabsTrigger>
             <TabsTrigger value="contact">Contact Info</TabsTrigger>
+            <TabsTrigger value="security">Security</TabsTrigger>
             <TabsTrigger value="preference">OTP Preferences</TabsTrigger>
             <TabsTrigger value="fees">Fee Schedule</TabsTrigger>
           </TabsList>
@@ -255,6 +349,142 @@ export default function Settings() {
             </Card>
           </TabsContent>
 
+          <TabsContent value="security">
+             <Card className="mb-4">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <ShieldCheck className="h-5 w-5" />
+                  Transaction OTP
+                </CardTitle>
+                <CardDescription>Toggle OTP requirement for transfers.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <div className="font-medium">Require OTP for Transfers</div>
+                    <div className="text-sm text-muted-foreground">When enabled, all transfers will require an OTP verification.</div>
+                  </div>
+                  <Switch checked={otpEnabled} onCheckedChange={handleToggleOtpEnabled} />
+                </div>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Lock className="h-5 w-5" />
+                  Transaction PIN
+                </CardTitle>
+                <CardDescription>Manage your transaction PIN for enhanced security.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="font-medium">PIN Status</div>
+                      <div className="text-sm text-muted-foreground">
+                        {pinCreated ? "PIN is set and active" : "No PIN set yet"}
+                      </div>
+                    </div>
+                    {pinCreated ? (
+                      <Button onClick={() => {
+                        setUpdatePinOtpSent(false);
+                        setNewPin("");
+                        setConfirmNewPin("");
+                        setOtp("");
+                        setUpdatePinDialogOpen(true);
+                      }}>
+                        Update PIN
+                      </Button>
+                    ) : (
+                      <Button onClick={() => {
+                        setNewPin("");
+                        setConfirmNewPin("");
+                        setCreatePinDialogOpen(true);
+                      }}>
+                        Create PIN
+                      </Button>
+                    )}
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+
+            {/* Create PIN Dialog */}
+            <Dialog open={createPinDialogOpen} onOpenChange={setCreatePinDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Create Transaction PIN</DialogTitle>
+                  <DialogDescription>Enter a PIN to secure your transactions.</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <Label>New PIN</Label>
+                    <Input type="password" value={newPin} onChange={e => setNewPin(e.target.value)} placeholder="Enter your PIN" maxLength={10} />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Confirm PIN</Label>
+                    <Input type="password" value={confirmNewPin} onChange={e => setConfirmNewPin(e.target.value)} placeholder="Confirm your PIN" maxLength={10} />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button onClick={handleCreatePin} disabled={pinLoading || !newPin || !confirmNewPin}>
+                    {pinLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Create PIN
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+
+            {/* Update PIN Dialog */}
+            <Dialog open={updatePinDialogOpen} onOpenChange={setUpdatePinDialogOpen}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Update Transaction PIN</DialogTitle>
+                  <DialogDescription>
+                    {updatePinOtpSent ? "Enter the OTP and your new PIN." : "First, request an OTP to verify your identity."}
+                  </DialogDescription>
+                </DialogHeader>
+                {!updatePinOtpSent ? (
+                  <div className="py-4">
+                    <Button onClick={handleSendPinUpdateOtp} disabled={pinLoading}>
+                      {pinLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Send OTP
+                    </Button>
+                  </div>
+                ) : (
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <Label>OTP</Label>
+                      <Input value={otp} onChange={e => setOtp(e.target.value)} placeholder="Enter 6-digit OTP" />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>New PIN</Label>
+                      <Input type="password" value={newPin} onChange={e => setNewPin(e.target.value)} placeholder="Enter your new PIN" maxLength={10} />
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Confirm New PIN</Label>
+                      <Input type="password" value={confirmNewPin} onChange={e => setConfirmNewPin(e.target.value)} placeholder="Confirm your new PIN" maxLength={10} />
+                    </div>
+                    <div className="text-center">
+                      <Button variant="link" size="sm" onClick={handleSendPinUpdateOtp} disabled={pinLoading || isActive}>
+                        {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <DialogFooter>
+                  {updatePinOtpSent && (
+                    <Button onClick={handleUpdatePin} disabled={pinLoading || !otp || !newPin || !confirmNewPin}>
+                      {pinLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Update PIN
+                    </Button>
+                  )}
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </TabsContent>
+
           <TabsContent value="preference">
              <Card>
               <CardHeader>
@@ -277,11 +507,18 @@ export default function Settings() {
                             <div className="text-sm text-muted-foreground font-normal">Receive OTPs via mobile phone. Fees apply per SMS.</div>
                         </Label>
                     </div>
+                    <div className="flex items-center space-x-2 border p-4 rounded-lg">
+                        <RadioGroupItem value="whatsapp" id="pref-whatsapp" />
+                         <Label htmlFor="pref-whatsapp" className="flex-1 cursor-pointer">
+                            <div>WhatsApp (Charged)</div>
+                            <div className="text-sm text-muted-foreground font-normal">Receive OTPs via WhatsApp. Fees apply.</div>
+                        </Label>
+                    </div>
                      <div className="flex items-center space-x-2 border p-4 rounded-lg">
                         <RadioGroupItem value="both" id="pref-both" />
                          <Label htmlFor="pref-both" className="flex-1 cursor-pointer">
                             <div>Both (Charged)</div>
-                            <div className="text-sm text-muted-foreground font-normal">Receive OTPs via both email and SMS. Fees apply.</div>
+                            <div className="text-sm text-muted-foreground font-normal">Receive OTPs via multiple channels. Fees apply.</div>
                         </Label>
                     </div>
                  </RadioGroup>

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { WalletInfo, FundWalletInput, CreateVirtualAccountInput } from "@shared/api";
+import { WalletInfo, FundWalletInput, CreateVirtualAccountInput, OtpEnabledResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -36,6 +36,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountdown } from "@/hooks/useCountdown";
 
 const fundWalletSchema = z.object({
@@ -71,6 +72,16 @@ export default function Wallet() {
   const [otpLoading, setOtpLoading] = useState(false);
   const [transferLoading, setTransferLoading] = useState(false);
   const [otp, setOtp] = useState("");
+  const [pin, setPin] = useState("");
+  const [otpMethod, setOtpMethod] = useState<string>("");
+  const [otpEnabled, setOtpEnabled] = useState(true);
+  const [pinCreated, setPinCreated] = useState(false);
+  const [showCreatePinModal, setShowCreatePinModal] = useState(false);
+  const [showResetPinModal, setShowResetPinModal] = useState(false);
+  const [resetPinOtp, setResetPinOtp] = useState("");
+  const [newPin, setNewPin] = useState("");
+  const [showTransferSuccessModal, setShowTransferSuccessModal] = useState(false);
+  const [successfulTransfer, setSuccessfulTransfer] = useState<any>(null);
   const { seconds, isActive, startCountdown } = useCountdown();
 
   const fundForm = useForm<z.infer<typeof fundWalletSchema>>({
@@ -155,29 +166,55 @@ export default function Wallet() {
   }, [watchedAccountNumber, watchedBankCode]);
 
   const onInitiateTransfer = async (values: z.infer<typeof transferSchema>) => {
-     try {
-        setOtpLoading(true);
-        await api.post("/transfers/otp/request", {
-            wallet_id: values.wallet_id
-        });
-        setTransferStep("otp");
-        toast({
-            title: "OTP Sent",
-            description: "Please enter the OTP sent to your email/phone",
-        });
-    } catch (error: any) {
-      toast({
-        title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Failed to request OTP",
-        variant: "destructive"
-      });
-    } finally {
-        setOtpLoading(false);
-    }
+     if (!pin || pin.length !== 4) {
+          toast({
+              title: "Error",
+              description: "Please enter your 4-digit transaction PIN",
+              variant: "destructive"
+          });
+          return;
+      }
+
+      if (otpEnabled) {
+        try {
+          setOtpLoading(true);
+          const requestData: any = {
+              wallet_id: values.wallet_id
+          };
+          if (otpMethod) {
+              requestData.otp_method = otpMethod;
+          }
+          await api.post("/transfers/otp/request", requestData);
+          setTransferStep("otp");
+          toast({
+              title: "OTP Sent",
+              description: "Please enter the OTP sent to you",
+          });
+        } catch (error: any) {
+          toast({
+            title: "Error",
+            description: error.response?.data?.error || error.response?.data?.message || "Failed to request OTP",
+            variant: "destructive"
+          });
+        } finally {
+            setOtpLoading(false);
+        }
+      } else {
+        // If OTP is disabled, just submit the transfer with PIN only
+        onFinalizeTransferWithoutOTP();
+      }
   };
   
   const onFinalizeTransfer = async () => {
-      if (!otp || otp.length < 4) {
+      if (!pin || pin.length !== 4) {
+          toast({
+              title: "Error",
+              description: "Please enter your 4-digit transaction PIN",
+              variant: "destructive"
+          });
+          return;
+      }
+      if (otpEnabled && (!otp || otp.length < 4)) {
           toast({
               title: "Error",
               description: "Please enter a valid OTP",
@@ -190,26 +227,37 @@ export default function Wallet() {
           setTransferLoading(true);
           const values = transferForm.getValues();
           
-          const payload = {
+          const payload: any = {
               bankCode: values.bankCode,
               accountNumber: values.accountNumber,
               accountName: values.accountName,
               amount: Number(values.amount),
               remark: values.remark || "",
-              otp: otp,
+              pin: pin,
               wallet_id: values.wallet_id
           };
+          if (otpEnabled) {
+              payload.otp = otp;
+          }
 
-          await api.post("/transfers/single", payload);
+          const response = await api.post("/transfers/single", payload);
           
-          toast({
-              title: "Success",
-              description: "Transfer successful",
+          // Show success modal
+          const selectedBank = banks.find(b => b.code === values.bankCode);
+          setSuccessfulTransfer({
+              amount: values.amount,
+              bankName: selectedBank?.name || "Unknown Bank",
+              accountNumber: values.accountNumber,
+              accountName: values.accountName,
+              remark: values.remark,
+              reference: response.data?.data?.reference || `TXN-${Date.now()}`
           });
           setTransferOpen(false);
           setTransferStep("details");
           transferForm.reset();
           setOtp("");
+          setPin("");
+          setShowTransferSuccessModal(true);
           fetchWalletInfo();
       } catch (error: any) {
       toast({
@@ -222,24 +270,130 @@ export default function Wallet() {
       }
   };
 
+  const onFinalizeTransferWithoutOTP = async () => {
+    if (!pin || pin.length !== 4) {
+      toast({
+          title: "Error",
+          description: "Please enter your 4-digit transaction PIN",
+          variant: "destructive"
+      });
+      return;
+    }
+    
+    try {
+      setTransferLoading(true);
+      const values = transferForm.getValues();
+      
+      const payload = {
+          bankCode: values.bankCode,
+          accountNumber: values.accountNumber,
+          accountName: values.accountName,
+          amount: Number(values.amount),
+          remark: values.remark || "",
+          pin: pin,
+          wallet_id: values.wallet_id
+      };
+
+      const response = await api.post("/transfers/single", payload);
+      
+      // Show success modal
+      const selectedBank = banks.find(b => b.code === values.bankCode);
+      setSuccessfulTransfer({
+          amount: values.amount,
+          bankName: selectedBank?.name || "Unknown Bank",
+          accountNumber: values.accountNumber,
+          accountName: values.accountName,
+          remark: values.remark,
+          reference: response.data?.data?.reference || `TXN-${Date.now()}`
+      });
+      setTransferOpen(false);
+      setTransferStep("details");
+      transferForm.reset();
+      setPin("");
+      setShowTransferSuccessModal(true);
+      fetchWalletInfo();
+    } catch (error: any) {
+    toast({
+      title: "Error",
+      description: error.response?.data?.error || error.response?.data?.message || "Transfer failed",
+      variant: "destructive"
+    });
+  } finally {
+      setTransferLoading(false);
+    }
+  };
+
   const handleResendOTP = async () => {
     try {
-        setOtpLoading(true);
-        const values = transferForm.getValues();
-        await api.post("/transfers/otp/request", { wallet_id: values.wallet_id });
-        toast({ title: "OTP Sent", description: "New OTP sent." });
-        startCountdown();
+      setOtpLoading(true);
+      const values = transferForm.getValues();
+      const requestData: any = { wallet_id: values.wallet_id };
+      if (otpMethod) {
+        requestData.otp_method = otpMethod;
+      }
+      await api.post("/transfers/otp/request", requestData);
+      toast({ title: "OTP Sent", description: "New OTP sent." });
+      startCountdown();
     } catch (error: any) {
       toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to resend OTP", variant: "destructive" });
     } finally {
-        setOtpLoading(false);
+      setOtpLoading(false);
+    }
+  };
+
+  const handleCreatePin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.post("/settings/pin", { pin: newPin });
+      setPinCreated(true);
+      setShowCreatePinModal(false);
+      setNewPin("");
+      toast({ title: "Success", description: "PIN created successfully" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to create PIN", variant: "destructive" });
+    }
+  };
+
+  const handleSendResetPinOtp = async () => {
+    try {
+      await api.post("/settings/pin/send-otp");
+      toast({ title: "OTP Sent", description: "OTP sent to reset PIN" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP", variant: "destructive" });
+    }
+  };
+
+  const handleResetPin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.put("/settings/pin", { newPin, otp: resetPinOtp });
+      setPinCreated(true);
+      setShowResetPinModal(false);
+      setNewPin("");
+      setResetPinOtp("");
+      toast({ title: "Success", description: "PIN reset successfully" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to reset PIN", variant: "destructive" });
     }
   };
 
   const fetchWalletInfo = async () => {
     try {
-      const response = await api.get<WalletInfo>("/wallet");
-      setWalletInfo(response.data);
+      const [walletRes, otpRes] = await Promise.all([
+        api.get<WalletInfo>("/wallet"),
+        api.get<OtpEnabledResponse>("/settings/otp-enabled"),
+      ]);
+      setWalletInfo(walletRes.data);
+      if (otpRes.data.success) {
+        setOtpEnabled(otpRes.data.otpEnabled);
+        setPinCreated(otpRes.data.pinCreated);
+      }
     } catch (error: any) {
       console.error("Failed to fetch wallet info", error);
       toast({
@@ -604,13 +758,15 @@ export default function Wallet() {
         <Dialog open={transferOpen} onOpenChange={(open) => {
             setTransferOpen(open);
             if (!open) {
-                setTransferStep("details");
-                transferForm.reset();
-                setOtp("");
-                setLookupName(null);
+              setTransferStep("details");
+              transferForm.reset();
+              setOtp("");
+              setPin("");
+              setOtpMethod("");
+              setLookupName(null);
             }
         }}>
-          <DialogContent className="max-w-md">
+          <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
             <DialogHeader>
               <DialogTitle>Transfer Funds</DialogTitle>
               <DialogDescription>
@@ -742,9 +898,54 @@ export default function Wallet() {
                       )}
                     />
 
+                    <div className="space-y-2">
+                      <Label>Transaction PIN</Label>
+                      <Input 
+                        type="password" 
+                        placeholder="Enter your PIN" 
+                        value={pin} 
+                        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                        maxLength={4}
+                      />
+                      {!pinCreated && (
+                        <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
+                          Create PIN
+                        </Button>
+                      )}
+                      {pinCreated && (
+                        <Button variant="link" size="sm" onClick={() => setShowResetPinModal(true)} className="p-0 h-auto">
+                          Forgot PIN?
+                        </Button>
+                      )}
+                    </div>
+
+                    {otpEnabled && (
+                      <div className="space-y-2">
+                        <Label>OTP Method (Optional)</Label>
+                        <RadioGroup value={otpMethod} onValueChange={setOtpMethod} className="flex flex-col gap-2">
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="" id="method-default" />
+                            <Label htmlFor="method-default">Default</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="email" id="method-email" />
+                            <Label htmlFor="method-email">Email</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="sms" id="method-sms" />
+                            <Label htmlFor="method-sms">SMS</Label>
+                          </div>
+                          <div className="flex items-center space-x-2">
+                            <RadioGroupItem value="whatsapp" id="method-whatsapp" />
+                            <Label htmlFor="method-whatsapp">WhatsApp</Label>
+                          </div>
+                        </RadioGroup>
+                      </div>
+                    )}
+
                     <DialogFooter>
-                      <Button type="submit" loading={otpLoading} disabled={!!lookupError || !lookupName}>
-                        Request OTP
+                      <Button type="submit" loading={otpLoading || transferLoading} disabled={!!lookupError || !lookupName}>
+                        {otpEnabled ? "Request OTP" : "Confirm Transfer"}
                       </Button>
                     </DialogFooter>
                   </form>
@@ -787,6 +988,118 @@ export default function Wallet() {
                   </DialogFooter>
                 </div>
             )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Create PIN Modal */}
+        <Dialog open={showCreatePinModal} onOpenChange={setShowCreatePinModal}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Create Transaction PIN</DialogTitle>
+              <DialogDescription>Create a 4-digit PIN for your transactions.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>New PIN</Label>
+                <Input 
+                  type="password" 
+                  placeholder="Enter 4-digit PIN" 
+                  value={newPin} 
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                  maxLength={4}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowCreatePinModal(false)}>Cancel</Button>
+                <Button onClick={handleCreatePin}>Create PIN</Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Reset PIN Modal */}
+        <Dialog open={showResetPinModal} onOpenChange={setShowResetPinModal}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Reset Transaction PIN</DialogTitle>
+              <DialogDescription>Enter OTP to reset your PIN.</DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>OTP</Label>
+                <Input 
+                  placeholder="Enter OTP" 
+                  value={resetPinOtp} 
+                  onChange={(e) => setResetPinOtp(e.target.value)} 
+                />
+                <Button variant="ghost" size="sm" onClick={handleSendResetPinOtp} className="p-0 h-auto">
+                  Send OTP
+                </Button>
+              </div>
+              <div className="space-y-2">
+                <Label>New PIN</Label>
+                <Input 
+                  type="password" 
+                  placeholder="Enter 4-digit PIN" 
+                  value={newPin} 
+                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                  maxLength={4}
+                />
+              </div>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setShowResetPinModal(false)}>Cancel</Button>
+                <Button onClick={handleResetPin}>Reset PIN</Button>
+              </DialogFooter>
+            </div>
+          </DialogContent>
+        </Dialog>
+
+        {/* Transfer Success Modal */}
+        <Dialog open={showTransferSuccessModal} onOpenChange={setShowTransferSuccessModal}>
+          <DialogContent className="max-w-md">
+            <DialogHeader>
+              <DialogTitle className="flex items-center gap-2 text-green-600">
+                <CheckCircle2 className="h-6 w-6" /> Transfer Successful!
+              </DialogTitle>
+            </DialogHeader>
+            {successfulTransfer && (
+              <div className="space-y-3">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-muted-foreground">Reference</span>
+                  <span className="font-mono">{successfulTransfer.reference}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Amount</span>
+                  <span className="font-bold">NGN {Number(successfulTransfer.amount).toLocaleString()}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Bank</span>
+                  <span>{successfulTransfer.bankName}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Account Number</span>
+                  <span>{successfulTransfer.accountNumber}</span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-muted-foreground">Account Name</span>
+                  <span>{successfulTransfer.accountName}</span>
+                </div>
+                {successfulTransfer.remark && (
+                  <div className="flex justify-between items-center">
+                    <span className="text-muted-foreground">Remark</span>
+                    <span>{successfulTransfer.remark}</span>
+                  </div>
+                )}
+              </div>
+            )}
+            <DialogFooter>
+              <Button onClick={() => {
+                setShowTransferSuccessModal(false);
+                setSuccessfulTransfer(null);
+              }}>
+                Done
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

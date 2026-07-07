@@ -94,31 +94,31 @@ const App = () => (
                             <Route path="/kyc/business" element={<TokenProtectedRoute element={<KycBusiness />} />} />
             <Route
               path="/dashboard"
-              element={<KycProtectedRoute element={<Dashboard />} />}
+              element={<TokenProtectedRoute element={<Dashboard />} />}
             />
             <Route
               path="/tasks"
-              element={<KycProtectedRoute element={<Tasks />} />}
+              element={<TokenProtectedRoute element={<Tasks />} />}
             />
             <Route
               path="/ranking"
-              element={<KycProtectedRoute element={<Ranking />} />}
+              element={<TokenProtectedRoute element={<Ranking />} />}
             />
             <Route
               path="/team"
-              element={<KycProtectedRoute element={<Team />} />}
+              element={<TokenProtectedRoute element={<Team />} />}
             />
             <Route
               path="/activity-logs"
-              element={<KycProtectedRoute element={<ActivityLogs />} />}
+              element={<TokenProtectedRoute element={<ActivityLogs />} />}
             />
             <Route
               path="/backlog"
-              element={<KycProtectedRoute element={<Backlog />} />}
+              element={<TokenProtectedRoute element={<Backlog />} />}
             />
             <Route
               path="/ideas"
-              element={<KycProtectedRoute element={<Ideas />} />}
+              element={<TokenProtectedRoute element={<Ideas />} />}
             />
             <Route
               path="/subscription"
@@ -146,7 +146,7 @@ const App = () => (
             />
             <Route
               path="/board"
-              element={<KycProtectedRoute element={<Board />} />}
+              element={<TokenProtectedRoute element={<Board />} />}
             />
             <Route path="/accept-invite/:token" element={<AcceptInvite />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

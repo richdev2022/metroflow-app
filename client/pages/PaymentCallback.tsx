@@ -16,7 +16,7 @@ export default function PaymentCallback() {
   useEffect(() => {
     const verifyPayment = async () => {
       const searchParams = new URLSearchParams(location.search);
-      const reference = searchParams.get("reference"); // Squad appends ?reference=...
+      const reference = searchParams.get("reference") || searchParams.get("paymentReference"); // Handle both query params
 
       if (!reference) {
         setStatus('failed');

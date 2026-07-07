@@ -4,6 +4,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/use-toast";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -20,6 +21,7 @@ export default function Kyc() {
   const [kycType, setKycType] = useState<'bvn' | 'nin'>('bvn');
   const [kycNumber, setKycNumber] = useState('');
   const [kycOtp, setKycOtp] = useState('');
+  const [otpMethod, setOtpMethod] = useState<string>('');
   const [currentStatus, setCurrentStatus] = useState<KycStatus | null>(null);
   const [kycDetails, setKycDetails] = useState<{ message: string; phone: string; firstName: string; lastName: string } | null>(null);
 
@@ -63,20 +65,23 @@ export default function Kyc() {
   const handleInitiate = async () => {
     setLoading(true);
     try {
-      const response = await api.post('/kyc/initiate', { type: kycType, number: kycNumber });
+      const requestBody: any = { type: kycType, number: kycNumber };
+      if (otpMethod) {
+        requestBody.otp_method = otpMethod;
+      }
+      
+      const response = await api.post('/kyc/initiate', requestBody);
       const data = response.data;
       
-      if (data.success) {
-        setKycDetails({
-          message: data.message,
-          phone: data.phone,
-          firstName: data.firstName,
-          lastName: data.lastName
-        });
-        setStep('otp');
-        startCountdown();
-        toast({ title: "OTP Sent", description: data.message });
-      }
+      setKycDetails({
+        message: data.message,
+        phone: data.phone || '',
+        firstName: data.firstName || '',
+        lastName: data.lastName || ''
+      });
+      setStep('otp');
+      startCountdown();
+      toast({ title: "OTP Sent", description: data.message });
     } catch (error: any) {
       toast({ 
         title: "Error", 
@@ -160,6 +165,27 @@ export default function Kyc() {
                   value={kycNumber} 
                   onChange={(e) => setKycNumber(e.target.value)} 
                 />
+              </div>
+              <div className="space-y-2">
+                <Label>OTP Delivery Method (Optional)</Label>
+                <RadioGroup value={otpMethod} onValueChange={setOtpMethod} className="flex flex-col gap-2">
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="" id="kyc-method-default" />
+                    <Label htmlFor="kyc-method-default">Default</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="email" id="kyc-method-email" />
+                    <Label htmlFor="kyc-method-email">Email</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="sms" id="kyc-method-sms" />
+                    <Label htmlFor="kyc-method-sms">SMS</Label>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <RadioGroupItem value="whatsapp" id="kyc-method-whatsapp" />
+                    <Label htmlFor="kyc-method-whatsapp">WhatsApp</Label>
+                  </div>
+                </RadioGroup>
               </div>
               <Button className="w-full" onClick={handleInitiate} disabled={loading}>
                 {loading ? "Processing..." : "Verify Identity"}

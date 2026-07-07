@@ -52,19 +52,19 @@ export interface InviteTeamMemberInput {
 // Task Types
 export interface Task {
   id: string;
-  businessId: string;
-  createdBy: string;
+  businessId?: string;
+  createdBy?: string;
   title: string;
-  description?: string;
+  description?: string | null;
   epic?: string;
-  epicId?: string;
+  epicId?: string | null;
   sprint?: string;
-  targetValue: number;
-  accomplishedValue: number;
+  targetValue: number | string;
+  accomplishedValue: number | string;
   startDate: string;
   endDate: string;
-  dueDate?: string;
-  status: "pending" | "in_progress" | "completed";
+  dueDate?: string | null;
+  status: string;
   isOverdue: boolean;
   assignedTo?: string[];
   attachments?: Attachment[];
@@ -609,11 +609,11 @@ export interface VerifyContactUpdateOtpInput {
 
 // 3. Transaction OTP Preferences
 export interface OtpPreferenceResponse {
-  preference: "email" | "sms" | "both";
+  preference: "email" | "sms" | "whatsapp" | "both";
 }
 
 export interface UpdateOtpPreferenceInput {
-  preference: "email" | "sms" | "both";
+  preference: "email" | "sms" | "whatsapp" | "both";
 }
 
 // 4. Fee Transparency
@@ -640,8 +640,30 @@ export interface FeeConfig {
   currency: string;
 }
 
-// 5. Transfer Authorization
+// 5. Settings - OTP Enabled & PIN Status
+export interface OtpEnabledResponse {
+  success: boolean;
+  otpEnabled: boolean;
+  pinCreated: boolean;
+}
+
+export interface UpdateOtpEnabledInput {
+  enabled: boolean;
+}
+
+// 6. Transaction PIN Management
+export interface CreatePinInput {
+  pin: string;
+}
+
+export interface UpdatePinInput {
+  newPin: string;
+  otp: string;
+}
+
+// 7. Transfer Authorization
 export interface RequestTransferOtpInput {
+  otp_method?: "whatsapp" | "sms" | "email";
   wallet_id?: string;
 }
 
@@ -651,19 +673,54 @@ export interface SingleTransferWithOtpInput {
   accountName: string;
   amount: number;
   remark: string;
-  otp: string;
+  otp?: string;
+  pin: string;
   wallet_id: string;
 }
 
 export interface BulkTransferWithOtpInput {
-  type: "salary" | "manual" | "sprint" | "task";
+  type: "Salary" | "Epic" | "salary" | "manual" | "sprint" | "task";
   source_wallet_id: string;
-  otp: string;
+  otp?: string;
+  pin: string;
   data: {
     items: Array<{
       amount: number;
       bankCode: string;
       accountNumber: string;
+      accountName?: string;
+      remark?: string;
     }>;
   };
+}
+
+// 8. KYC Initiate with OTP method
+export interface KycInitiateInput {
+  type: "bvn" | "nin";
+  number: string;
+  otp_method?: "whatsapp" | "sms" | "email";
+}
+
+// Task Status Types
+export interface TaskStatus {
+  id: string;
+  business_id: string;
+  name: string;
+  color: string;
+  is_default: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CreateTaskStatusInput {
+  name: string;
+  color?: string;
+  sort_order?: number;
+}
+
+export interface UpdateTaskStatusInput {
+  name?: string;
+  color?: string;
+  sort_order?: number;
 }

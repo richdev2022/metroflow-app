@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { PayrollEmployee, Transfer, WalletInfo, PayrollAdjustment, PayrollConfig, Epic, TransferItem } from "@shared/api";
+import { PayrollEmployee, Transfer, WalletInfo, PayrollAdjustment, PayrollConfig, Epic, TransferItem, OtpEnabledResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -22,6 +22,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Calendar } from "@/components/ui/calendar";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountdown } from "@/hooks/useCountdown";
 
 const updatePayrollSchema = z.object({
@@ -104,6 +105,16 @@ export default function Payroll() {
   // Add lookup status per recipient (index-based)
   const [recipientLookupStatus, setRecipientLookupStatus] = useState<Record<number, { loading: boolean; success: boolean; name: string; error?: string }>>({});
   const { seconds, isActive, startCountdown } = useCountdown();
+
+  // New security state
+  const [pin, setPin] = useState("");
+  const [otpMethod, setOtpMethod] = useState<string>("");
+  const [otpEnabled, setOtpEnabled] = useState(true);
+  const [pinCreated, setPinCreated] = useState(false);
+  const [showCreatePinModal, setShowCreatePinModal] = useState(false);
+  const [showResetPinModal, setShowResetPinModal] = useState(false);
+  const [resetPinOtp, setResetPinOtp] = useState("");
+  const [newPin, setNewPin] = useState("");
   
   // Effect to auto-lookup recipient accounts
   useEffect(() => {
@@ -330,14 +341,19 @@ export default function Payroll() {
       fetchEpics();
       fetchTransfers(1);
 
-      const [walletRes, banksRes] = await Promise.all([
+      const [walletRes, banksRes, otpEnabledRes] = await Promise.all([
         api.get<WalletInfo>("/wallet"),
-        api.get<{success: boolean, data: {code: string, name: string}[]}>("/transfers/banks")
+        api.get<{success: boolean, data: {code: string, name: string}[]}>("/transfers/banks"),
+        api.get<OtpEnabledResponse>("/settings/otp-enabled")
       ]);
       
       setWallets(walletRes.data);
       if (banksRes.data.success) {
         setBanks(banksRes.data.data);
+      }
+      if (otpEnabledRes.data.success) {
+        setOtpEnabled(otpEnabledRes.data.otpEnabled);
+        setPinCreated(otpEnabledRes.data.pinCreated);
       }
     } catch (error: any) {
       console.error("Failed to fetch data", error);
@@ -435,13 +451,59 @@ export default function Payroll() {
     try {
       setOtpLoading(true);
       const values = bulkTransferForm.getValues();
-      await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
+      const requestData: any = { wallet_id: values.source_wallet_id };
+      if (otpMethod) {
+        requestData.otp_method = otpMethod;
+      }
+      await api.post("/transfers/otp/request", requestData);
       toast({ title: "OTP Sent", description: "New OTP sent." });
       startCountdown();
     } catch (error: any) {
       toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to resend OTP", variant: "destructive" });
     } finally {
       setOtpLoading(false);
+    }
+  };
+
+  const handleCreatePin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.post("/settings/pin", { pin: newPin });
+      setPinCreated(true);
+      setShowCreatePinModal(false);
+      setNewPin("");
+      toast({ title: "Success", description: "PIN created successfully" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to create PIN", variant: "destructive" });
+    }
+  };
+
+  const handleSendResetPinOtp = async () => {
+    try {
+      await api.post("/settings/pin/send-otp");
+      toast({ title: "OTP Sent", description: "OTP sent to reset PIN" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP", variant: "destructive" });
+    }
+  };
+
+  const handleResetPin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.put("/settings/pin", { newPin, otp: resetPinOtp });
+      setPinCreated(true);
+      setShowResetPinModal(false);
+      setNewPin("");
+      setResetPinOtp("");
+      toast({ title: "Success", description: "PIN reset successfully" });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to reset PIN", variant: "destructive" });
     }
   };
 
@@ -647,8 +709,12 @@ export default function Payroll() {
   };
 
   const onFinalizeBulkTransfer = async (otp: string) => {
-    if (!otp) {
+    if (otpEnabled && !otp) {
       toast({ title: "Error", description: "Please enter OTP", variant: "destructive" });
+      return;
+    }
+    if (!pin || pin.length !== 4) {
+      toast({ title: "Error", description: "Please enter your 4-digit PIN", variant: "destructive" });
       return;
     }
     try {
@@ -680,13 +746,14 @@ export default function Payroll() {
       // Check if it's single transfer mode
       if (values.type === "epic" && epicTransferMode === "single" && items.length === 1) {
         const item = items[0];
-        const payload = {
+        const payload: any = {
           bankCode: item.bankCode,
           accountNumber: item.accountNumber,
           accountName: item.accountName,
           amount: item.amount,
           remark: item.remark,
           otp: otp,
+          pin: pin,
           wallet_id: values.source_wallet_id
         };
         
@@ -711,6 +778,7 @@ export default function Payroll() {
         const payload: any = {
           type: transferType,
           otp: otp,
+          pin: pin,
           source_wallet_id: values.source_wallet_id,
           data: { items }
         };
@@ -1768,6 +1836,51 @@ export default function Payroll() {
                                 </div>
                             )}
 
+                            <div className="space-y-2">
+                                <Label>Transaction PIN</Label>
+                                <Input 
+                                    type="password" 
+                                    placeholder="Enter your PIN" 
+                                    value={pin} 
+                                    onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                                    maxLength={4}
+                                />
+                                {!pinCreated && (
+                                    <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
+                                        Create PIN
+                                    </Button>
+                                )}
+                                {pinCreated && (
+                                    <Button variant="link" size="sm" onClick={() => setShowResetPinModal(true)} className="p-0 h-auto">
+                                        Forgot PIN?
+                                    </Button>
+                                )}
+                            </div>
+
+                            {otpEnabled && (
+                                <div className="space-y-2">
+                                    <Label>OTP Method (Optional)</Label>
+                                    <RadioGroup value={otpMethod} onValueChange={setOtpMethod} className="flex flex-col gap-2">
+                                        <div className="flex items-center space-x-2">
+                                            <RadioGroupItem value="" id="payroll-method-default" />
+                                            <Label htmlFor="payroll-method-default">Default</Label>
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <RadioGroupItem value="email" id="payroll-method-email" />
+                                            <Label htmlFor="payroll-method-email">Email</Label>
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <RadioGroupItem value="sms" id="payroll-method-sms" />
+                                            <Label htmlFor="payroll-method-sms">SMS</Label>
+                                        </div>
+                                        <div className="flex items-center space-x-2">
+                                            <RadioGroupItem value="whatsapp" id="payroll-method-whatsapp" />
+                                            <Label htmlFor="payroll-method-whatsapp">WhatsApp</Label>
+                                        </div>
+                                    </RadioGroup>
+                                </div>
+                            )}
+
                             <DialogFooter>
                                 <Button type="submit" disabled={otpLoading}>
                                     {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
@@ -2086,6 +2199,69 @@ export default function Payroll() {
                         </DialogFooter>
                     </div>
                 )}
+            </DialogContent>
+        </Dialog>
+
+        {/* Create PIN Modal */}
+        <Dialog open={showCreatePinModal} onOpenChange={setShowCreatePinModal}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Create Transaction PIN</DialogTitle>
+                    <DialogDescription>Create a 4-digit PIN for your transactions.</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>New PIN</Label>
+                        <Input 
+                            type="password" 
+                            placeholder="Enter 4-digit PIN" 
+                            value={newPin} 
+                            onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                            maxLength={4}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowCreatePinModal(false)}>Cancel</Button>
+                        <Button onClick={handleCreatePin}>Create PIN</Button>
+                    </DialogFooter>
+                </div>
+            </DialogContent>
+        </Dialog>
+
+        {/* Reset PIN Modal */}
+        <Dialog open={showResetPinModal} onOpenChange={setShowResetPinModal}>
+            <DialogContent>
+                <DialogHeader>
+                    <DialogTitle>Reset Transaction PIN</DialogTitle>
+                    <DialogDescription>Enter OTP to reset your PIN.</DialogDescription>
+                </DialogHeader>
+                <div className="space-y-4">
+                    <div className="space-y-2">
+                        <Label>OTP</Label>
+                        <Input 
+                            placeholder="Enter OTP" 
+                            value={resetPinOtp} 
+                            onChange={(e) => setResetPinOtp(e.target.value)} 
+                        />
+                        <Button variant="ghost" size="sm" onClick={handleSendResetPinOtp} className="p-0 h-auto">
+                            Send OTP
+                        </Button>
+                    </div>
+                    <div className="space-y-2">
+                        <Label>New PIN</Label>
+                        <Input 
+                            type="password" 
+                            placeholder="Enter 4-digit PIN" 
+                            value={newPin} 
+                            onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
+                            maxLength={4}
+                        />
+                    </div>
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setShowResetPinModal(false)}>Cancel</Button>
+                        <Button onClick={handleResetPin}>Reset PIN</Button>
+                    </DialogFooter>
+                </div>
             </DialogContent>
         </Dialog>
 

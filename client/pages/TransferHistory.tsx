@@ -7,15 +7,38 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, RefreshCw, ChevronLeft, ChevronRight, Filter } from "lucide-react";
+import { Loader2, RefreshCw, ChevronLeft, ChevronRight, Filter, Copy } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { format } from "date-fns";
 
 export default function TransferHistory() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast } = useToast();
   const [retryingId, setRetryingId] = useState<string | null>(null);
+  const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
+  const [showDetailModal, setShowDetailModal] = useState(false);
+  const [banks, setBanks] = useState<{ code: string; name: string }[]>([]);
+
+  // Fetch banks for display
+  const fetchBanks = async () => {
+    try {
+      const response = await api.get("/transfers/banks");
+      if (response.data.data) {
+        setBanks(response.data.data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch banks", error);
+    }
+  };
+
+  // Helper to get bank name from code
+  const getBankName = (bankCode: string) => {
+    const bank = banks.find(b => b.code === bankCode);
+    return bank ? bank.name : `Bank (${bankCode})`;
+  };
 
   // Transfer Filter & Pagination States
   const [transferSearch, setTransferSearch] = useState("");
@@ -81,6 +104,7 @@ export default function TransferHistory() {
 
   useEffect(() => {
     fetchTransfers(transferPage);
+    fetchBanks();
   }, [transferPage]);
 
   if (loading && transfers.length === 0) {
@@ -167,7 +191,10 @@ export default function TransferHistory() {
                 </TableHeader>
                 <TableBody>
                 {Array.isArray(transfers) && transfers.map((t) => (
-                    <TableRow key={t.id}>
+                    <TableRow key={t.id} className="cursor-pointer hover:bg-muted/50" onClick={() => {
+                        setSelectedTransfer(t);
+                        setShowDetailModal(true);
+                    }}>
                     <TableCell>{t.recipient_name}</TableCell>
                     <TableCell>{t.currency} {t.amount.toLocaleString()}</TableCell>
                     <TableCell>
@@ -177,7 +204,7 @@ export default function TransferHistory() {
                         {t.failure_reason && <p className="text-xs text-red-500 mt-1">{t.failure_reason}</p>}
                     </TableCell>
                     <TableCell>{new Date(t.created_at).toLocaleDateString()}</TableCell>
-                    <TableCell>
+                    <TableCell onClick={(e) => e.stopPropagation()}>
                         {t.status === 'failed' && (
                         <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)} disabled={retryingId === t.id}>
                             {retryingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
@@ -190,7 +217,7 @@ export default function TransferHistory() {
                 {transfers.length === 0 && (
                     <TableRow>
                         <TableCell colSpan={5} className="text-center h-24">
-                            No transfers found.
+                        No transfers found.
                         </TableCell>
                     </TableRow>
                 )}
@@ -220,6 +247,96 @@ export default function TransferHistory() {
             </div>
             </CardContent>
         </Card>
+
+        {/* Transfer Detail Modal */}
+        <Dialog open={showDetailModal} onOpenChange={setShowDetailModal}>
+            <DialogContent className="max-w-2xl">
+                {selectedTransfer && (
+                    <>
+                        <DialogHeader>
+                            <DialogTitle className="text-xl">Transfer Details</DialogTitle>
+                        </DialogHeader>
+                        <div className="space-y-6 py-4">
+                            <div className="space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-muted-foreground">Reference</span>
+                                    <div className="flex items-center gap-2">
+                                        <span className="font-mono">{selectedTransfer.reference}</span>
+                                        <Button
+                                            variant="ghost"
+                                            size="icon"
+                                            className="h-6 w-6"
+                                            onClick={() => {
+                                                navigator.clipboard.writeText(selectedTransfer.reference || "");
+                                                toast({ title: "Copied" });
+                                            }}
+                                        >
+                                            <Copy className="h-3 w-3" />
+                                        </Button>
+                                    </div>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-muted-foreground">Amount</span>
+                                    <span className="font-semibold">{selectedTransfer.currency} {selectedTransfer.amount.toLocaleString()}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                    <span className="text-sm text-muted-foreground">Status</span>
+                                    <Badge variant={selectedTransfer.status === 'success' ? 'default' : selectedTransfer.status === 'failed' ? 'destructive' : 'secondary'}>
+                                        {selectedTransfer.status}
+                                    </Badge>
+                                </div>
+                            </div>
+
+                            <div className="border-t pt-4">
+                                <h4 className="font-medium mb-3">Recipient Information</h4>
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-muted-foreground">Name</span>
+                                        <span>{selectedTransfer.recipient_name}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-muted-foreground">Account Number</span>
+                                        <span className="font-mono">{selectedTransfer.recipient_account}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-muted-foreground">Bank</span>
+                                        <span>{getBankName(selectedTransfer.recipient_bank || "")}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            <div className="border-t pt-4">
+                                <h4 className="font-medium mb-3">Transaction Dates</h4>
+                                <div className="space-y-2">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-muted-foreground">Created At</span>
+                                        <span>{format(new Date(selectedTransfer.created_at), "MMM d, yyyy h:mm a")}</span>
+                                    </div>
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-sm text-muted-foreground">Updated At</span>
+                                        <span>{format(new Date(selectedTransfer.updated_at), "MMM d, yyyy h:mm a")}</span>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {selectedTransfer.remark && (
+                                <div className="border-t pt-4">
+                                    <h4 className="font-medium mb-3">Remark</h4>
+                                    <p className="text-muted-foreground">{selectedTransfer.remark}</p>
+                                </div>
+                            )}
+
+                            {selectedTransfer.failure_reason && (
+                                <div className="border-t pt-4">
+                                    <h4 className="font-medium mb-3 text-red-500">Failure Reason</h4>
+                                    <p className="text-red-500">{selectedTransfer.failure_reason}</p>
+                                </div>
+                            )}
+                        </div>
+                    </>
+                )}
+            </DialogContent>
+        </Dialog>
       </div>
     </Layout>
   );
