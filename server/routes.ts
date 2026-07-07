@@ -659,6 +659,45 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.put("/api/task-statuses/:id", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const status = await storage.updateTaskStatus(businessId, req.params.id, req.body);
+      if (status) {
+        res.json({ success: true, data: status });
+      } else {
+        res.status(404).json({ success: false, error: "Task status not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update task status" });
+    }
+  });
+
+  app.delete("/api/task-statuses/:id", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const deleted = await storage.deleteTaskStatus(businessId, req.params.id);
+      if (deleted) {
+        res.json({ success: true });
+      } else {
+        res.status(400).json({ success: false, error: "Cannot delete default status or status not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete task status" });
+    }
+  });
+
+  app.put("/api/task-statuses/reorder", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const { statusIds } = req.body;
+      const statuses = await storage.reorderTaskStatuses(businessId, statusIds);
+      res.json({ success: true, data: statuses });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to reorder task statuses" });
+    }
+  });
+
   const httpServer = createServer(app);
   return httpServer;
 }

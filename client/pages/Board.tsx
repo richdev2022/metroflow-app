@@ -22,18 +22,21 @@ import {
   SortableContext,
   sortableKeyboardCoordinates,
   verticalListSortingStrategy,
+  horizontalListSortingStrategy,
   useSortable,
 } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Plus, Loader2, Calendar, Users, Check, X, Copy, Smile, Heart, ThumbsUp } from 'lucide-react';
+import { Plus, Loader2, Calendar, Users, Check, X, Copy, Smile, Heart, ThumbsUp, Edit2, Trash2, GripVertical } from 'lucide-react';
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
+  DialogDescription,
+  DialogFooter,
 } from '@/components/ui/dialog';
 import { useToast } from '@/hooks/use-toast';
 import { format } from 'date-fns';
@@ -68,6 +71,7 @@ interface Column {
   id: string;
   title: string;
   color: string;
+  status: TaskStatus;
 }
 
 const SortableTask = ({
@@ -185,6 +189,109 @@ const SortableTask = ({
   );
 };
 
+const SortableTaskColumn = ({
+  column,
+  tasks,
+  onOpenDetail,
+  teamMembers,
+  updateTask,
+  onEditStatus,
+  onDeleteStatus,
+}: {
+  column: Column;
+  tasks: Task[];
+  onOpenDetail: (task: Task) => void;
+  teamMembers: TeamMember[];
+  updateTask: (taskId: string, updates: Partial<Task>) => Promise<void>;
+  onEditStatus: (status: TaskStatus) => void;
+  onDeleteStatus: (status: TaskStatus) => void;
+}) => {
+  const { setNodeRef, isOver, attributes, listeners, transform, transition, isDragging } = useSortable({
+    id: column.id,
+  });
+
+  // Helper to get contrasting text color
+  const getContrastColor = (hexColor: string) => {
+    const r = parseInt(hexColor.slice(1, 3), 16);
+    const g = parseInt(hexColor.slice(3, 5), 16);
+    const b = parseInt(hexColor.slice(5, 7), 16);
+    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+    return luminance > 0.5 ? '#000000' : '#ffffff';
+  };
+
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    opacity: isDragging ? 0.5 : 1,
+    zIndex: isDragging ? 50 : 'auto',
+  };
+
+  return (
+    <div 
+      ref={setNodeRef}
+      style={style}
+      className="space-y-4 flex flex-col h-full min-w-[300px]"
+    >
+      <div className="flex items-center justify-between flex-shrink-0 gap-2">
+        <div className="flex items-center gap-2">
+          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing">
+            <GripVertical className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <Badge
+            style={{
+              backgroundColor: column.color,
+              color: getContrastColor(column.color),
+            }}
+          >
+            {column.title}
+          </Badge>
+          <span className="text-sm text-muted-foreground">({tasks.length})</span>
+        </div>
+        <div className="flex gap-1">
+          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEditStatus(column.status)}>
+            <Edit2 className="h-3.5 w-3.5" />
+          </Button>
+          {!column.status.is_default && (
+            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => onDeleteStatus(column.status)}>
+              <Trash2 className="h-3.5 w-3.5" />
+            </Button>
+          )}
+        </div>
+      </div>
+      <div
+        ref={(node) => {
+          // Need to handle multiple refs: one for droppable, one for sortable column header
+        }}
+        className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 flex-1 overflow-y-auto transition-colors ${
+          isOver ? 'bg-gray-100 dark:bg-gray-800 ring-2 ring-primary' : ''
+        }`}
+      >
+        <SortableContext
+          items={tasks.map(t => t.id)}
+          strategy={verticalListSortingStrategy}
+        >
+          <div className="space-y-3">
+            {tasks.map((task) => (
+              <SortableTask
+                key={task.id}
+                task={task}
+                onOpenDetail={onOpenDetail}
+                teamMembers={teamMembers}
+                updateTask={updateTask}
+              />
+            ))}
+          </div>
+        </SortableContext>
+        {tasks.length === 0 && (
+          <div className="text-center py-12 text-muted-foreground">
+            No tasks in {column.title}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
 const TaskColumn = ({
   column,
   tasks,
@@ -263,13 +370,19 @@ export default function Board() {
   const [taskStatuses, setTaskStatuses] = useState<TaskStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
+  const [activeStatus, setActiveStatus] = useState<TaskStatus | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showTaskDetailModal, setShowTaskDetailModal] = useState(false);
   const [isUpdatingTask, setIsUpdatingTask] = useState(false);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [showCreateColumnModal, setShowCreateColumnModal] = useState(false);
+  const [showEditColumnModal, setShowEditColumnModal] = useState(false);
+  const [showDeleteColumnModal, setShowDeleteColumnModal] = useState(false);
+  const [selectedStatus, setSelectedStatus] = useState<TaskStatus | null>(null);
   const [newColumnName, setNewColumnName] = useState('');
   const [newColumnColor, setNewColumnColor] = useState('#6b7280');
+  const [editColumnName, setEditColumnName] = useState('');
+  const [editColumnColor, setEditColumnColor] = useState('#6b7280');
   const [showStatusOverview, setShowStatusOverview] = useState(false);
   
   // Comments state
@@ -325,7 +438,9 @@ export default function Board() {
       const data = response.data as ApiResponse<TaskStatus[]>;
       console.log('Fetched task statuses:', data); // Added for debugging
       if (data.success && data.data) {
-        setTaskStatuses(data.data);
+        // Make sure we sort by sort_order
+        const sorted = [...data.data].sort((a, b) => a.sort_order - b.sort_order);
+        setTaskStatuses(sorted);
       }
     } catch (error) {
       console.error('Failed to fetch task statuses:', error);
@@ -359,7 +474,10 @@ export default function Board() {
       } as CreateTaskStatusInput);
       const data = response.data as ApiResponse<TaskStatus>;
       if (data.success && data.data) {
-        setTaskStatuses(prev => [...prev, data.data!]);
+        setTaskStatuses(prev => {
+          const updated = [...prev, data.data!];
+          return updated.sort((a, b) => a.sort_order - b.sort_order);
+        });
         setShowCreateColumnModal(false);
         setNewColumnName('');
         setNewColumnColor('#6b7280');
@@ -370,6 +488,57 @@ export default function Board() {
       toast({
         title: 'Error',
         description: error.response?.data?.error || error.response?.data?.message || 'Failed to create column',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleEditStatus = async () => {
+    if (!selectedStatus) return;
+    try {
+      const response = await api.put(`/task-statuses/${selectedStatus.id}`, {
+        name: editColumnName,
+        color: editColumnColor,
+      });
+      const data = response.data as ApiResponse<TaskStatus>;
+      if (data.success && data.data) {
+        setTaskStatuses(prev => {
+          const updated = prev.map(s => s.id === selectedStatus.id ? data.data! : s);
+          return updated.sort((a, b) => a.sort_order - b.sort_order);
+        });
+        setShowEditColumnModal(false);
+        setSelectedStatus(null);
+        toast({ title: 'Column updated', description: 'Status column updated successfully' });
+      }
+    } catch (error: any) {
+      console.error('Failed to update column:', error);
+      toast({
+        title: 'Error',
+        description: error.response?.data?.error || error.response?.data?.message || 'Failed to update column',
+        variant: 'destructive',
+      });
+    }
+  };
+
+  const handleDeleteStatus = async () => {
+    if (!selectedStatus) return;
+    try {
+      const response = await api.delete(`/task-statuses/${selectedStatus.id}`);
+      const data = response.data as ApiResponse<boolean>;
+      if (data.success) {
+        setTaskStatuses(prev => {
+          const updated = prev.filter(s => s.id !== selectedStatus.id);
+          return updated.sort((a, b) => a.sort_order - b.sort_order);
+        });
+        setShowDeleteColumnModal(false);
+        setSelectedStatus(null);
+        toast({ title: 'Column deleted', description: 'Status column deleted successfully' });
+      }
+    } catch (error: any) {
+      console.error('Failed to delete column:', error);
+      toast({
+        title: 'Error',
+        description: error.response?.data?.error || error.response?.data?.message || 'Failed to delete column',
         variant: 'destructive',
       });
     }
@@ -428,8 +597,11 @@ export default function Board() {
   };
 
   const handleDragStart = (event: DragStartEvent) => {
+    // Check if we're dragging a task or a status
     const task = tasks.find(t => t.id === event.active.id);
+    const status = taskStatuses.find(s => s.id === event.active.id);
     setActiveTask(task || null);
+    setActiveStatus(status || null);
   };
 
   const handleDragOver = (event: DragOverEvent) => {
@@ -439,6 +611,20 @@ export default function Board() {
     const activeId = active.id as string;
     const overId = over.id as string;
 
+    // If dragging a status
+    const activeStatusItem = taskStatuses.find(s => s.id === activeId);
+    if (activeStatusItem) {
+      const overStatusItem = taskStatuses.find(s => s.id === overId);
+      if (overStatusItem && activeId !== overId) {
+        const oldIndex = taskStatuses.findIndex(s => s.id === activeId);
+        const newIndex = taskStatuses.findIndex(s => s.id === overId);
+        const newStatuses = arrayMove(taskStatuses, oldIndex, newIndex);
+        setTaskStatuses(newStatuses);
+      }
+      return;
+    }
+
+    // If dragging a task
     const activeTaskItem = tasks.find(t => t.id === activeId);
     if (!activeTaskItem) return;
 
@@ -464,17 +650,44 @@ export default function Board() {
     }
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
+  const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveTask(null);
+    setActiveStatus(null);
 
     if (!over) return;
 
-    const activeTaskId = active.id as string;
+    const activeId = active.id as string;
     const overId = over.id as string;
 
+    // If dragging a status
+    const activeStatusItem = taskStatuses.find(s => s.id === activeId);
+    if (activeStatusItem) {
+      const oldIndex = taskStatuses.findIndex(s => s.id === activeId);
+      const newIndex = taskStatuses.findIndex(s => s.id === overId);
+      
+      if (oldIndex !== newIndex) {
+        const newStatuses = arrayMove(taskStatuses, oldIndex, newIndex);
+        // Update sort_order and persist
+        const statusIds = newStatuses.map(s => s.id);
+        try {
+          const response = await api.put('/task-statuses/reorder', { statusIds });
+          const data = response.data as ApiResponse<TaskStatus[]>;
+          if (data.success && data.data) {
+            setTaskStatuses(data.data);
+            toast({ title: 'Columns reordered', description: 'Column order updated successfully' });
+          }
+        } catch (error) {
+          console.error('Failed to reorder statuses:', error);
+          toast({ title: 'Error', description: 'Failed to reorder columns', variant: 'destructive' });
+        }
+      }
+      return;
+    }
+
+    // If dragging a task
     // Find the task
-    const task = tasks.find(t => t.id === activeTaskId);
+    const task = tasks.find(t => t.id === activeId);
     if (!task) return;
 
     // Determine target column
@@ -501,7 +714,7 @@ export default function Board() {
     const activeColumn = columns.find(col => col.id === task.status);
     if (activeColumn) {
       const activeItems = getTasksByStatus(activeColumn.id);
-      const fromIndex = activeItems.findIndex(t => t.id === activeTaskId);
+      const fromIndex = activeItems.findIndex(t => t.id === activeId);
       const toIndex = activeItems.findIndex(t => t.id === overId);
 
       if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
@@ -686,6 +899,7 @@ export default function Board() {
       id: status.id,
       title: status.name,
       color: status.color,
+      status,
     };
   };
 
@@ -769,19 +983,34 @@ export default function Board() {
             onDragEnd={handleDragEnd}
           >
             <div className="flex-1 overflow-x-auto overflow-y-hidden">
-              <div className="flex gap-6 h-full pb-4">
-                {columns.map((column) => (
-                  <div key={column.id} className="min-w-[300px] h-full flex flex-col">
-                    <TaskColumn
-                      column={column}
-                      tasks={getTasksByStatus(column.id)}
-                      onOpenDetail={openTaskDetail}
-                      teamMembers={teamMembers}
-                      updateTask={updateTask}
-                    />
-                  </div>
-                ))}
-              </div>
+              <SortableContext
+                items={taskStatuses.map(s => s.id)}
+                strategy={horizontalListSortingStrategy}
+              >
+                <div className="flex gap-6 h-full pb-4">
+                  {columns.map((column) => (
+                    <div key={column.id} className="min-w-[300px] h-full flex flex-col">
+                      <SortableTaskColumn
+                        column={column}
+                        tasks={getTasksByStatus(column.id)}
+                        onOpenDetail={openTaskDetail}
+                        teamMembers={teamMembers}
+                        updateTask={updateTask}
+                        onEditStatus={(status) => {
+                          setSelectedStatus(status);
+                          setEditColumnName(status.name);
+                          setEditColumnColor(status.color);
+                          setShowEditColumnModal(true);
+                        }}
+                        onDeleteStatus={(status) => {
+                          setSelectedStatus(status);
+                          setShowDeleteColumnModal(true);
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
+              </SortableContext>
             </div>
 
           <DragOverlay dropAnimation={dropAnimation}>
@@ -793,6 +1022,15 @@ export default function Board() {
                   teamMembers={teamMembers}
                   updateTask={updateTask}
                 />
+              </div>
+            ) : null}
+            {activeStatus ? (
+              <div className="opacity-90 min-w-[300px]">
+                <Card className="p-4">
+                  <div className="flex items-center gap-2">
+                    <Badge style={{ backgroundColor: activeStatus.color }}>{activeStatus.name}</Badge>
+                  </div>
+                </Card>
               </div>
             ) : null}
           </DragOverlay>
@@ -1094,25 +1332,73 @@ export default function Board() {
                   />
                 </div>
               </div>
-              <div className="text-sm text-muted-foreground">
-                Selected color preview: <span style={{ backgroundColor: newColumnColor, padding: '2px 8px', borderRadius: '4px', color: (() => {
-                  const r = parseInt(newColumnColor.slice(1, 3), 16);
-                  const g = parseInt(newColumnColor.slice(3, 5), 16);
-                  const b = parseInt(newColumnColor.slice(5, 7), 16);
-                  const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-                  return luminance > 0.5 ? '#000000' : '#ffffff';
-                })() }}>{newColumnColor}</span>
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowCreateColumnModal(false)}>Cancel</Button>
+            <Button onClick={handleCreateColumn}>Create Column</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Edit Column Modal */}
+      <Dialog open={showEditColumnModal} onOpenChange={setShowEditColumnModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Edit Column</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4 py-4">
+            <div className="space-y-2">
+              <Label htmlFor="edit-column-name">Column Name</Label>
+              <Input
+                id="edit-column-name"
+                value={editColumnName}
+                onChange={(e) => setEditColumnName(e.target.value)}
+                placeholder="Enter column name"
+              />
+            </div>
+            <div className="space-y-2">
+              <Label htmlFor="edit-column-color">Column Color</Label>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  id="edit-column-color"
+                  title="Choose column color"
+                  value={editColumnColor}
+                  onChange={(e) => setEditColumnColor(e.target.value)}
+                  className="h-10 w-20 cursor-pointer rounded border-0 p-0"
+                />
+                <div className="flex-1">
+                  <Input
+                    id="edit-column-color-hex"
+                    value={editColumnColor}
+                    onChange={(e) => setEditColumnColor(e.target.value)}
+                    placeholder="#000000"
+                  />
+                </div>
               </div>
             </div>
           </div>
-          <div className="flex justify-end gap-2">
-            <Button variant="outline" onClick={() => setShowCreateColumnModal(false)}>
-              Cancel
-            </Button>
-            <Button onClick={handleCreateColumn} disabled={!newColumnName.trim()}>
-              Create Column
-            </Button>
-          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowEditColumnModal(false)}>Cancel</Button>
+            <Button onClick={handleEditStatus}>Save Changes</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Delete Column Modal */}
+      <Dialog open={showDeleteColumnModal} onOpenChange={setShowDeleteColumnModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Delete Column</DialogTitle>
+            <DialogDescription>
+              Are you sure you want to delete this column? This action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setShowDeleteColumnModal(false)}>Cancel</Button>
+            <Button variant="destructive" onClick={handleDeleteStatus}>Delete Column</Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </Layout>

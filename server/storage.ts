@@ -283,7 +283,6 @@ export class MemStorage implements IStorage {
     ]);
 
     // Seed task statuses
-    const now = new Date().toISOString();
     this.taskStatuses.set(businessId, [
       {
         id: "pending",
@@ -1168,7 +1167,8 @@ export class MemStorage implements IStorage {
   }
 
   async getTaskStatuses(businessId: string): Promise<TaskStatus[]> {
-    return this.taskStatuses.get(businessId) || [];
+    const statuses = this.taskStatuses.get(businessId) || [];
+    return [...statuses].sort((a, b) => a.sort_order - b.sort_order);
   }
 
   async createTaskStatus(businessId: string, data: CreateTaskStatusInput): Promise<TaskStatus> {
@@ -1198,6 +1198,41 @@ export class MemStorage implements IStorage {
       }
     }
     return undefined;
+  }
+
+  async updateTaskStatus(businessId: string, statusId: string, updates: Partial<TaskStatus>): Promise<TaskStatus | undefined> {
+    const statuses = this.taskStatuses.get(businessId);
+    if (!statuses) return undefined;
+    const index = statuses.findIndex(s => s.id === statusId);
+    if (index === -1) return undefined;
+    statuses[index] = { ...statuses[index], ...updates, updated_at: new Date().toISOString() };
+    this.taskStatuses.set(businessId, statuses);
+    return statuses[index];
+  }
+
+  async deleteTaskStatus(businessId: string, statusId: string): Promise<boolean> {
+    const statuses = this.taskStatuses.get(businessId);
+    if (!statuses) return false;
+    const status = statuses.find(s => s.id === statusId);
+    if (!status) return false;
+    if (status.is_default) return false;
+    const filtered = statuses.filter(s => s.id !== statusId);
+    this.taskStatuses.set(businessId, filtered);
+    return true;
+  }
+
+  async reorderTaskStatuses(businessId: string, statusIds: string[]): Promise<TaskStatus[]> {
+    const statuses = this.taskStatuses.get(businessId);
+    if (!statuses) return [];
+    const ordered = statusIds.map((id, index) => {
+      const status = statuses.find(s => s.id === id);
+      if (status) {
+        return { ...status, sort_order: index, updated_at: new Date().toISOString() };
+      }
+      return null;
+    }).filter(Boolean) as TaskStatus[];
+    this.taskStatuses.set(businessId, ordered);
+    return ordered;
   }
 }
 
