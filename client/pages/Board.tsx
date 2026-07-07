@@ -212,8 +212,8 @@ const TaskColumn = ({
   };
 
   return (
-    <div className="space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="space-y-4 flex flex-col h-full">
+      <div className="flex items-center justify-between flex-shrink-0">
         <div className="flex items-center gap-2">
           <Badge
             style={{
@@ -228,7 +228,7 @@ const TaskColumn = ({
       </div>
       <div
         ref={setNodeRef}
-        className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 min-h-[500px] transition-colors ${
+        className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 flex-1 overflow-y-auto transition-colors ${
           isOver ? 'bg-gray-100 dark:bg-gray-800 ring-2 ring-primary' : ''
         }`}
       >
@@ -720,7 +720,7 @@ export default function Board() {
 
   return (
     <Layout>
-      <div className="space-y-6">
+      <div className="h-[calc(100vh-120px)] flex flex-col space-y-6">
         <div className="flex items-center justify-between">
           <div>
             <h1 className="text-3xl font-bold text-foreground">Board</h1>
@@ -742,21 +742,23 @@ export default function Board() {
         </div>
 
         {showStatusOverview ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {columns.map((column) => (
-              <Card key={column.id} className="p-4">
-                <div className="flex items-center gap-3">
-                  <div
-                    className="w-4 h-4 rounded-full"
-                    style={{ backgroundColor: column.color }}
-                  />
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-lg">{column.title}</h3>
-                    <p className="text-3xl font-bold">{getTasksByStatus(column.id).length}</p>
+          <div className="overflow-y-auto flex-1">
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+              {columns.map((column) => (
+                <Card key={column.id} className="p-4">
+                  <div className="flex items-center gap-3">
+                    <div
+                      className="w-4 h-4 rounded-full"
+                      style={{ backgroundColor: column.color }}
+                    />
+                    <div className="flex-1">
+                      <h3 className="font-semibold text-lg">{column.title}</h3>
+                      <p className="text-3xl font-bold">{getTasksByStatus(column.id).length}</p>
+                    </div>
                   </div>
-                </div>
-              </Card>
-            ))}
+                </Card>
+              ))}
+            </div>
           </div>
         ) : (
           <DndContext
@@ -766,18 +768,20 @@ export default function Board() {
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
           >
-            <div className="flex gap-6 overflow-x-auto pb-4">
-              {columns.map((column) => (
-                <div key={column.id} className="min-w-[300px]">
-                  <TaskColumn
-                    column={column}
-                    tasks={getTasksByStatus(column.id)}
-                    onOpenDetail={openTaskDetail}
-                    teamMembers={teamMembers}
-                    updateTask={updateTask}
-                  />
-                </div>
-              ))}
+            <div className="flex-1 overflow-x-auto overflow-y-hidden">
+              <div className="flex gap-6 h-full pb-4">
+                {columns.map((column) => (
+                  <div key={column.id} className="min-w-[300px] h-full flex flex-col">
+                    <TaskColumn
+                      column={column}
+                      tasks={getTasksByStatus(column.id)}
+                      onOpenDetail={openTaskDetail}
+                      teamMembers={teamMembers}
+                      updateTask={updateTask}
+                    />
+                  </div>
+                ))}
+              </div>
             </div>
 
           <DragOverlay dropAnimation={dropAnimation}>
