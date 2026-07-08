@@ -62,6 +62,18 @@ import {
   CommandList,
 } from "@/components/ui/command";
 
+type CallParticipant = Call["participants"][number] & {
+  userId?: string;
+  joinedAt?: string;
+  leftAt?: string;
+};
+
+type CallView = Call & {
+  jitsiRoomId?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
 export default function Calls() {
   const { data: callsData, isLoading: callsLoading, error: callsError } = useCalls();
   const createCall = useCreateCall();
@@ -210,8 +222,25 @@ export default function Calls() {
     }
   };
 
-  const getParticipantName = (userId: string) => {
+  const getCurrentUserId = () => {
+    return localStorage.getItem("userId") || "";
+  };
+
+  const getParticipantUserId = (participant: CallParticipant) => {
+    return participant.user_id || participant.userId || "";
+  };
+
+  const getParticipantName = (userId?: string) => {
+    if (!userId) return "Unknown";
     return teamMembers.find((m) => m.id === userId)?.name || userId;
+  };
+
+  const getCallRoomId = (call: CallView) => {
+    return call.jitsi_room_id || call.jitsiRoomId || "";
+  };
+
+  const getCallCreatedAt = (call: CallView) => {
+    return call.created_at || call.createdAt || new Date().toISOString();
   };
 
   const formatDateTime = (dateStr: string) => {
@@ -315,7 +344,7 @@ export default function Calls() {
     );
   };
 
-  const calls = callsData?.calls || [];
+  const calls = (callsData?.calls || []) as CallView[];
 
   return (
     <Layout>
@@ -445,15 +474,15 @@ export default function Calls() {
                 <CardContent className="space-y-4">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Calendar className="h-4 w-4" />
-                    {formatDateTime(call.created_at)}
+                    {formatDateTime(getCallCreatedAt(call))}
                   </div>
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
                     {call.participants
-                      .map((p) => getParticipantName(p.user_id))
+                      .map((p) => getParticipantName(getParticipantUserId(p as CallParticipant)))
                       .join(", ")}
                   </div>
-                  {call.jitsi_room_id && (
+                  {getCallRoomId(call) && (
                     <div>
                       <Button
                         variant="outline"
@@ -475,7 +504,7 @@ export default function Calls() {
                       <>
                         {!call.participants.find(
                           (p) =>
-                            p.user_id === localStorage.getItem("userId") &&
+                            getParticipantUserId(p as CallParticipant) === getCurrentUserId() &&
                             p.status === "joined"
                         ) ? (
                           <Button
@@ -524,22 +553,22 @@ export default function Calls() {
         </div>
       </div>
 
-      {selectedCall && selectedCall.jitsi_room_id && (
+      {selectedCall && getCallRoomId(selectedCall as CallView) && (
         <Dialog open={isJoinDialogOpen} onOpenChange={setIsJoinDialogOpen}>
-          <DialogContent className="max-w-4xl h-[80vh]">
+          <DialogContent className="max-w-5xl h-[85vh] flex flex-col">
             <DialogHeader>
               <DialogTitle>{selectedCall.type === "video" ? "Video" : "Audio"} Call</DialogTitle>
               <DialogDescription>
                 {selectedCall.participants.length} participants
               </DialogDescription>
             </DialogHeader>
-            <div className="flex-1 w-full h-full">
+            <div className="flex-1 min-h-0 w-full">
               <iframe
                 title="Jitsi Meet Call"
-                src={`https://meet.jit.si/${selectedCall.jitsi_room_id}#userInfo.displayName="${
+                src={`https://meet.jit.si/${getCallRoomId(selectedCall as CallView)}#userInfo.displayName=${
                   localStorage.getItem("userName") || "User"
-                }"`}
-                className="w-full h-full min-h-[400px] rounded-lg border border-border"
+                }`}
+                className="w-full h-full min-h-[520px] rounded-lg border border-border"
                 allow="camera; microphone; fullscreen; display-capture; autoplay"
               />
             </div>

@@ -368,14 +368,14 @@ export default function Meetings() {
                 New Meeting
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg">
-              <DialogHeader>
+            <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+              <DialogHeader className="shrink-0 pr-8">
                 <DialogTitle>Schedule New Meeting</DialogTitle>
                 <DialogDescription>
                   Create a new meeting and invite team members
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-4 py-4">
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
                 <div className="grid gap-2">
                   <Label htmlFor="title">Title</Label>
                   <Input
@@ -457,7 +457,7 @@ export default function Meetings() {
                   />
                 </div>
               </div>
-              <DialogFooter>
+              <DialogFooter className="shrink-0">
                 <Button
                   variant="outline"
                   onClick={() => setIsCreateDialogOpen(false)}
@@ -563,12 +563,12 @@ export default function Meetings() {
       </div>
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-lg">
-          <DialogHeader>
+        <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+          <DialogHeader className="shrink-0 pr-8">
             <DialogTitle>Edit Meeting</DialogTitle>
             <DialogDescription>Update meeting details</DialogDescription>
           </DialogHeader>
-          <div className="space-y-4 py-4">
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
             <div className="grid gap-2">
               <Label htmlFor="edit-title">Title</Label>
               <Input
@@ -653,7 +653,7 @@ export default function Meetings() {
               </Select>
             </div>
           </div>
-          <DialogFooter>
+          <DialogFooter className="shrink-0">
             <Button
               variant="outline"
               onClick={() => setIsEditDialogOpen(false)}
@@ -673,8 +673,8 @@ export default function Meetings() {
 
       {selectedMeeting?.meetingUrl && (
         <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
-          <DialogContent className="max-w-5xl h-[85vh]">
-            <DialogHeader>
+          <DialogContent className="max-w-5xl h-[calc(100dvh-1rem)] sm:h-[85vh] flex flex-col overflow-hidden p-3 sm:p-6">
+            <DialogHeader className="shrink-0 pr-8">
               <DialogTitle>{selectedMeeting.title}</DialogTitle>
               <DialogDescription>
                 {formatDateTime(selectedMeeting.startTime)}
@@ -683,10 +683,10 @@ export default function Meetings() {
             <div className="flex-1 min-h-0">
               <iframe
                 title={`${selectedMeeting.title} meeting room`}
-                src={`${selectedMeeting.meetingUrl}#userInfo.displayName="${
+                src={`${selectedMeeting.meetingUrl}#userInfo.displayName=${
                   localStorage.getItem("userName") || "User"
-                }"`}
-                className="w-full h-full min-h-[520px] rounded-lg border border-border"
+                }`}
+                className="w-full h-full min-h-[320px] sm:min-h-[520px] rounded-lg border border-border"
                 allow="camera; microphone; fullscreen; display-capture; autoplay"
               />
             </div>

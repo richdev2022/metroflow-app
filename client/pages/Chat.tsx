@@ -48,6 +48,23 @@ import {
 } from "@/components/ui/command";
 import { Check } from "lucide-react";
 
+type ChatParticipant = Conversation["participants"][number] & {
+  userId?: string;
+};
+
+type ChatMessage = {
+  id: string;
+  conversation_id?: string;
+  conversationId?: string;
+  sender_id?: string;
+  senderId?: string;
+  content?: string;
+  created_at?: string;
+  createdAt?: string;
+  sender_name?: string;
+  senderName?: string;
+};
+
 export default function Chat() {
   const {
     data: conversations,
@@ -160,22 +177,49 @@ export default function Chat() {
     }
   };
 
-  const getParticipantName = (userId: string) => {
+  const getParticipantUserId = (participant?: ChatParticipant) => {
+    return participant?.user_id || participant?.userId || "";
+  };
+
+  const getCurrentUserId = () => {
+    return localStorage.getItem("userId") || "";
+  };
+
+  const getParticipantName = (userId?: string) => {
+    if (!userId) return "Unknown";
     return teamMembers.find((m) => m.id === userId)?.name || userId;
   };
 
   const getConversationName = (conversation: Conversation) => {
-    if (conversation.name) return conversation.name;
+    if (conversation.name?.trim()) return conversation.name;
     if (conversation.type === "direct") {
-      const userId = localStorage.getItem("userId");
+      const userId = getCurrentUserId();
       const otherParticipant = conversation.participants.find(
-        (p) => p.user_id !== userId
+        (p) => getParticipantUserId(p as ChatParticipant) !== userId
       );
+      const participantId = getParticipantUserId(otherParticipant as ChatParticipant);
       return otherParticipant
-        ? getParticipantName(otherParticipant.user_id)
+        ? getParticipantName(participantId)
         : "Direct Message";
     }
     return "Group Chat";
+  };
+
+  const getConversationInitials = (conversation: Conversation) => {
+    const name = getConversationName(conversation) || "Chat";
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  const getMessageSenderId = (message: ChatMessage) => {
+    return message.sender_id || message.senderId || "";
+  };
+
+  const getMessageSenderName = (message: ChatMessage) => {
+    return message.sender_name || message.senderName || getParticipantName(getMessageSenderId(message));
+  };
+
+  const getMessageCreatedAt = (message: ChatMessage) => {
+    return message.created_at || message.createdAt || new Date().toISOString();
   };
 
   const formatTime = (dateStr: string) => {
@@ -183,7 +227,7 @@ export default function Chat() {
     return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   };
 
-  const messages = messagesData?.messages || [];
+  const messages = (messagesData?.messages || []) as ChatMessage[];
 
   const TeamMemberMultiSelect = ({
     selected,
@@ -386,9 +430,7 @@ export default function Chat() {
                       <div className="flex items-center gap-3">
                         <Avatar>
                           <AvatarFallback>
-                            {getConversationName(conversation)
-                              .substring(0, 2)
-                              .toUpperCase()}
+                            {getConversationInitials(conversation)}
                           </AvatarFallback>
                         </Avatar>
                         <div className="flex-1 min-w-0">
@@ -430,9 +472,7 @@ export default function Chat() {
                   <div className="flex items-center gap-3">
                     <Avatar>
                       <AvatarFallback>
-                        {getConversationName(selectedConversation)
-                          .substring(0, 2)
-                          .toUpperCase()}
+                        {getConversationInitials(selectedConversation)}
                       </AvatarFallback>
                     </Avatar>
                     <div>
@@ -458,7 +498,7 @@ export default function Chat() {
                   ) : (
                     messages.map((message) => {
                       const isOwn =
-                        message.sender_id === localStorage.getItem("userId");
+                        getMessageSenderId(message) === getCurrentUserId();
                       return (
                         <div
                           key={message.id}
@@ -473,12 +513,12 @@ export default function Chat() {
                           >
                             {!isOwn && (
                               <p className="text-xs font-medium mb-1 opacity-70">
-                                {message.sender_name}
+                                {getMessageSenderName(message)}
                               </p>
                             )}
-                            <p>{message.content}</p>
+                            <p>{message.content || ""}</p>
                             <p className="text-xs opacity-70 mt-1 text-right">
-                              {formatTime(message.created_at)}
+                              {formatTime(getMessageCreatedAt(message))}
                             </p>
                           </div>
                         </div>
