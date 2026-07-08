@@ -1,13 +1,18 @@
 import { 
   User, Business, 
-  KycStatus, Wallet, BusinessWallet, WalletInfo, 
+  KycStatus, BusinessWallet, WalletInfo, 
   PayrollEmployee, Transfer, KycInitiateInput,
   CreateBusinessWalletInput, FundWalletInput, BulkTransferInput,
   PayrollConfig, PayrollConfigUpdateInput,
   BusinessProfile, UpdateBusinessProfileInput,
   RequestContactUpdateOtpInput, OtpPreferenceResponse, UpdateOtpPreferenceInput,
   FeeConfig, SingleTransferWithOtpInput, BulkTransferWithOtpInput,
-  Epic, TransferItem
+  Epic, TransferItem,
+  Meeting, CreateMeetingInput, UpdateMeetingInput,
+  Conversation, CreateConversationInput,
+  Message, SendMessageInput,
+  Call, CreateCallInput, UpdateCallInput,
+  Task, TaskStatus, CreateTaskStatusInput, UpdateTaskStatusInput
 } from "../shared/api";
 
 export interface InsertUser {
@@ -98,6 +103,28 @@ export interface IStorage {
   verifyPin(userId: string, pin: string): Promise<boolean>;
   sendPinUpdateOtp(userId: string): Promise<string>;
   updatePin(userId: string, newPin: string, otp: string): Promise<void>;
+
+  // 9. Meetings
+  getMeetings(businessId: string, page?: number, limit?: number): Promise<{ meetings: Meeting[], total: number }>;
+  getMeeting(meetingId: string): Promise<Meeting | undefined>;
+  createMeeting(userId: string, businessId: string, data: CreateMeetingInput): Promise<Meeting>;
+  updateMeeting(meetingId: string, data: UpdateMeetingInput): Promise<Meeting | undefined>;
+  deleteMeeting(meetingId: string): Promise<boolean>;
+
+  // 10. Chat
+  getConversations(userId: string): Promise<Conversation[]>;
+  getConversation(conversationId: string): Promise<Conversation | undefined>;
+  createConversation(userId: string, businessId: string, data: CreateConversationInput): Promise<Conversation>;
+  getMessages(conversationId: string, page?: number, limit?: number): Promise<{ messages: Message[], total: number }>;
+  sendMessage(userId: string, conversationId: string, data: SendMessageInput): Promise<Message>;
+
+  // 11. Calls
+  getCalls(businessId: string, page?: number, limit?: number): Promise<{ calls: Call[], total: number }>;
+  getCall(callId: string): Promise<Call | undefined>;
+  createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call>;
+  updateCall(callId: string, data: UpdateCallInput): Promise<Call | undefined>;
+  joinCall(userId: string, callId: string): Promise<Call | undefined>;
+  leaveCall(userId: string, callId: string): Promise<Call | undefined>;
 }
 
 export class MemStorage implements IStorage {
@@ -126,6 +153,10 @@ export class MemStorage implements IStorage {
   private pinUpdateOtps: Map<string, string>; // userId -> otp
   private tasks: Map<string, Task[]>; // businessId -> tasks
   private taskStatuses: Map<string, TaskStatus[]>; // businessId -> task statuses
+  private meetings: Map<string, Meeting[]>; // businessId -> meetings
+  private conversations: Map<string, Conversation[]>; // businessId -> conversations
+  private messages: Map<string, Message[]>; // conversationId -> messages
+  private calls: Map<string, Call[]>; // businessId -> calls
 
   constructor() {
     this.users = new Map();
@@ -153,6 +184,10 @@ export class MemStorage implements IStorage {
     this.pinUpdateOtps = new Map();
     this.tasks = new Map();
     this.taskStatuses = new Map();
+    this.meetings = new Map();
+    this.conversations = new Map();
+    this.messages = new Map();
+    this.calls = new Map();
     
     // Seed some data
     this.seed();
@@ -1233,6 +1268,294 @@ export class MemStorage implements IStorage {
     }).filter(Boolean) as TaskStatus[];
     this.taskStatuses.set(businessId, ordered);
     return ordered;
+  }
+
+  // --- Meetings Methods ---
+  async getMeetings(businessId: string, page = 1, limit = 10): Promise<{ meetings: Meeting[], total: number }> {
+    const allMeetings = this.meetings.get(businessId) || [];
+    const total = allMeetings.length;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const meetings = allMeetings.slice(start, end);
+    return { meetings, total };
+  }
+
+  async getMeeting(meetingId: string): Promise<Meeting | undefined> {
+    for (const meetings of this.meetings.values()) {
+      const meeting = meetings.find(m => m.id === meetingId);
+      if (meeting) return meeting;
+    }
+    return undefined;
+  }
+
+  async createMeeting(userId: string, businessId: string, data: CreateMeetingInput): Promise<Meeting> {
+    const now = new Date().toISOString();
+    const meetingId = `meeting_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const newMeeting: Meeting = {
+      id: meetingId,
+      title: data.title,
+      description: data.description,
+      startTime: data.startTime,
+      endTime: data.endTime,
+      timezone: data.timezone,
+      createdById: userId,
+      status: "scheduled",
+      meetingUrl: `https://meet.jit.si/metricorex-${encodeURIComponent(meetingId)}`,
+      createdAt: now,
+      updatedAt: now,
+      attendees: data.attendeeIds.map(userId => ({
+        id: `attendee_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        userId: userId,
+        status: "invited"
+      }))
+    };
+    const currentMeetings = this.meetings.get(businessId) || [];
+    this.meetings.set(businessId, [...currentMeetings, newMeeting]);
+    return newMeeting;
+  }
+
+  async updateMeeting(meetingId: string, data: UpdateMeetingInput): Promise<Meeting | undefined> {
+    for (const [businessId, meetings] of this.meetings.entries()) {
+      const index = meetings.findIndex(m => m.id === meetingId);
+      if (index !== -1) {
+        const { attendeeIds, ...meetingUpdates } = data;
+        let updatedMeeting: Meeting = {
+          ...meetings[index],
+          ...meetingUpdates,
+          updatedAt: new Date().toISOString()
+        };
+        if (attendeeIds) {
+          updatedMeeting.attendees = attendeeIds.map(userId => ({
+            id: `attendee_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            userId: userId,
+            status: "invited"
+          }));
+        }
+        meetings[index] = updatedMeeting;
+        this.meetings.set(businessId, meetings);
+        return updatedMeeting;
+      }
+    }
+    return undefined;
+  }
+
+  async deleteMeeting(meetingId: string): Promise<boolean> {
+    for (const [businessId, meetings] of this.meetings.entries()) {
+      const filtered = meetings.filter(m => m.id !== meetingId);
+      if (filtered.length !== meetings.length) {
+        this.meetings.set(businessId, filtered);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // --- Chat Methods ---
+  async getConversations(userId: string): Promise<Conversation[]> {
+    const allConversations: Conversation[] = [];
+    for (const conversations of this.conversations.values()) {
+      for (const conversation of conversations) {
+        const isParticipant = conversation.participants.some(p => p.user_id === userId);
+        if (isParticipant) {
+          allConversations.push(conversation);
+        }
+      }
+    }
+    return allConversations;
+  }
+
+  async getConversation(conversationId: string): Promise<Conversation | undefined> {
+    for (const conversations of this.conversations.values()) {
+      const conversation = conversations.find(c => c.id === conversationId);
+      if (conversation) return conversation;
+    }
+    return undefined;
+  }
+
+  async createConversation(userId: string, businessId: string, data: CreateConversationInput): Promise<Conversation> {
+    const now = new Date().toISOString();
+    const newConversation: Conversation = {
+      id: `conv_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      name: data.name,
+      type: data.type,
+      created_by: userId,
+      created_at: now,
+      updated_at: now,
+      participants: data.participant_ids.map(userId => ({
+        id: `participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+        user_id: userId
+      }))
+    };
+    const currentConversations = this.conversations.get(businessId) || [];
+    this.conversations.set(businessId, [...currentConversations, newConversation]);
+    return newConversation;
+  }
+
+  async getMessages(conversationId: string, page = 1, limit = 50): Promise<{ messages: Message[], total: number }> {
+    const allMessages = this.messages.get(conversationId) || [];
+    const total = allMessages.length;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const messages = allMessages.slice(start, end);
+    return { messages, total };
+  }
+
+  async sendMessage(userId: string, conversationId: string, data: SendMessageInput): Promise<Message> {
+    const now = new Date().toISOString();
+    const user = await this.getUser(userId);
+    const newMessage: Message = {
+      id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      conversation_id: conversationId,
+      sender_id: userId,
+      content: data.content,
+      attachment_url: data.attachment_url,
+      attachment_type: data.attachment_type,
+      created_at: now,
+      sender_name: user?.name
+    };
+    const currentMessages = this.messages.get(conversationId) || [];
+    this.messages.set(conversationId, [...currentMessages, newMessage]);
+
+    // Update conversation's last message
+    for (const [businessId, conversations] of this.conversations.entries()) {
+      const index = conversations.findIndex(c => c.id === conversationId);
+      if (index !== -1) {
+        conversations[index] = {
+          ...conversations[index],
+          last_message: data.content,
+          last_message_at: now,
+          updated_at: now
+        };
+        this.conversations.set(businessId, conversations);
+        break;
+      }
+    }
+
+    return newMessage;
+  }
+
+  // --- Calls Methods ---
+  async getCalls(businessId: string, page = 1, limit = 10): Promise<{ calls: Call[], total: number }> {
+    const allCalls = this.calls.get(businessId) || [];
+    const total = allCalls.length;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const calls = allCalls.slice(start, end);
+    return { calls, total };
+  }
+
+  async getCall(callId: string): Promise<Call | undefined> {
+    for (const calls of this.calls.values()) {
+      const call = calls.find(c => c.id === callId);
+      if (call) return call;
+    }
+    return undefined;
+  }
+
+  async createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call> {
+    const now = new Date().toISOString();
+    const jitsiRoomId = `room_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const invitedParticipantIds = Array.from(new Set(data.participant_ids.filter(id => id !== userId)));
+    const newCall: Call = {
+      id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      type: data.type,
+      status: "ongoing",
+      started_at: now,
+      created_by: userId,
+      jitsi_room_id: jitsiRoomId,
+      created_at: now,
+      updated_at: now,
+      participants: [
+        {
+          id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          user_id: userId,
+          status: "joined",
+          joined_at: now
+        },
+        ...invitedParticipantIds.map(userId => ({
+          id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+          user_id: userId,
+          status: "invited" as const
+        }))
+      ]
+    };
+    const currentCalls = this.calls.get(businessId) || [];
+    this.calls.set(businessId, [...currentCalls, newCall]);
+    return newCall;
+  }
+
+  async updateCall(callId: string, data: UpdateCallInput): Promise<Call | undefined> {
+    for (const [businessId, calls] of this.calls.entries()) {
+      const index = calls.findIndex(c => c.id === callId);
+      if (index !== -1) {
+        let updatedCall = { ...calls[index], ...data, updated_at: new Date().toISOString() };
+        if (data.status === "ongoing" && !updatedCall.started_at) {
+          updatedCall.started_at = new Date().toISOString();
+        }
+        if (data.status === "completed" && !updatedCall.ended_at) {
+          updatedCall.ended_at = new Date().toISOString();
+        }
+        calls[index] = updatedCall;
+        this.calls.set(businessId, calls);
+        return updatedCall;
+      }
+    }
+    return undefined;
+  }
+
+  async joinCall(userId: string, callId: string): Promise<Call | undefined> {
+    for (const [businessId, calls] of this.calls.entries()) {
+      const index = calls.findIndex(c => c.id === callId);
+      if (index !== -1) {
+        const now = new Date().toISOString();
+        const updatedCall = { ...calls[index], updated_at: now };
+        const participantIndex = updatedCall.participants.findIndex(p => p.user_id === userId);
+        if (participantIndex !== -1) {
+          updatedCall.participants[participantIndex] = {
+            ...updatedCall.participants[participantIndex],
+            status: "joined",
+            joined_at: now
+          };
+        } else {
+          updatedCall.participants.push({
+            id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            user_id: userId,
+            status: "joined",
+            joined_at: now
+          });
+        }
+        if (updatedCall.status === "ringing") {
+          updatedCall.status = "ongoing";
+          updatedCall.started_at = updatedCall.started_at || now;
+        }
+        calls[index] = updatedCall;
+        this.calls.set(businessId, calls);
+        return updatedCall;
+      }
+    }
+    return undefined;
+  }
+
+  async leaveCall(userId: string, callId: string): Promise<Call | undefined> {
+    for (const [businessId, calls] of this.calls.entries()) {
+      const index = calls.findIndex(c => c.id === callId);
+      if (index !== -1) {
+        const now = new Date().toISOString();
+        const updatedCall = { ...calls[index], updated_at: now };
+        const participantIndex = updatedCall.participants.findIndex(p => p.user_id === userId);
+        if (participantIndex !== -1) {
+          updatedCall.participants[participantIndex] = {
+            ...updatedCall.participants[participantIndex],
+            status: "left",
+            left_at: now
+          };
+        }
+        calls[index] = updatedCall;
+        this.calls.set(businessId, calls);
+        return updatedCall;
+      }
+    }
+    return undefined;
   }
 }
 

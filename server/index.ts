@@ -74,7 +74,7 @@ app.use((req, res, next) => {
     });
   };
 
-  const DEFAULT_PORT = 8081; // Use 8081 to avoid conflicts with Vite's default 8080
+  const DEFAULT_PORT = 8082; // Use 8082 to avoid conflicts with Vite's default 8080
   const PORT = process.env.PORT ? parseInt(process.env.PORT) : DEFAULT_PORT;
   startServer(PORT);
 })();

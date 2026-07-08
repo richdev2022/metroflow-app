@@ -11,8 +11,10 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useToast } from "@/components/ui/use-toast";
 import { api } from "@/lib/api-client";
+import { assertApiSuccess, getApiMessage } from "@/lib/api-response";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { useCountdown } from "@/hooks/useCountdown";
@@ -29,6 +31,7 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
   const { seconds, isActive, startCountdown } = useCountdown();
   const [step, setStep] = useState<'initiate' | 'otp'>('initiate');
   const [kycType, setKycType] = useState<'bvn' | 'nin'>('bvn');
+  const [otpMethod, setOtpMethod] = useState<'sms' | 'whatsapp'>('sms');
   const [kycNumber, setKycNumber] = useState('');
   const [kycOtp, setKycOtp] = useState('');
   const [loading, setLoading] = useState(false);
@@ -56,24 +59,26 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
   const handleInitiate = async () => {
     setLoading(true);
     try {
-      const response = await api.post('/kyc/initiate', { type: kycType, number: kycNumber });
-      const data = response.data;
+      const response = await api.post('/kyc/initiate', {
+        type: kycType,
+        number: kycNumber,
+        otp_method: otpMethod,
+      });
+      const data = assertApiSuccess(response.data, "Failed to initiate verification");
       
-      if (data.success) {
-        setKycDetails({
-          message: data.message,
-          phone: data.phone,
-          firstName: data.firstName,
-          lastName: data.lastName
-        });
-        setStep('otp');
-        startCountdown();
-        toast({ title: "OTP Sent", description: data.message });
-      }
+      setKycDetails({
+        message: data.message || `OTP sent via ${otpMethod === 'sms' ? 'SMS' : 'WhatsApp'}`,
+        phone: data.phone || '',
+        firstName: data.firstName || '',
+        lastName: data.lastName || ''
+      });
+      setStep('otp');
+      startCountdown();
+      toast({ title: "OTP Sent", description: data.message || `OTP sent via ${otpMethod === 'sms' ? 'SMS' : 'WhatsApp'}` });
     } catch (error: any) {
       toast({ 
         title: "Error", 
-        description: error.response?.data?.error || "Failed to initiate verification", 
+        description: getApiMessage(error, "Failed to initiate verification"), 
         variant: "destructive" 
       });
     } finally {
@@ -85,8 +90,9 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
     setLoading(true);
     try {
       const response = await api.post('/kyc/verify-otp', { otp: kycOtp });
-      if (response.data.success) {
-        toast({ title: "Verified", description: `${kycType.toUpperCase()} verified successfully` });
+      const data = assertApiSuccess(response.data, "Verification failed");
+      if (data.success !== false) {
+        toast({ title: "Verified", description: data.message || `${kycType.toUpperCase()} verified successfully` });
         
         // Refresh status to check what's next
         const statusRes = await api.get('/kyc/status');
@@ -105,7 +111,7 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
     } catch (error: any) {
       toast({ 
         title: "Error", 
-        description: error.response?.data?.error || "Verification failed", 
+        description: getApiMessage(error, "Verification failed"), 
         variant: "destructive" 
       });
     } finally {
@@ -167,22 +173,51 @@ export function KycModal({ open, onOpenChange, status: initialStatus, onSuccess 
                   onChange={(e) => setKycNumber(e.target.value)} 
                 />
               </div>
+              <div className="space-y-2">
+                <Label className="text-sm sm:text-base">Preferred OTP Option</Label>
+                <RadioGroup
+                  value={otpMethod}
+                  onValueChange={(value: 'sms' | 'whatsapp') => setOtpMethod(value)}
+                  className="grid grid-cols-1 sm:grid-cols-2 gap-2"
+                >
+                  <Label
+                    htmlFor="kyc-otp-sms"
+                    className="flex items-center gap-2 rounded-md border p-3 cursor-pointer"
+                  >
+                    <RadioGroupItem value="sms" id="kyc-otp-sms" />
+                    <span>SMS</span>
+                  </Label>
+                  <Label
+                    htmlFor="kyc-otp-whatsapp"
+                    className="flex items-center gap-2 rounded-md border p-3 cursor-pointer"
+                  >
+                    <RadioGroupItem value="whatsapp" id="kyc-otp-whatsapp" />
+                    <span>WhatsApp</span>
+                  </Label>
+                </RadioGroup>
+              </div>
             </>
           ) : (
             <div className="space-y-4">
               {kycDetails && (
                 <div className="bg-muted p-3 rounded-md space-y-2 text-sm">
                   <p className="font-medium text-primary">{kycDetails.message}</p>
-                  <div className="grid grid-cols-2 gap-2 text-muted-foreground">
-                    <div>
-                      <span className="block text-xs uppercase">Name</span>
-                      <span className="font-medium text-foreground">{kycDetails.firstName} {kycDetails.lastName}</span>
+                  {(kycDetails.firstName || kycDetails.lastName || kycDetails.phone) && (
+                    <div className="grid grid-cols-2 gap-2 text-muted-foreground">
+                      {(kycDetails.firstName || kycDetails.lastName) && (
+                        <div>
+                          <span className="block text-xs uppercase">Name</span>
+                          <span className="font-medium text-foreground">{kycDetails.firstName} {kycDetails.lastName}</span>
+                        </div>
+                      )}
+                      {kycDetails.phone && (
+                        <div>
+                          <span className="block text-xs uppercase">Phone Linked</span>
+                          <span className="font-medium text-foreground">{kycDetails.phone}</span>
+                        </div>
+                      )}
                     </div>
-                    <div>
-                      <span className="block text-xs uppercase">Phone Linked</span>
-                      <span className="font-medium text-foreground">{kycDetails.phone}</span>
-                    </div>
-                  </div>
+                  )}
                 </div>
               )}
                <div className="space-y-2">

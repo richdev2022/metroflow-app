@@ -30,6 +30,9 @@ import TransferHistory from "./pages/TransferHistory";
 import Settings from "./pages/Settings";
 import Board from "./pages/Board";
 import NotFound from "./pages/NotFound";
+import Meetings from "./pages/Meetings";
+import Chat from "./pages/Chat";
+import Calls from "./pages/Calls";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -147,6 +150,18 @@ const App = () => (
             <Route
               path="/board"
               element={<TokenProtectedRoute element={<Board />} />}
+            />
+            <Route
+              path="/meetings"
+              element={<TokenProtectedRoute element={<Meetings />} />}
+            />
+            <Route
+              path="/chat"
+              element={<TokenProtectedRoute element={<Chat />} />}
+            />
+            <Route
+              path="/calls"
+              element={<TokenProtectedRoute element={<Calls />} />}
             />
             <Route path="/accept-invite/:token" element={<AcceptInvite />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}

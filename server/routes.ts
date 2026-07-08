@@ -2,8 +2,12 @@ import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
+import { Server as SocketIOServer } from "socket.io";
 
 const upload = multer({ storage: multer.memoryStorage() });
+
+// Store active users
+const activeUsers = new Map<string, { userId: string; businessId: string; socketId: string }>();
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Middleware to simulate auth (get userId from header or token)
@@ -698,6 +702,316 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  // --- Meetings Routes ---
+  app.get("/api/meetings", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const { meetings, total } = await storage.getMeetings(businessId, page, limit);
+      res.json({ success: true, data: { meetings, total } });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get meetings" });
+    }
+  });
+
+  app.get("/api/meetings/:id", async (req, res) => {
+    try {
+      const meeting = await storage.getMeeting(req.params.id);
+      if (meeting) {
+        res.json({ success: true, data: meeting });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get meeting" });
+    }
+  });
+
+  app.post("/api/meetings", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const businessId = getBusinessId(req);
+      const meeting = await storage.createMeeting(userId, businessId, req.body);
+      
+      // Emit real-time event
+      const io = (global as any).io;
+      if (io) {
+        io.to(businessId).emit('meeting:created', meeting);
+      }
+      
+      res.json({ success: true, data: meeting });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create meeting" });
+    }
+  });
+
+  app.put("/api/meetings/:id", async (req, res) => {
+    try {
+      const meeting = await storage.updateMeeting(req.params.id, req.body);
+      if (meeting) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('meeting:updated', meeting);
+        }
+        
+        res.json({ success: true, data: meeting });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update meeting" });
+    }
+  });
+
+  app.delete("/api/meetings/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteMeeting(req.params.id);
+      if (success) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('meeting:deleted', req.params.id);
+        }
+        
+        res.json({ success: true });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete meeting" });
+    }
+  });
+
+  // --- Chat Routes ---
+  app.get("/api/chat/conversations", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const conversations = await storage.getConversations(userId);
+      res.json({ success: true, data: conversations });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get conversations" });
+    }
+  });
+
+  app.post("/api/chat/conversations", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const businessId = getBusinessId(req);
+      const conversation = await storage.createConversation(userId, businessId, req.body);
+      
+      // Emit real-time event
+      const io = (global as any).io;
+      if (io) {
+        io.to(businessId).emit('conversation:created', conversation);
+      }
+      
+      res.json({ success: true, data: conversation });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create conversation" });
+    }
+  });
+
+  app.get("/api/chat/conversations/:id/messages", async (req, res) => {
+    try {
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 50;
+      const { messages, total } = await storage.getMessages(req.params.id, page, limit);
+      res.json({ success: true, data: { messages, total } });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get messages" });
+    }
+  });
+
+  app.post("/api/chat/conversations/:id/messages", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const message = await storage.sendMessage(userId, req.params.id, req.body);
+      
+      // Emit real-time event
+      const io = (global as any).io;
+      if (io) {
+        io.to(`conversation-${req.params.id}`).emit('message:created', message);
+      }
+      
+      res.json({ success: true, data: message });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  // --- Calls Routes ---
+  app.get("/api/calls", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const { calls, total } = await storage.getCalls(businessId, page, limit);
+      res.json({ success: true, data: { calls, total } });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get calls" });
+    }
+  });
+
+  app.get("/api/calls/:id", async (req, res) => {
+    try {
+      const call = await storage.getCall(req.params.id);
+      if (call) {
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get call" });
+    }
+  });
+
+  app.post("/api/calls", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const businessId = getBusinessId(req);
+      const call = await storage.createCall(userId, businessId, req.body);
+      
+      // Emit real-time event
+      const io = (global as any).io;
+      if (io) {
+        io.to(businessId).emit('call:created', call);
+      }
+      
+      res.json({ success: true, data: call });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create call" });
+    }
+  });
+
+  app.put("/api/calls/:id", async (req, res) => {
+    try {
+      const call = await storage.updateCall(req.params.id, req.body);
+      if (call) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('call:updated', call);
+        }
+        
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update call" });
+    }
+  });
+
+  app.post("/api/calls/:id/join", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const call = await storage.joinCall(userId, req.params.id);
+      if (call) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('call:participantJoined', { callId: req.params.id, userId });
+        }
+        
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to join call" });
+    }
+  });
+
+  app.post("/api/calls/:id/leave", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const call = await storage.leaveCall(userId, req.params.id);
+      if (call) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('call:participantLeft', { callId: req.params.id, userId });
+        }
+        
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to leave call" });
+    }
+  });
+
   const httpServer = createServer(app);
+
+  // Set up Socket.io
+  const io = new SocketIOServer(httpServer, {
+    cors: {
+      origin: true,
+      credentials: true
+    }
+  });
+
+  io.on('connection', (socket) => {
+    console.log('New client connected:', socket.id);
+
+    // Handle user going online
+    socket.on('user-online', (userId: string, businessId: string) => {
+      activeUsers.set(userId, { userId, businessId, socketId: socket.id });
+      
+      // Notify all users in the same business that this user is online
+      const usersInBusiness = Array.from(activeUsers.values()).filter(u => u.businessId === businessId);
+      const onlineUserIds = usersInBusiness.map(u => u.userId);
+      
+      // Emit presence update
+      io.to(businessId).emit('user-presence-updated', { userId, status: 'online' });
+      
+      // Join the business room
+      socket.join(businessId);
+      
+      console.log(`User ${userId} online in business ${businessId}`);
+    });
+
+    // Handle user keep-alive
+    socket.on('user-keep-alive', (userId: string, businessId: string) => {
+      if (!activeUsers.has(userId)) {
+        activeUsers.set(userId, { userId, businessId, socketId: socket.id });
+        socket.join(businessId);
+      }
+    });
+
+    // Handle joining conversation room
+    socket.on('join-conversation', (conversationId: string) => {
+      socket.join(`conversation-${conversationId}`);
+      console.log(`User joined conversation ${conversationId}`);
+    });
+
+    // Handle disconnection
+    socket.on('disconnect', () => {
+      console.log('Client disconnected:', socket.id);
+      
+      // Find and remove user from activeUsers
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          activeUsers.delete(userId);
+          // Notify others this user went offline
+          io.to(user.businessId).emit('user-presence-updated', { userId, status: 'offline' });
+          console.log(`User ${userId} offline`);
+          break;
+        }
+      }
+    });
+  });
+
+  // Helper function to emit events (we'll use this from our route handlers)
+  (global as any).io = io;
+
   return httpServer;
 }

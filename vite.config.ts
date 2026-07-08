@@ -9,8 +9,13 @@ export default defineConfig(({ mode }) => ({
     port: process.env.PORT ? parseInt(process.env.PORT) : 8080,
     proxy: {
       '/api': {
-        target: 'http://localhost:8081',
+        target: 'http://localhost:8082',
         changeOrigin: true,
+      },
+      '/socket.io': {
+        target: 'http://localhost:8082',
+        changeOrigin: true,
+        ws: true,
       },
     },
     fs: {

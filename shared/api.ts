@@ -724,3 +724,114 @@ export interface UpdateTaskStatusInput {
   color?: string;
   sort_order?: number;
 }
+
+// --- Meetings, Chat & Calls Types ---
+
+// Meeting Types
+export interface Meeting {
+  id: string;
+  title: string;
+  description?: string;
+  startTime: string;
+  endTime: string;
+  timezone: string;
+  createdById: string;
+  status: "scheduled" | "ongoing" | "completed" | "cancelled";
+  meetingUrl: string;
+  googleEventId?: string;
+  createdAt: string;
+  updatedAt: string;
+  attendees: Array<{
+    id: string;
+    userId: string;
+    status: "invited" | "accepted" | "declined" | "tentative";
+  }>;
+}
+
+export interface CreateMeetingInput {
+  title: string;
+  description?: string;
+  startTime: string;
+  endTime: string;
+  timezone: string;
+  attendeeIds: string[];
+}
+
+export interface UpdateMeetingInput {
+  title?: string;
+  description?: string;
+  startTime?: string;
+  endTime?: string;
+  timezone?: string;
+  attendeeIds?: string[];
+  status?: "scheduled" | "ongoing" | "completed" | "cancelled";
+}
+
+// Chat Types
+export interface Conversation {
+  id: string;
+  name?: string;
+  type: "direct" | "group";
+  created_by: string;
+  created_at: string;
+  updated_at: string;
+  participants: Array<{
+    id: string;
+    user_id: string;
+    last_read_at?: string;
+  }>;
+  last_message?: string;
+  last_message_at?: string;
+}
+
+export interface CreateConversationInput {
+  name?: string;
+  type: "direct" | "group";
+  participant_ids: string[];
+}
+
+export interface Message {
+  id: string;
+  conversation_id: string;
+  sender_id: string;
+  content: string;
+  attachment_url?: string;
+  attachment_type?: string;
+  created_at: string;
+  sender_name?: string;
+}
+
+export interface SendMessageInput {
+  content: string;
+  attachment_url?: string;
+  attachment_type?: string;
+}
+
+// Call Types
+export interface Call {
+  id: string;
+  type: "audio" | "video";
+  status: "ringing" | "ongoing" | "completed" | "missed" | "cancelled";
+  started_at?: string;
+  ended_at?: string;
+  created_by: string;
+  jitsi_room_id?: string;
+  created_at: string;
+  updated_at: string;
+  participants: Array<{
+    id: string;
+    user_id: string;
+    status: "invited" | "joined" | "left";
+    joined_at?: string;
+    left_at?: string;
+  }>;
+}
+
+export interface CreateCallInput {
+  type: "audio" | "video";
+  participant_ids: string[];
+}
+
+export interface UpdateCallInput {
+  status: "ringing" | "ongoing" | "completed" | "missed" | "cancelled";
+}

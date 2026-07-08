@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
 import { BusinessProfile, OtpPreferenceResponse, FeeConfig, OtpEnabledResponse } from "@shared/api";
+import { assertApiSuccess, getApiMessage, pickResponseField } from "@/lib/api-response";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,24 +51,33 @@ export default function Settings() {
     try {
       setLoading(true);
       const [profileRes, prefRes, otpEnabledRes, feesRes] = await Promise.all([
-        api.get<{success: boolean, settings: BusinessProfile}>("/settings"),
-        api.get<{success: boolean, preference: string}>("/settings/otp-preference"),
+        api.get<{success: boolean, settings?: BusinessProfile, data?: BusinessProfile}>("/settings"),
+        api.get<{success: boolean, preference?: string, data?: OtpPreferenceResponse}>("/settings/otp-preference"),
         api.get<OtpEnabledResponse>("/settings/otp-enabled"),
         api.get<{success: boolean, data: FeeConfig[]}>("/fees")
       ]);
 
-      if (profileRes.data.success) setProfile(profileRes.data.settings);
-      if (prefRes.data.success) setOtpPreference(prefRes.data.preference);
-      if (otpEnabledRes.data.success) {
-        setOtpEnabled(otpEnabledRes.data.otpEnabled);
-        setPinCreated(otpEnabledRes.data.pinCreated);
-      }
-      if (feesRes.data.success) setFees(feesRes.data.data);
+      const profileData = assertApiSuccess(profileRes.data, "Failed to fetch settings");
+      setProfile(profileData.settings ?? profileData.data ?? null);
+
+      const preference = pickResponseField<string>(
+        prefRes.data as Record<string, unknown>,
+        "preference",
+        "email",
+      );
+      setOtpPreference(preference);
+
+      const otpData = assertApiSuccess(otpEnabledRes.data, "Failed to get OTP enabled status");
+      setOtpEnabled(otpData.otpEnabled);
+      setPinCreated(otpData.pinCreated);
+
+      const feesData = assertApiSuccess(feesRes.data, "Failed to fetch fees");
+      setFees(feesData.data ?? []);
 
     } catch (error) {
       toast({
         title: "Error",
-        description: "Failed to fetch settings",
+        description: getApiMessage(error, "Failed to fetch settings"),
         variant: "destructive",
       });
     } finally {
@@ -79,32 +89,33 @@ export default function Settings() {
     e.preventDefault();
     if (!profile) return;
     try {
-      await api.put("/settings", profile);
-      toast({ title: "Success", description: "Profile updated successfully" });
+      const response = await api.put("/settings", profile);
+      const data = assertApiSuccess(response.data, "Failed to update profile");
+      toast({ title: "Success", description: data.message || "Profile updated successfully" });
     } catch (error) {
-      toast({ title: "Error", description: "Failed to update profile", variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to update profile"), variant: "destructive" });
     }
   };
 
   const handleUpdatePreference = async (val: string) => {
     try {
-      await api.put("/settings/otp-preference", { preference: val });
+      const response = await api.put("/settings/otp-preference", { preference: val });
+      const data = assertApiSuccess(response.data, "Failed to update preference");
       setOtpPreference(val);
-      toast({ title: "Success", description: "OTP preference updated" });
+      toast({ title: "Success", description: data.message || "OTP preference updated" });
     } catch (error: any) {
-      const message = error.response?.data?.error || "Failed to update preference";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to update preference"), variant: "destructive" });
     }
   };
 
   const handleToggleOtpEnabled = async (enabled: boolean) => {
     try {
-      await api.put("/settings/otp-enabled", { enabled });
+      const response = await api.put("/settings/otp-enabled", { enabled });
+      const data = assertApiSuccess(response.data, "Failed to update OTP setting");
       setOtpEnabled(enabled);
-      toast({ title: "Success", description: enabled ? "OTP enabled successfully" : "OTP disabled successfully" });
+      toast({ title: "Success", description: data.message || (enabled ? "OTP enabled successfully" : "OTP disabled successfully") });
     } catch (error: any) {
-      const message = error.response?.data?.error || "Failed to update OTP setting";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to update OTP setting"), variant: "destructive" });
     }
   };
 
@@ -119,15 +130,15 @@ export default function Settings() {
     }
     try {
       setPinLoading(true);
-      await api.post("/settings/pin", { pin: newPin });
+      const response = await api.post("/settings/pin", { pin: newPin });
+      const data = assertApiSuccess(response.data, "Failed to create PIN");
       setPinCreated(true);
       setCreatePinDialogOpen(false);
       setNewPin("");
       setConfirmNewPin("");
-      toast({ title: "Success", description: "Transaction PIN created successfully" });
+      toast({ title: "Success", description: data.message || "Transaction PIN created successfully" });
     } catch (error: any) {
-      const message = error.response?.data?.error || "Failed to create PIN";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to create PIN"), variant: "destructive" });
     } finally {
       setPinLoading(false);
     }
@@ -136,13 +147,13 @@ export default function Settings() {
   const handleSendPinUpdateOtp = async () => {
     try {
       setPinLoading(true);
-      await api.post("/settings/pin/send-otp");
+      const response = await api.post("/settings/pin/send-otp");
+      const data = assertApiSuccess(response.data, "Failed to send OTP");
       setUpdatePinOtpSent(true);
       startCountdown();
-      toast({ title: "Success", description: "OTP sent successfully" });
+      toast({ title: "Success", description: data.message || "OTP sent successfully" });
     } catch (error: any) {
-      const message = error.response?.data?.error || "Failed to send OTP";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to send OTP"), variant: "destructive" });
     } finally {
       setPinLoading(false);
     }
@@ -159,16 +170,16 @@ export default function Settings() {
     }
     try {
       setPinLoading(true);
-      await api.put("/settings/pin", { newPin, otp });
+      const response = await api.put("/settings/pin", { newPin, otp });
+      const data = assertApiSuccess(response.data, "Failed to update PIN");
       setUpdatePinDialogOpen(false);
       setUpdatePinOtpSent(false);
       setNewPin("");
       setConfirmNewPin("");
       setOtp("");
-      toast({ title: "Success", description: "Transaction PIN updated successfully" });
+      toast({ title: "Success", description: data.message || "Transaction PIN updated successfully" });
     } catch (error: any) {
-      const message = error.response?.data?.error || "Failed to update PIN";
-      toast({ title: "Error", description: message, variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to update PIN"), variant: "destructive" });
     } finally {
       setPinLoading(false);
     }
@@ -177,12 +188,13 @@ export default function Settings() {
   const handleRequestOtp = async () => {
     try {
       setContactLoading(true);
-      await api.post("/settings/update-contact/request-otp", { type: contactType, value: contactValue });
+      const response = await api.post("/settings/update-contact/request-otp", { type: contactType, value: contactValue });
+      const data = assertApiSuccess(response.data, "Failed to send OTP");
       setOtpSent(true);
       startCountdown();
-      toast({ title: "OTP Sent", description: `OTP sent to ${contactValue}` });
+      toast({ title: "OTP Sent", description: data.message || `OTP sent to ${contactValue}` });
     } catch (error) {
-      toast({ title: "Error", description: "Failed to send OTP", variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Failed to send OTP"), variant: "destructive" });
     } finally {
       setContactLoading(false);
     }
@@ -191,15 +203,16 @@ export default function Settings() {
   const handleVerifyOtp = async () => {
     try {
       setContactLoading(true);
-      await api.post("/settings/update-contact/verify-otp", { otp });
-      toast({ title: "Success", description: "Contact information updated successfully" });
+      const response = await api.post("/settings/update-contact/verify-otp", { otp });
+      const data = assertApiSuccess(response.data, "Invalid OTP");
+      toast({ title: "Success", description: data.message || "Contact information updated successfully" });
       setContactDialogOpen(false);
       setOtpSent(false);
       setOtp("");
       setContactValue("");
       fetchData(); // Refresh profile
     } catch (error) {
-      toast({ title: "Error", description: "Invalid OTP", variant: "destructive" });
+      toast({ title: "Error", description: getApiMessage(error, "Invalid OTP"), variant: "destructive" });
     } finally {
       setContactLoading(false);
     }

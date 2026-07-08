@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video } from "lucide-react";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -194,6 +194,30 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link to="/ideas">
                   <Lightbulb />
                   <span>Ideas</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings">
+                <Link to="/meetings">
+                  <Calendar />
+                  <span>Meetings</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat">
+                <Link to="/chat">
+                  <MessageSquare />
+                  <span>Chat</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/calls")} tooltip="Calls">
+                <Link to="/calls">
+                  <Video />
+                  <span>Calls</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
