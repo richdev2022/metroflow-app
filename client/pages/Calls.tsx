@@ -19,6 +19,16 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Select,
   SelectContent,
   SelectItem,
@@ -35,6 +45,7 @@ import {
   Loader2,
   X,
   Check,
+  Trash2,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -43,6 +54,7 @@ import {
   useUpdateCall,
   useJoinCall,
   useLeaveCall,
+  useDeleteCall,
 } from "@/lib/meetings-chat-calls";
 import { Call, CreateCallInput, UpdateCallInput } from "@shared/api";
 import { TeamMember } from "@shared/api";
@@ -80,6 +92,7 @@ export default function Calls() {
   const updateCall = useUpdateCall();
   const joinCall = useJoinCall();
   const leaveCall = useLeaveCall();
+  const deleteCall = useDeleteCall();
   const { toast } = useToast();
 
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
@@ -89,7 +102,11 @@ export default function Calls() {
   const [isProcessing, setIsProcessing] = useState(false);
   const [callForm, setCallForm] = useState<CreateCallInput>({
     type: "video",
-    participant_ids: [],
+    isGroupCall: false,
+    maxParticipants: 10,
+    waitingRoomEnabled: false,
+    recordingEnabled: false,
+    participantIds: [],
   });
 
   useEffect(() => {
@@ -122,7 +139,7 @@ export default function Calls() {
   };
 
   const handleCreateCall = async () => {
-    if (callForm.participant_ids.length === 0) {
+    if (callForm.participantIds.length === 0) {
       toast({
         variant: "destructive",
         title: "Error",
@@ -136,7 +153,11 @@ export default function Calls() {
       setIsCreateDialogOpen(false);
       setCallForm({
         type: "video",
-        participant_ids: [],
+        isGroupCall: false,
+        maxParticipants: 10,
+        waitingRoomEnabled: false,
+        recordingEnabled: false,
+        participantIds: [],
       });
       toast({
         title: "Call created",
@@ -158,7 +179,7 @@ export default function Calls() {
   const handleJoinCall = async (call: Call) => {
     setIsProcessing(true);
     try {
-      const joinedCall = await joinCall.mutateAsync(call.id);
+      const joinedCall = await joinCall.mutateAsync({ callId: call.id });
       setSelectedCall(joinedCall);
       setIsJoinDialogOpen(true);
       toast({
@@ -222,12 +243,31 @@ export default function Calls() {
     }
   };
 
+  const handleDeleteCall = async (call: Call) => {
+    setIsProcessing(true);
+    try {
+      await deleteCall.mutateAsync(call.id);
+      toast({
+        title: "Call deleted",
+        description: "The call has been deleted",
+      });
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: getApiMessage(err, "Failed to delete call"),
+      });
+    } finally {
+      setIsProcessing(false);
+    }
+  };
+
   const getCurrentUserId = () => {
     return localStorage.getItem("userId") || "";
   };
 
   const getParticipantUserId = (participant: CallParticipant) => {
-    return participant.user_id || participant.userId || "";
+    return participant.userId || "";
   };
 
   const getParticipantName = (userId?: string) => {
@@ -236,11 +276,11 @@ export default function Calls() {
   };
 
   const getCallRoomId = (call: CallView) => {
-    return call.jitsi_room_id || call.jitsiRoomId || "";
+    return call.jitsiRoomId || call.callCode || "";
   };
 
   const getCallCreatedAt = (call: CallView) => {
-    return call.created_at || call.createdAt || new Date().toISOString();
+    return call.createdAt || new Date().toISOString();
   };
 
   const formatDateTime = (dateStr: string) => {
@@ -401,9 +441,9 @@ export default function Calls() {
                 <div className="grid gap-2">
                   <Label>Participants</Label>
                   <TeamMemberMultiSelect
-                    selected={callForm.participant_ids}
+                    selected={callForm.participantIds}
                     onChange={(ids) =>
-                      setCallForm({ ...callForm, participant_ids: ids })
+                      setCallForm({ ...callForm, participantIds: ids })
                     }
                   />
                 </div>

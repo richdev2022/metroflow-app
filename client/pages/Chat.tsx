@@ -84,7 +84,7 @@ export default function Chat() {
   const [conversationForm, setConversationForm] = useState<CreateConversationInput>({
     name: "",
     type: "direct",
-    participant_ids: [],
+    participantIds: [],
   });
 
   const { data: messagesData } = useMessages(selectedConversation?.id || "", 1, 100);
@@ -127,7 +127,7 @@ export default function Chat() {
   };
 
   const handleCreateConversation = async () => {
-    if (conversationForm.participant_ids.length === 0) {
+    if (conversationForm.participantIds.length === 0) {
       toast({
         variant: "destructive",
         title: "Error",
@@ -142,7 +142,7 @@ export default function Chat() {
       setConversationForm({
         name: "",
         type: "direct",
-        participant_ids: [],
+        participantIds: [],
       });
       setSelectedConversation(conversation);
       toast({
@@ -178,7 +178,7 @@ export default function Chat() {
   };
 
   const getParticipantUserId = (participant?: ChatParticipant) => {
-    return participant?.user_id || participant?.userId || "";
+    return participant?.userId || "";
   };
 
   const getCurrentUserId = () => {
@@ -211,15 +211,15 @@ export default function Chat() {
   };
 
   const getMessageSenderId = (message: ChatMessage) => {
-    return message.sender_id || message.senderId || "";
+    return message.senderId || "";
   };
 
   const getMessageSenderName = (message: ChatMessage) => {
-    return message.sender_name || message.senderName || getParticipantName(getMessageSenderId(message));
+    return message.senderName || getParticipantName(getMessageSenderId(message));
   };
 
   const getMessageCreatedAt = (message: ChatMessage) => {
-    return message.created_at || message.createdAt || new Date().toISOString();
+    return message.createdAt || new Date().toISOString();
   };
 
   const formatTime = (dateStr: string) => {
@@ -372,11 +372,11 @@ export default function Chat() {
                 <div className="grid gap-2">
                   <Label>Participants</Label>
                   <TeamMemberMultiSelect
-                    selected={conversationForm.participant_ids}
+                    selected={conversationForm.participantIds}
                     onChange={(ids) =>
                       setConversationForm({
                         ...conversationForm,
-                        participant_ids: ids,
+                        participantIds: ids,
                       })
                     }
                   />
@@ -442,9 +442,9 @@ export default function Chat() {
                               {conversation.type}
                             </Badge>
                           </div>
-                          {conversation.last_message && (
+                          {conversation.lastMessage && (
                             <p className="text-sm text-muted-foreground truncate">
-                              {conversation.last_message}
+                              {conversation.lastMessage}
                             </p>
                           )}
                         </div>

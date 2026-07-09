@@ -736,15 +736,23 @@ export interface Meeting {
   endTime: string;
   timezone: string;
   createdById: string;
-  status: "scheduled" | "ongoing" | "completed" | "cancelled";
-  meetingUrl: string;
+  hostId: string;
+  coHostId?: string;
+  status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
+  meetingCode: string;
+  isInstant: boolean;
+  password?: string;
+  maxParticipants: number;
+  waitingRoomEnabled: boolean;
+  recordingEnabled: boolean;
+  screenSharingEnabled: boolean;
   googleEventId?: string;
   createdAt: string;
   updatedAt: string;
   attendees: Array<{
     id: string;
     userId: string;
-    status: "invited" | "accepted" | "declined" | "tentative";
+    status: 'invited' | 'accepted' | 'declined' | 'tentative';
   }>;
 }
 
@@ -754,6 +762,12 @@ export interface CreateMeetingInput {
   startTime: string;
   endTime: string;
   timezone: string;
+  isInstant: boolean;
+  password?: string;
+  maxParticipants: number;
+  waitingRoomEnabled: boolean;
+  recordingEnabled: boolean;
+  screenSharingEnabled: boolean;
   attendeeIds: string[];
 }
 
@@ -763,75 +777,124 @@ export interface UpdateMeetingInput {
   startTime?: string;
   endTime?: string;
   timezone?: string;
+  isInstant?: boolean;
+  password?: string;
+  maxParticipants?: number;
+  waitingRoomEnabled?: boolean;
+  recordingEnabled?: boolean;
+  screenSharingEnabled?: boolean;
   attendeeIds?: string[];
-  status?: "scheduled" | "ongoing" | "completed" | "cancelled";
+  status?: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
 }
 
 // Chat Types
 export interface Conversation {
   id: string;
   name?: string;
-  type: "direct" | "group";
-  created_by: string;
-  created_at: string;
-  updated_at: string;
+  type: 'direct' | 'group';
+  createdBy: string;
+  createdAt: string;
+  updatedAt: string;
   participants: Array<{
     id: string;
-    user_id: string;
-    last_read_at?: string;
+    userId: string;
+    lastReadAt?: string;
   }>;
-  last_message?: string;
-  last_message_at?: string;
+  lastMessage?: string;
+  lastMessageAt?: string;
 }
 
 export interface CreateConversationInput {
   name?: string;
-  type: "direct" | "group";
-  participant_ids: string[];
+  type: 'direct' | 'group';
+  participantIds: string[];
 }
 
 export interface Message {
   id: string;
-  conversation_id: string;
-  sender_id: string;
+  conversationId: string;
+  senderId: string;
   content: string;
-  attachment_url?: string;
-  attachment_type?: string;
-  created_at: string;
-  sender_name?: string;
+  attachmentUrl?: string;
+  attachmentType?: string;
+  createdAt: string;
+  senderName?: string;
 }
 
 export interface SendMessageInput {
   content: string;
-  attachment_url?: string;
-  attachment_type?: string;
+  attachmentUrl?: string;
+  attachmentType?: string;
 }
 
 // Call Types
 export interface Call {
   id: string;
-  type: "audio" | "video";
-  status: "ringing" | "ongoing" | "completed" | "missed" | "cancelled";
-  started_at?: string;
-  ended_at?: string;
-  created_by: string;
-  jitsi_room_id?: string;
-  created_at: string;
-  updated_at: string;
+  type: 'audio' | 'video';
+  status: 'ringing' | 'ongoing' | 'completed' | 'missed' | 'cancelled';
+  startedAt?: string;
+  endedAt?: string;
+  createdById: string;
+  hostId: string;
+  coHostId?: string;
+  callCode: string;
+  isGroupCall: boolean;
+  password?: string;
+  maxParticipants: number;
+  waitingRoomEnabled: boolean;
+  recordingEnabled: boolean;
+  createdAt: string;
+  updatedAt: string;
   participants: Array<{
     id: string;
-    user_id: string;
-    status: "invited" | "joined" | "left";
-    joined_at?: string;
-    left_at?: string;
+    userId: string;
+    status: 'invited' | 'joined' | 'left';
+    joinedAt?: string;
+    leftAt?: string;
   }>;
 }
 
 export interface CreateCallInput {
-  type: "audio" | "video";
-  participant_ids: string[];
+  type: 'audio' | 'video';
+  isGroupCall: boolean;
+  password?: string;
+  maxParticipants: number;
+  waitingRoomEnabled: boolean;
+  recordingEnabled: boolean;
+  participantIds: string[];
 }
 
 export interface UpdateCallInput {
-  status: "ringing" | "ongoing" | "completed" | "missed" | "cancelled";
+  status?: 'ringing' | 'ongoing' | 'completed' | 'missed' | 'cancelled';
+  waitingRoomEnabled?: boolean;
+  recordingEnabled?: boolean;
+  coHostId?: string;
+}
+
+// Recording Types
+export interface Recording {
+  id: string;
+  businessId: string;
+  meetingId?: string;
+  callId?: string;
+  recordedById: string;
+  recordedByName: string;
+  storageUrl: string;
+  duration: number;
+  status: 'recording' | 'paused' | 'completed' | 'failed';
+  size: number;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface CreateRecordingInput {
+  meetingId?: string;
+  callId?: string;
+}
+
+export interface UpdateRecordingInput {
+  status?: 'recording' | 'paused' | 'completed' | 'failed';
+  storageUrl?: string;
+  duration?: number;
+  size?: number;
 }

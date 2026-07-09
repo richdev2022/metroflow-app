@@ -3,6 +3,7 @@ import { createServer, type Server } from "http";
 import { storage } from "./storage";
 import multer from "multer";
 import { Server as SocketIOServer } from "socket.io";
+import type { CreateTaskStatusInput } from "../shared/api";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
@@ -728,6 +729,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/meetings/code/:code", async (req, res) => {
+    try {
+      const meeting = await storage.getMeetingByCode(req.params.code);
+      if (meeting) {
+        res.json({ success: true, data: meeting });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get meeting" });
+    }
+  });
+
   app.post("/api/meetings", async (req, res) => {
     try {
       const userId = getUserId(req);
@@ -907,9 +921,122 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/meetings/code/:code", async (req, res) => {
+    try {
+      const meeting = await storage.getMeetingByCode(req.params.code);
+      if (meeting) {
+        res.json({ success: true, data: meeting });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get meeting" });
+    }
+  });
+
+  app.get("/api/calls/code/:code", async (req, res) => {
+    try {
+      const call = await storage.getCallByCode(req.params.code);
+      if (call) {
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get call" });
+    }
+  });
+
+  app.delete("/api/calls/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteCall(req.params.id);
+      if (success) {
+        // Emit real-time event
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          io.to(businessId).emit('call:deleted', req.params.id);
+        }
+        res.json({ success: true });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete call" });
+    }
+  });
+
+  // --- Recordings Endpoints ---
+  app.get("/api/recordings", async (req, res) => {
+    try {
+      const businessId = getBusinessId(req);
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 10;
+      const { recordings, total } = await storage.getRecordings(businessId, page, limit);
+      res.json({ success: true, data: { recordings, total } });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get recordings" });
+    }
+  });
+
+  app.post("/api/recordings", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      const businessId = getBusinessId(req);
+      const recording = await storage.createRecording(userId, businessId, req.body);
+      
+      const io = (global as any).io;
+      if (io) {
+        io.to(businessId).emit('recording:started', recording);
+      }
+      
+      res.json({ success: true, data: recording });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to create recording" });
+    }
+  });
+
+  app.put("/api/recordings/:id", async (req, res) => {
+    try {
+      const recording = await storage.updateRecording(req.params.id, req.body);
+      if (recording) {
+        const io = (global as any).io;
+        const businessId = getBusinessId(req);
+        if (io) {
+          if (recording.status === 'paused') {
+            io.to(businessId).emit('recording:paused', recording);
+          } else if (recording.status === 'completed') {
+            io.to(businessId).emit('recording:stopped', recording);
+          }
+        }
+        
+        res.json({ success: true, data: recording });
+      } else {
+        res.status(404).json({ success: false, error: "Recording not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to update recording" });
+    }
+  });
+
+  app.delete("/api/recordings/:id", async (req, res) => {
+    try {
+      const success = await storage.deleteRecording(req.params.id);
+      if (success) {
+        res.json({ success: true });
+      } else {
+        res.status(404).json({ success: false, error: "Recording not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to delete recording" });
+    }
+  });
+
+  // --- Update join call to accept password ---
   app.post("/api/calls/:id/join", async (req, res) => {
     try {
       const userId = getUserId(req);
+      // Optional: Verify password here if provided
       const call = await storage.joinCall(userId, req.params.id);
       if (call) {
         // Emit real-time event
@@ -984,6 +1111,134 @@ export async function registerRoutes(app: Express): Promise<Server> {
       if (!activeUsers.has(userId)) {
         activeUsers.set(userId, { userId, businessId, socketId: socket.id });
         socket.join(businessId);
+      }
+    });
+
+    // Handle user presence status update
+    socket.on('user-presence', (status: string) => {
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(user.businessId).emit('user-presence-updated', { userId, status });
+          break;
+        }
+      }
+    });
+
+    // --- Call Events ---
+    socket.on('call:invite', ({ callId, targetUserId, type }) => {
+      // Find target user and send invite
+      for (const [userId, user] of activeUsers.entries()) {
+        if (userId === targetUserId) {
+          io.to(user.socketId).emit('call:incoming', { callId, from: targetUserId, type, callCode: '' });
+          break;
+        }
+      }
+    });
+
+    socket.on('call:accept', ({ callId }) => {
+      io.emit('call:accepted', { callId });
+    });
+
+    socket.on('call:reject', ({ callId }) => {
+      io.emit('call:rejected', { callId });
+    });
+
+    socket.on('call:end', ({ callId }) => {
+      io.emit('call:ended', { callId });
+    });
+
+    // --- Meeting Events ---
+    socket.on('meeting:join', ({ meetingId }) => {
+      socket.join(`meeting-${meetingId}`);
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(user.businessId).emit('meeting:participantJoined', { meetingId, userId });
+          break;
+        }
+      }
+    });
+
+    socket.on('meeting:leave', ({ meetingId }) => {
+      socket.leave(`meeting-${meetingId}`);
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(user.businessId).emit('meeting:participantLeft', { meetingId, userId });
+          break;
+        }
+      }
+    });
+
+    socket.on('meeting:end', ({ meetingId }) => {
+      io.emit('meeting:ended', { meetingId });
+    });
+
+    // --- WebRTC Signaling (Mediasoup) ---
+    socket.on('mediasoup:getRouterRtpCapabilities', (callback) => {
+      // Mock router capabilities
+      callback({ rtpCapabilities: {} });
+    });
+
+    socket.on('mediasoup:createWebRtcTransport', ({ roomId }, callback) => {
+      callback({ id: `transport-${Date.now()}`, iceParameters: {}, iceCandidates: [], dtlsParameters: {} });
+    });
+
+    socket.on('mediasoup:connectWebRtcTransport', ({ transportId, dtlsParameters, roomId }, callback) => {
+      callback();
+    });
+
+    socket.on('mediasoup:produce', ({ transportId, kind, rtpParameters, roomId }, callback) => {
+      const producerId = `producer-${Date.now()}`;
+      socket.to(roomId).emit('mediasoup:newProducer', { producerId, kind });
+      callback({ id: producerId });
+    });
+
+    socket.on('mediasoup:consume', ({ transportId, producerId, rtpCapabilities, roomId }, callback) => {
+      callback({ id: `consumer-${Date.now()}`, producerId, kind: 'video', rtpParameters: {} });
+    });
+
+    socket.on('mediasoup:resume', ({ consumerId, roomId }, callback) => {
+      callback();
+    });
+
+    // --- Recording Events ---
+    socket.on('recording:start', ({ meetingId }) => {
+      io.to(`meeting-${meetingId}`).emit('recording:started', { meetingId });
+    });
+
+    socket.on('recording:stop', ({ meetingId }) => {
+      io.to(`meeting-${meetingId}`).emit('recording:stopped', { meetingId });
+    });
+
+    // --- Screen Sharing ---
+    socket.on('screen-share:start', ({ meetingId }) => {
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(`meeting-${meetingId}`).emit('screen-share:started', { userId });
+          break;
+        }
+      }
+    });
+
+    socket.on('screen-share:stop', ({ meetingId }) => {
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(`meeting-${meetingId}`).emit('screen-share:stopped', { userId });
+          break;
+        }
+      }
+    });
+
+    // --- In-Meeting Chat ---
+    socket.on('meeting-chat:message', ({ meetingId, message }) => {
+      for (const [userId, user] of activeUsers.entries()) {
+        if (user.socketId === socket.id) {
+          io.to(`meeting-${meetingId}`).emit('meeting-chat:message', { 
+            userId, 
+            message, 
+            timestamp: new Date().toISOString() 
+          });
+          break;
+        }
       }
     });
 

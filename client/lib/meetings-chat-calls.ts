@@ -12,6 +12,9 @@ import type {
   Call,
   CreateCallInput,
   UpdateCallInput,
+  Recording,
+  CreateRecordingInput,
+  UpdateRecordingInput
 } from '@shared/api';
 
 // --- Meetings ---
@@ -24,9 +27,7 @@ export const useMeetings = (page = 1, limit = 10) => {
         params: { page, limit },
       });
       return unwrapApiData<{ meetings: Meeting[]; total: number }>(
-        response.data,
-        'Failed to get meetings',
-      );
+        response.data, 'Failed to get meetings');
     },
   });
 };
@@ -39,6 +40,17 @@ export const useMeeting = (meetingId: string) => {
       return unwrapApiData<Meeting>(response.data, 'Failed to get meeting');
     },
     enabled: !!meetingId,
+  });
+};
+
+export const useMeetingByCode = (code: string) => {
+  return useQuery({
+    queryKey: ['meeting-by-code', code],
+    queryFn: async () => {
+      const response = await api.get(`/meetings/code/${code}`);
+      return unwrapApiData<Meeting>(response.data, 'Failed to get meeting');
+    },
+    enabled: !!code,
   });
 };
 
@@ -147,9 +159,7 @@ export const useCalls = (page = 1, limit = 10) => {
         params: { page, limit },
       });
       return unwrapApiData<{ calls: Call[]; total: number }>(
-        response.data,
-        'Failed to get calls',
-      );
+        response.data, 'Failed to get calls');
     },
   });
 };
@@ -162,6 +172,17 @@ export const useCall = (callId: string) => {
       return unwrapApiData<Call>(response.data, 'Failed to get call');
     },
     enabled: !!callId,
+  });
+};
+
+export const useCallByCode = (code: string) => {
+  return useQuery({
+    queryKey: ['call-by-code', code],
+    queryFn: async () => {
+      const response = await api.get(`/calls/code/${code}`);
+      return unwrapApiData<Call>(response.data, 'Failed to get call');
+    },
+    enabled: !!code,
   });
 };
 
@@ -195,8 +216,8 @@ export const useUpdateCall = () => {
 export const useJoinCall = () => {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async (callId: string) => {
-      const response = await api.post(`/calls/${callId}/join`);
+    mutationFn: async ({ callId, password }: { callId: string; password?: string }) => {
+      const response = await api.post(`/calls/${callId}/join`, { password });
       return unwrapApiData<Call>(response.data, 'Failed to join call');
     },
     onSuccess: (_, callId) => {
@@ -216,6 +237,85 @@ export const useLeaveCall = () => {
     onSuccess: (_, callId) => {
       queryClient.invalidateQueries({ queryKey: ['calls'] });
       queryClient.invalidateQueries({ queryKey: ['call', callId] });
+    },
+  });
+};
+
+export const useDeleteCall = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (callId: string) => {
+      const response = await api.delete(`/calls/${callId}`);
+      unwrapApiData(response.data, 'Failed to delete call');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['calls'] });
+    },
+  });
+};
+
+// --- Recordings ---
+
+export const useRecordings = (page = 1, limit = 10) => {
+  return useQuery({
+    queryKey: ['recordings', page, limit],
+    queryFn: async () => {
+      const response = await api.get('/recordings', {
+        params: { page, limit },
+      });
+      return unwrapApiData<{ recordings: Recording[]; total: number }>(
+        response.data, 'Failed to get recordings');
+    },
+  });
+};
+
+export const useRecording = (recordingId: string) => {
+  return useQuery({
+    queryKey: ['recording', recordingId],
+    queryFn: async () => {
+      const response = await api.get(`/recordings/${recordingId}`);
+      return unwrapApiData<Recording>(response.data, 'Failed to get recording');
+    },
+    enabled: !!recordingId,
+  });
+};
+
+export const useCreateRecording = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (data: CreateRecordingInput) => {
+      const response = await api.post('/recordings', data);
+      return unwrapApiData<Recording>(response.data, 'Failed to create recording');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+    },
+  });
+};
+
+export const useUpdateRecording = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ recordingId, data }: { recordingId: string; data: UpdateRecordingInput }) => {
+      const response = await api.put(`/recordings/${recordingId}`, data);
+      return unwrapApiData<Recording>(response.data, 'Failed to update recording');
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['recordings'] });
+      queryClient.invalidateQueries({ queryKey: ['recording', variables.recordingId] });
+    },
+  });
+};
+
+export const useDeleteRecording = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (recordingId: string) => {
+      const response = await api.delete(`/recordings/${recordingId}`);
+      unwrapApiData(response.data, 'Failed to delete recording');
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['recordings'] });
     },
   });
 };

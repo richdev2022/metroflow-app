@@ -12,6 +12,7 @@ import {
   Conversation, CreateConversationInput,
   Message, SendMessageInput,
   Call, CreateCallInput, UpdateCallInput,
+  Recording, CreateRecordingInput, UpdateRecordingInput,
   Task, TaskStatus, CreateTaskStatusInput, UpdateTaskStatusInput
 } from "../shared/api";
 
@@ -107,6 +108,7 @@ export interface IStorage {
   // 9. Meetings
   getMeetings(businessId: string, page?: number, limit?: number): Promise<{ meetings: Meeting[], total: number }>;
   getMeeting(meetingId: string): Promise<Meeting | undefined>;
+  getMeetingByCode(code: string): Promise<Meeting | undefined>;
   createMeeting(userId: string, businessId: string, data: CreateMeetingInput): Promise<Meeting>;
   updateMeeting(meetingId: string, data: UpdateMeetingInput): Promise<Meeting | undefined>;
   deleteMeeting(meetingId: string): Promise<boolean>;
@@ -121,10 +123,19 @@ export interface IStorage {
   // 11. Calls
   getCalls(businessId: string, page?: number, limit?: number): Promise<{ calls: Call[], total: number }>;
   getCall(callId: string): Promise<Call | undefined>;
+  getCallByCode(code: string): Promise<Call | undefined>;
   createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call>;
   updateCall(callId: string, data: UpdateCallInput): Promise<Call | undefined>;
   joinCall(userId: string, callId: string): Promise<Call | undefined>;
   leaveCall(userId: string, callId: string): Promise<Call | undefined>;
+  deleteCall(callId: string): Promise<boolean>;
+
+  // 12. Recordings
+  getRecordings(businessId: string, page?: number, limit?: number): Promise<{ recordings: Recording[], total: number }>;
+  getRecording(recordingId: string): Promise<Recording | undefined>;
+  createRecording(userId: string, businessId: string, data: CreateRecordingInput): Promise<Recording>;
+  updateRecording(recordingId: string, data: UpdateRecordingInput): Promise<Recording | undefined>;
+  deleteRecording(recordingId: string): Promise<boolean>;
 }
 
 export class MemStorage implements IStorage {
@@ -157,6 +168,7 @@ export class MemStorage implements IStorage {
   private conversations: Map<string, Conversation[]>; // businessId -> conversations
   private messages: Map<string, Message[]>; // conversationId -> messages
   private calls: Map<string, Call[]>; // businessId -> calls
+  private recordings: Map<string, Recording[]>; // businessId -> recordings
 
   constructor() {
     this.users = new Map();
@@ -188,6 +200,7 @@ export class MemStorage implements IStorage {
     this.conversations = new Map();
     this.messages = new Map();
     this.calls = new Map();
+    this.recordings = new Map();
     
     // Seed some data
     this.seed();
@@ -1288,9 +1301,18 @@ export class MemStorage implements IStorage {
     return undefined;
   }
 
+  async getMeetingByCode(code: string): Promise<Meeting | undefined> {
+    for (const meetings of this.meetings.values()) {
+      const meeting = meetings.find(m => m.meetingCode === code);
+      if (meeting) return meeting;
+    }
+    return undefined;
+  }
+
   async createMeeting(userId: string, businessId: string, data: CreateMeetingInput): Promise<Meeting> {
     const now = new Date().toISOString();
     const meetingId = `meeting_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const meetingCode = Math.random().toString(36).slice(2, 8).toUpperCase();
     const newMeeting: Meeting = {
       id: meetingId,
       title: data.title,
@@ -1299,14 +1321,21 @@ export class MemStorage implements IStorage {
       endTime: data.endTime,
       timezone: data.timezone,
       createdById: userId,
-      status: "scheduled",
-      meetingUrl: `https://meet.jit.si/metricorex-${encodeURIComponent(meetingId)}`,
+      hostId: userId,
+      status: 'scheduled',
+      meetingCode,
+      isInstant: data.isInstant,
+      password: data.password,
+      maxParticipants: data.maxParticipants,
+      waitingRoomEnabled: data.waitingRoomEnabled,
+      recordingEnabled: data.recordingEnabled,
+      screenSharingEnabled: data.screenSharingEnabled,
       createdAt: now,
       updatedAt: now,
       attendees: data.attendeeIds.map(userId => ({
         id: `attendee_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         userId: userId,
-        status: "invited"
+        status: 'invited'
       }))
     };
     const currentMeetings = this.meetings.get(businessId) || [];
@@ -1328,7 +1357,7 @@ export class MemStorage implements IStorage {
           updatedMeeting.attendees = attendeeIds.map(userId => ({
             id: `attendee_${Date.now()}_${Math.random().toString(36).slice(2)}`,
             userId: userId,
-            status: "invited"
+            status: 'invited'
           }));
         }
         meetings[index] = updatedMeeting;
@@ -1355,7 +1384,7 @@ export class MemStorage implements IStorage {
     const allConversations: Conversation[] = [];
     for (const conversations of this.conversations.values()) {
       for (const conversation of conversations) {
-        const isParticipant = conversation.participants.some(p => p.user_id === userId);
+        const isParticipant = conversation.participants.some(p => p.userId === userId);
         if (isParticipant) {
           allConversations.push(conversation);
         }
@@ -1378,12 +1407,12 @@ export class MemStorage implements IStorage {
       id: `conv_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       name: data.name,
       type: data.type,
-      created_by: userId,
-      created_at: now,
-      updated_at: now,
-      participants: data.participant_ids.map(userId => ({
+      createdBy: userId,
+      createdAt: now,
+      updatedAt: now,
+      participants: data.participantIds.map(userId => ({
         id: `participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-        user_id: userId
+        userId: userId
       }))
     };
     const currentConversations = this.conversations.get(businessId) || [];
@@ -1405,13 +1434,13 @@ export class MemStorage implements IStorage {
     const user = await this.getUser(userId);
     const newMessage: Message = {
       id: `msg_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-      conversation_id: conversationId,
-      sender_id: userId,
+      conversationId: conversationId,
+      senderId: userId,
       content: data.content,
-      attachment_url: data.attachment_url,
-      attachment_type: data.attachment_type,
-      created_at: now,
-      sender_name: user?.name
+      attachmentUrl: data.attachmentUrl,
+      attachmentType: data.attachmentType,
+      createdAt: now,
+      senderName: user?.name
     };
     const currentMessages = this.messages.get(conversationId) || [];
     this.messages.set(conversationId, [...currentMessages, newMessage]);
@@ -1422,9 +1451,9 @@ export class MemStorage implements IStorage {
       if (index !== -1) {
         conversations[index] = {
           ...conversations[index],
-          last_message: data.content,
-          last_message_at: now,
-          updated_at: now
+          lastMessage: data.content,
+          lastMessageAt: now,
+          updatedAt: now
         };
         this.conversations.set(businessId, conversations);
         break;
@@ -1452,30 +1481,44 @@ export class MemStorage implements IStorage {
     return undefined;
   }
 
+  async getCallByCode(code: string): Promise<Call | undefined> {
+    for (const calls of this.calls.values()) {
+      const call = calls.find(c => c.callCode === code);
+      if (call) return call;
+    }
+    return undefined;
+  }
+
   async createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call> {
     const now = new Date().toISOString();
-    const jitsiRoomId = `room_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const invitedParticipantIds = Array.from(new Set(data.participant_ids.filter(id => id !== userId)));
+    const callCode = Math.random().toString(36).slice(2, 8).toUpperCase();
+    const invitedParticipantIds = Array.from(new Set(data.participantIds.filter(id => id !== userId)));
     const newCall: Call = {
       id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       type: data.type,
-      status: "ongoing",
-      started_at: now,
-      created_by: userId,
-      jitsi_room_id: jitsiRoomId,
-      created_at: now,
-      updated_at: now,
+      status: 'ringing',
+      startedAt: now,
+      createdById: userId,
+      hostId: userId,
+      callCode,
+      isGroupCall: data.isGroupCall,
+      password: data.password,
+      maxParticipants: data.maxParticipants,
+      waitingRoomEnabled: data.waitingRoomEnabled,
+      recordingEnabled: data.recordingEnabled,
+      createdAt: now,
+      updatedAt: now,
       participants: [
         {
           id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          user_id: userId,
-          status: "joined",
-          joined_at: now
+          userId: userId,
+          status: 'joined',
+          joinedAt: now
         },
         ...invitedParticipantIds.map(userId => ({
           id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-          user_id: userId,
-          status: "invited" as const
+          userId: userId,
+          status: 'invited' as const
         }))
       ]
     };
@@ -1488,12 +1531,12 @@ export class MemStorage implements IStorage {
     for (const [businessId, calls] of this.calls.entries()) {
       const index = calls.findIndex(c => c.id === callId);
       if (index !== -1) {
-        let updatedCall = { ...calls[index], ...data, updated_at: new Date().toISOString() };
-        if (data.status === "ongoing" && !updatedCall.started_at) {
-          updatedCall.started_at = new Date().toISOString();
+        let updatedCall = { ...calls[index], ...data, updatedAt: new Date().toISOString() };
+        if (data.status === 'ongoing' && !updatedCall.startedAt) {
+          updatedCall.startedAt = new Date().toISOString();
         }
-        if (data.status === "completed" && !updatedCall.ended_at) {
-          updatedCall.ended_at = new Date().toISOString();
+        if (data.status === 'completed' && !updatedCall.endedAt) {
+          updatedCall.endedAt = new Date().toISOString();
         }
         calls[index] = updatedCall;
         this.calls.set(businessId, calls);
@@ -1508,25 +1551,25 @@ export class MemStorage implements IStorage {
       const index = calls.findIndex(c => c.id === callId);
       if (index !== -1) {
         const now = new Date().toISOString();
-        const updatedCall = { ...calls[index], updated_at: now };
-        const participantIndex = updatedCall.participants.findIndex(p => p.user_id === userId);
+        const updatedCall = { ...calls[index], updatedAt: now };
+        const participantIndex = updatedCall.participants.findIndex(p => p.userId === userId);
         if (participantIndex !== -1) {
           updatedCall.participants[participantIndex] = {
             ...updatedCall.participants[participantIndex],
-            status: "joined",
-            joined_at: now
+            status: 'joined',
+            joinedAt: now
           };
         } else {
           updatedCall.participants.push({
             id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
-            user_id: userId,
-            status: "joined",
-            joined_at: now
+            userId: userId,
+            status: 'joined',
+            joinedAt: now
           });
         }
-        if (updatedCall.status === "ringing") {
-          updatedCall.status = "ongoing";
-          updatedCall.started_at = updatedCall.started_at || now;
+        if (updatedCall.status === 'ringing') {
+          updatedCall.status = 'ongoing';
+          updatedCall.startedAt = updatedCall.startedAt || now;
         }
         calls[index] = updatedCall;
         this.calls.set(businessId, calls);
@@ -1541,14 +1584,19 @@ export class MemStorage implements IStorage {
       const index = calls.findIndex(c => c.id === callId);
       if (index !== -1) {
         const now = new Date().toISOString();
-        const updatedCall = { ...calls[index], updated_at: now };
-        const participantIndex = updatedCall.participants.findIndex(p => p.user_id === userId);
+        const updatedCall = { ...calls[index], updatedAt: now };
+        const participantIndex = updatedCall.participants.findIndex(p => p.userId === userId);
         if (participantIndex !== -1) {
           updatedCall.participants[participantIndex] = {
             ...updatedCall.participants[participantIndex],
-            status: "left",
-            left_at: now
+            status: 'left',
+            leftAt: now
           };
+        }
+        const stillJoined = updatedCall.participants.some(p => p.status === 'joined');
+        if (!stillJoined) {
+          updatedCall.status = 'completed';
+          updatedCall.endedAt = now;
         }
         calls[index] = updatedCall;
         this.calls.set(businessId, calls);
@@ -1556,6 +1604,85 @@ export class MemStorage implements IStorage {
       }
     }
     return undefined;
+  }
+
+  async deleteCall(callId: string): Promise<boolean> {
+    for (const [businessId, calls] of this.calls.entries()) {
+      const filtered = calls.filter(c => c.id !== callId);
+      if (filtered.length !== calls.length) {
+        this.calls.set(businessId, filtered);
+        return true;
+      }
+    }
+    return false;
+  }
+
+  // --- Recordings Methods ---
+  async getRecordings(businessId: string, page = 1, limit = 10): Promise<{ recordings: Recording[], total: number }> {
+    const allRecordings = this.recordings.get(businessId) || [];
+    const total = allRecordings.length;
+    const start = (page - 1) * limit;
+    const end = start + limit;
+    const recordings = allRecordings.slice(start, end);
+    return { recordings, total };
+  }
+
+  async getRecording(recordingId: string): Promise<Recording | undefined> {
+    for (const recordings of this.recordings.values()) {
+      const recording = recordings.find(r => r.id === recordingId);
+      if (recording) return recording;
+    }
+    return undefined;
+  }
+
+  async createRecording(userId: string, businessId: string, data: CreateRecordingInput): Promise<Recording> {
+    const now = new Date().toISOString();
+    const user = await this.getUser(userId);
+    const newRecording: Recording = {
+      id: `recording_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+      businessId,
+      meetingId: data.meetingId,
+      callId: data.callId,
+      recordedById: userId,
+      recordedByName: user?.name || '',
+      storageUrl: '',
+      duration: 0,
+      status: 'recording',
+      size: 0,
+      createdAt: now,
+      updatedAt: now
+    };
+    const currentRecordings = this.recordings.get(businessId) || [];
+    this.recordings.set(businessId, [...currentRecordings, newRecording]);
+    return newRecording;
+  }
+
+  async updateRecording(recordingId: string, data: UpdateRecordingInput): Promise<Recording | undefined> {
+    for (const [businessId, recordings] of this.recordings.entries()) {
+      const index = recordings.findIndex(r => r.id === recordingId);
+      if (index !== -1) {
+        const updatedRecording: Recording = {
+          ...recordings[index],
+          ...data,
+          updatedAt: new Date().toISOString()
+        };
+        recordings[index] = updatedRecording;
+        this.recordings.set(businessId, recordings);
+        return updatedRecording;
+      }
+    }
+    return undefined;
+  }
+
+  async deleteRecording(recordingId: string): Promise<boolean> {
+    for (const [businessId, recordings] of this.recordings.entries()) {
+      const filtered = recordings.filter(r => r.id !== recordingId);
+      if (filtered.length !== recordings.length) {
+        this.recordings.set(businessId, filtered);
+        return true;
+      }
+    }
+    return false;
   }
 }
 

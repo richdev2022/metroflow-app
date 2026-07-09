@@ -15,7 +15,6 @@ import {
   DragOverEvent,
   defaultDropAnimationSideEffects,
   DropAnimation,
-  useDroppable,
 } from '@dnd-kit/core';
 import {
   arrayMove,
@@ -259,82 +258,9 @@ const SortableTaskColumn = ({
         </div>
       </div>
       <div
-        ref={(node) => {
+        ref={() => {
           // Need to handle multiple refs: one for droppable, one for sortable column header
         }}
-        className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 flex-1 overflow-y-auto transition-colors ${
-          isOver ? 'bg-gray-100 dark:bg-gray-800 ring-2 ring-primary' : ''
-        }`}
-      >
-        <SortableContext
-          items={tasks.map(t => t.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className="space-y-3">
-            {tasks.map((task) => (
-              <SortableTask
-                key={task.id}
-                task={task}
-                onOpenDetail={onOpenDetail}
-                teamMembers={teamMembers}
-                updateTask={updateTask}
-              />
-            ))}
-          </div>
-        </SortableContext>
-        {tasks.length === 0 && (
-          <div className="text-center py-12 text-muted-foreground">
-            No tasks in {column.title}
-          </div>
-        )}
-      </div>
-    </div>
-  );
-};
-
-const TaskColumn = ({
-  column,
-  tasks,
-  onOpenDetail,
-  teamMembers,
-  updateTask,
-}: {
-  column: Column;
-  tasks: Task[];
-  onOpenDetail: (task: Task) => void;
-  teamMembers: TeamMember[];
-  updateTask: (taskId: string, updates: Partial<Task>) => Promise<void>;
-}) => {
-  const { setNodeRef, isOver } = useDroppable({
-    id: column.id,
-  });
-
-  // Helper to get contrasting text color
-  const getContrastColor = (hexColor: string) => {
-    const r = parseInt(hexColor.slice(1, 3), 16);
-    const g = parseInt(hexColor.slice(3, 5), 16);
-    const b = parseInt(hexColor.slice(5, 7), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.5 ? '#000000' : '#ffffff';
-  };
-
-  return (
-    <div className="space-y-4 flex flex-col h-full">
-      <div className="flex items-center justify-between flex-shrink-0">
-        <div className="flex items-center gap-2">
-          <Badge
-            style={{
-              backgroundColor: column.color,
-              color: getContrastColor(column.color),
-            }}
-          >
-            {column.title}
-          </Badge>
-          <span className="text-sm text-muted-foreground">({tasks.length})</span>
-        </div>
-      </div>
-      <div
-        ref={setNodeRef}
         className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 flex-1 overflow-y-auto transition-colors ${
           isOver ? 'bg-gray-100 dark:bg-gray-800 ring-2 ring-primary' : ''
         }`}
@@ -373,7 +299,7 @@ export default function Board() {
   const [activeStatus, setActiveStatus] = useState<TaskStatus | null>(null);
   const [selectedTask, setSelectedTask] = useState<Task | null>(null);
   const [showTaskDetailModal, setShowTaskDetailModal] = useState(false);
-  const [isUpdatingTask, setIsUpdatingTask] = useState(false);
+  const [_isUpdatingTask, setIsUpdatingTask] = useState(false);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [showCreateColumnModal, setShowCreateColumnModal] = useState(false);
   const [showEditColumnModal, setShowEditColumnModal] = useState(false);

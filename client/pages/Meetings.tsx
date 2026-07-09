@@ -99,6 +99,11 @@ export default function Meetings() {
     startTime: "",
     endTime: "",
     timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    isInstant: false,
+    maxParticipants: 100,
+    waitingRoomEnabled: false,
+    recordingEnabled: false,
+    screenSharingEnabled: true,
     attendeeIds: [],
   });
 
@@ -156,6 +161,11 @@ export default function Meetings() {
         startTime: "",
         endTime: "",
         timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        isInstant: false,
+        maxParticipants: 100,
+        waitingRoomEnabled: false,
+        recordingEnabled: false,
+        screenSharingEnabled: true,
         attendeeIds: [],
       });
       toast({
@@ -519,19 +529,17 @@ export default function Meetings() {
                     <Users className="h-4 w-4" />
                     {meeting.attendees.length} attendees
                   </div>
-                  {meeting.meetingUrl && (
-                    <div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        onClick={() => openMeetingRoom(meeting)}
-                      >
-                        <Video className="h-4 w-4 mr-2" />
-                        Join Meeting
-                      </Button>
-                    </div>
-                  )}
+                  <div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => openMeetingRoom(meeting)}
+                    >
+                      <Video className="h-4 w-4 mr-2" />
+                      Join Meeting
+                    </Button>
+                  </div>
                   <div className="flex gap-2">
                     <Button
                       variant="outline"
@@ -671,7 +679,7 @@ export default function Meetings() {
         </DialogContent>
       </Dialog>
 
-      {selectedMeeting?.meetingUrl && (
+      {selectedMeeting && (
         <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
           <DialogContent className="max-w-5xl h-[calc(100dvh-1rem)] sm:h-[85vh] flex flex-col overflow-hidden p-3 sm:p-6">
             <DialogHeader className="shrink-0 pr-8">
@@ -683,7 +691,7 @@ export default function Meetings() {
             <div className="flex-1 min-h-0">
               <iframe
                 title={`${selectedMeeting.title} meeting room`}
-                src={`${selectedMeeting.meetingUrl}#userInfo.displayName=${
+                src={`https://meet.jit.si/${selectedMeeting.meetingCode}#userInfo.displayName=${
                   localStorage.getItem("userName") || "User"
                 }`}
                 className="w-full h-full min-h-[320px] sm:min-h-[520px] rounded-lg border border-border"
