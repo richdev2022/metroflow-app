@@ -1,5 +1,7 @@
 import { useState, useEffect } from "react";
 import Layout from "@/components/layout";
+import VideoCallRoom from "@/components/VideoCallRoom";
+import TimezoneDropdown from "@/components/TimezoneDropdown";
 import {
   Card,
   CardContent,
@@ -11,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -47,6 +50,9 @@ import {
   Users,
   Loader2,
   Video,
+  Info,
+  Copy,
+  Check,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -90,6 +96,7 @@ export default function Meetings() {
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
   const [isDeleteDialogOpen, setIsDeleteDialogOpen] = useState(false);
   const [isMeetingRoomOpen, setIsMeetingRoomOpen] = useState(false);
+  const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
 
@@ -247,6 +254,11 @@ export default function Meetings() {
       status: meeting.status,
     });
     setIsEditDialogOpen(true);
+  };
+
+  const openDetailDialog = (meeting: Meeting) => {
+    setSelectedMeeting(meeting);
+    setIsDetailDialogOpen(true);
   };
 
   const openMeetingRoom = (meeting: Meeting) => {
@@ -443,16 +455,71 @@ export default function Meetings() {
                 </div>
                 <div className="grid gap-2">
                   <Label htmlFor="timezone">Timezone</Label>
-                  <Input
-                    id="timezone"
+                  <TimezoneDropdown
                     value={meetingForm.timezone}
-                    onChange={(e) =>
+                    onChange={(timezone) =>
                       setMeetingForm({
                         ...meetingForm,
-                        timezone: e.target.value,
+                        timezone,
                       })
                     }
                   />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="password">Password (Optional)</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={meetingForm.password || ""}
+                    onChange={(e) =>
+                      setMeetingForm({
+                        ...meetingForm,
+                        password: e.target.value,
+                      })
+                    }
+                    placeholder="Enter meeting password"
+                  />
+                </div>
+                <div className="grid gap-4">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
+                    <Switch
+                      id="waitingRoomEnabled"
+                      checked={meetingForm.waitingRoomEnabled}
+                      onCheckedChange={(checked) =>
+                        setMeetingForm({
+                          ...meetingForm,
+                          waitingRoomEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
+                    <Switch
+                      id="recordingEnabled"
+                      checked={meetingForm.recordingEnabled}
+                      onCheckedChange={(checked) =>
+                        setMeetingForm({
+                          ...meetingForm,
+                          recordingEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="screenSharingEnabled" className="cursor-pointer">Screen Sharing</Label>
+                    <Switch
+                      id="screenSharingEnabled"
+                      checked={meetingForm.screenSharingEnabled}
+                      onCheckedChange={(checked) =>
+                        setMeetingForm({
+                          ...meetingForm,
+                          screenSharingEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
                 </div>
                 <div className="grid gap-2">
                   <Label>Attendees</Label>
@@ -545,6 +612,15 @@ export default function Meetings() {
                       variant="outline"
                       size="sm"
                       className="flex-1"
+                      onClick={() => openDetailDialog(meeting)}
+                    >
+                      <Info className="h-4 w-4 mr-2" />
+                      Details
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
                       onClick={() => openEditDialog(meeting)}
                     >
                       <Edit className="h-4 w-4 mr-2" />
@@ -577,90 +653,145 @@ export default function Meetings() {
             <DialogDescription>Update meeting details</DialogDescription>
           </DialogHeader>
           <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
-            <div className="grid gap-2">
-              <Label htmlFor="edit-title">Title</Label>
-              <Input
-                id="edit-title"
-                value={editForm.title || ""}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, title: e.target.value })
-                }
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="edit-description">Description</Label>
-              <Textarea
-                id="edit-description"
-                value={editForm.description || ""}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, description: e.target.value })
-                }
-              />
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-              <div className="grid gap-2">
-                <Label htmlFor="edit-startTime">Start Time</Label>
-                <Input
-                  id="edit-startTime"
-                  type="datetime-local"
-                  value={editForm.startTime || ""}
-                  onChange={(e) =>
-                    setEditForm({ ...editForm, startTime: e.target.value })
-                  }
-                />
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-title">Title</Label>
+                  <Input
+                    id="edit-title"
+                    value={editForm.title || ""}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, title: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-description">Description</Label>
+                  <Textarea
+                    id="edit-description"
+                    value={editForm.description || ""}
+                    onChange={(e) =>
+                      setEditForm({ ...editForm, description: e.target.value })
+                    }
+                  />
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-startTime">Start Time</Label>
+                    <Input
+                      id="edit-startTime"
+                      type="datetime-local"
+                      value={editForm.startTime || ""}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, startTime: e.target.value })
+                      }
+                    />
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="edit-endTime">End Time</Label>
+                    <Input
+                      id="edit-endTime"
+                      type="datetime-local"
+                      value={editForm.endTime || ""}
+                      onChange={(e) =>
+                        setEditForm({ ...editForm, endTime: e.target.value })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-timezone">Timezone</Label>
+                  <TimezoneDropdown
+                    value={editForm.timezone || ""}
+                    onChange={(timezone) =>
+                      setEditForm({ ...editForm, timezone })
+                    }
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-password">Password (Optional)</Label>
+                  <Input
+                    id="edit-password"
+                    type="password"
+                    value={editForm.password || ""}
+                    onChange={(e) =>
+                      setEditForm({
+                        ...editForm,
+                        password: e.target.value,
+                      })
+                    }
+                    placeholder="Enter meeting password"
+                  />
+                </div>
+                <div className="grid gap-4">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="edit-waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
+                    <Switch
+                      id="edit-waitingRoomEnabled"
+                      checked={editForm.waitingRoomEnabled ?? false}
+                      onCheckedChange={(checked) =>
+                        setEditForm({
+                          ...editForm,
+                          waitingRoomEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="edit-recordingEnabled" className="cursor-pointer">Recording</Label>
+                    <Switch
+                      id="edit-recordingEnabled"
+                      checked={editForm.recordingEnabled ?? false}
+                      onCheckedChange={(checked) =>
+                        setEditForm({
+                          ...editForm,
+                          recordingEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="edit-screenSharingEnabled" className="cursor-pointer">Screen Sharing</Label>
+                    <Switch
+                      id="edit-screenSharingEnabled"
+                      checked={editForm.screenSharingEnabled ?? false}
+                      onCheckedChange={(checked) =>
+                        setEditForm({
+                          ...editForm,
+                          screenSharingEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
+                  <Label>Attendees</Label>
+                  <TeamMemberMultiSelect
+                    selected={editForm.attendeeIds || []}
+                    onChange={(ids) => setEditForm({ ...editForm, attendeeIds: ids })}
+                  />
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="edit-status">Status</Label>
+                  <Select
+                    value={editForm.status || ""}
+                    onValueChange={(value) =>
+                      setEditForm({
+                        ...editForm,
+                        status: value as any,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select status" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="scheduled">Scheduled</SelectItem>
+                      <SelectItem value="ongoing">Ongoing</SelectItem>
+                      <SelectItem value="completed">Completed</SelectItem>
+                      <SelectItem value="cancelled">Cancelled</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="edit-endTime">End Time</Label>
-                <Input
-                  id="edit-endTime"
-                  type="datetime-local"
-                  value={editForm.endTime || ""}
-                  onChange={(e) =>
-                    setEditForm({ ...editForm, endTime: e.target.value })
-                  }
-                />
-              </div>
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="edit-timezone">Timezone</Label>
-              <Input
-                id="edit-timezone"
-                value={editForm.timezone || ""}
-                onChange={(e) =>
-                  setEditForm({ ...editForm, timezone: e.target.value })
-                }
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label>Attendees</Label>
-              <TeamMemberMultiSelect
-                selected={editForm.attendeeIds || []}
-                onChange={(ids) => setEditForm({ ...editForm, attendeeIds: ids })}
-              />
-            </div>
-            <div className="grid gap-2">
-              <Label htmlFor="edit-status">Status</Label>
-              <Select
-                value={editForm.status || ""}
-                onValueChange={(value) =>
-                  setEditForm({
-                    ...editForm,
-                    status: value as any,
-                  })
-                }
-              >
-                <SelectTrigger>
-                  <SelectValue placeholder="Select status" />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="scheduled">Scheduled</SelectItem>
-                  <SelectItem value="ongoing">Ongoing</SelectItem>
-                  <SelectItem value="completed">Completed</SelectItem>
-                  <SelectItem value="cancelled">Cancelled</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          </div>
           <DialogFooter className="shrink-0">
             <Button
               variant="outline"
@@ -680,24 +811,149 @@ export default function Meetings() {
       </Dialog>
 
       {selectedMeeting && (
-        <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
-          <DialogContent className="max-w-5xl h-[calc(100dvh-1rem)] sm:h-[85vh] flex flex-col overflow-hidden p-3 sm:p-6">
-            <DialogHeader className="shrink-0 pr-8">
-              <DialogTitle>{selectedMeeting.title}</DialogTitle>
-              <DialogDescription>
-                {formatDateTime(selectedMeeting.startTime)}
-              </DialogDescription>
+        <Dialog open={isDetailDialogOpen} onOpenChange={setIsDetailDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-2xl">{selectedMeeting.title}</DialogTitle>
+              <DialogDescription>{selectedMeeting.description}</DialogDescription>
             </DialogHeader>
-            <div className="flex-1 min-h-0">
-              <iframe
-                title={`${selectedMeeting.title} meeting room`}
-                src={`https://meet.jit.si/${selectedMeeting.meetingCode}#userInfo.displayName=${
-                  localStorage.getItem("userName") || "User"
-                }`}
-                className="w-full h-full min-h-[320px] sm:min-h-[520px] rounded-lg border border-border"
-                allow="camera; microphone; fullscreen; display-capture; autoplay"
-              />
+            <div className="space-y-4 py-4">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Start Time</div>
+                  <div className="flex items-center gap-2">
+                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                    <span>{formatDateTime(selectedMeeting.startTime)}</span>
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">End Time</div>
+                  <div className="flex items-center gap-2">
+                    <Clock className="h-4 w-4 text-muted-foreground" />
+                    <span>{formatDateTime(selectedMeeting.endTime)}</span>
+                  </div>
+                </div>
+              </div>
+              
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Timezone</div>
+                <div className="flex items-center gap-2">
+                  <Clock className="h-4 w-4 text-muted-foreground" />
+                  <span>{selectedMeeting.timezone}</span>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Meeting Code</div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="text-lg font-mono">
+                    {selectedMeeting.meetingCode}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedMeeting.meetingCode);
+                      toast({
+                        title: "Copied!",
+                        description: "Meeting code copied to clipboard",
+                      });
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Status</div>
+                <Badge variant="default" className="capitalize">
+                  {selectedMeeting.status}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Max Participants</div>
+                  <div>{selectedMeeting.maxParticipants}</div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Created At</div>
+                  <div>{formatDateTime(selectedMeeting.createdAt)}</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Features</div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedMeeting.waitingRoomEnabled && (
+                    <Badge variant="outline">Waiting Room</Badge>
+                  )}
+                  {selectedMeeting.recordingEnabled && (
+                    <Badge variant="outline">Recording</Badge>
+                  )}
+                  {selectedMeeting.screenSharingEnabled && (
+                    <Badge variant="outline">Screen Sharing</Badge>
+                  )}
+                  {selectedMeeting.isInstant && (
+                    <Badge variant="outline">Instant Meeting</Badge>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Attendees</div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedMeeting.attendees.map((attendee) => {
+                    const member = teamMembers.find((m) => m.id === attendee.userId);
+                    return (
+                      <Badge key={attendee.id} variant="outline">
+                        {member?.name || attendee.userId}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setIsDetailDialogOpen(false)}
+              >
+                Close
+              </Button>
+              <Button
+                onClick={() => {
+                  setIsDetailDialogOpen(false);
+                  openMeetingRoom(selectedMeeting);
+                }}
+              >
+                <Video className="h-4 w-4 mr-2" />
+                Join Meeting
+              </Button>
+              <Button
+                variant="outline"
+                onClick={() => {
+                  setIsDetailDialogOpen(false);
+                  openEditDialog(selectedMeeting);
+                }}
+              >
+                <Edit className="h-4 w-4 mr-2" />
+                Edit
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {selectedMeeting && (
+        <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
+          <DialogContent className="max-w-7xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden p-0">
+            <VideoCallRoom
+              roomId={selectedMeeting.meetingCode}
+              onLeave={() => setIsMeetingRoomOpen(false)}
+              userName={localStorage.getItem("userName") || "User"}
+            />
           </DialogContent>
         </Dialog>
       )}

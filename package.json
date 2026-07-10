@@ -58,6 +58,7 @@
     "framer-motion": "^12.23.12",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.539.0",
+    "mediasoup-client": "^3.21.0",
     "multer": "^2.0.2",
     "next-themes": "^0.4.6",
     "react": "^18.3.1",

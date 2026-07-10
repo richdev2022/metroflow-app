@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import Layout from "@/components/layout";
+import VideoCallRoom from "@/components/VideoCallRoom";
 import {
   Card,
   CardContent,
@@ -9,6 +10,8 @@ import {
 } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
+import { Input } from "@/components/ui/input";
+import { Switch } from "@/components/ui/switch";
 import {
   Dialog,
   DialogContent,
@@ -46,6 +49,7 @@ import {
   X,
   Check,
   Trash2,
+  Copy,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -439,6 +443,49 @@ export default function Calls() {
                   </Select>
                 </div>
                 <div className="grid gap-2">
+                  <Label htmlFor="password">Password (Optional)</Label>
+                  <Input
+                    id="password"
+                    type="password"
+                    value={callForm.password || ""}
+                    onChange={(e) =>
+                      setCallForm({
+                        ...callForm,
+                        password: e.target.value,
+                      })
+                    }
+                    placeholder="Enter call password"
+                  />
+                </div>
+                <div className="grid gap-4">
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
+                    <Switch
+                      id="waitingRoomEnabled"
+                      checked={callForm.waitingRoomEnabled}
+                      onCheckedChange={(checked) =>
+                        setCallForm({
+                          ...callForm,
+                          waitingRoomEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
+                    <Switch
+                      id="recordingEnabled"
+                      checked={callForm.recordingEnabled}
+                      onCheckedChange={(checked) =>
+                        setCallForm({
+                          ...callForm,
+                          recordingEnabled: checked,
+                        })
+                      }
+                    />
+                  </div>
+                </div>
+                <div className="grid gap-2">
                   <Label>Participants</Label>
                   <TeamMemberMultiSelect
                     selected={callForm.participantIds}
@@ -593,25 +640,14 @@ export default function Calls() {
         </div>
       </div>
 
-      {selectedCall && getCallRoomId(selectedCall as CallView) && (
+      {selectedCall && selectedCall.callCode && (
         <Dialog open={isJoinDialogOpen} onOpenChange={setIsJoinDialogOpen}>
-          <DialogContent className="max-w-5xl h-[85vh] flex flex-col">
-            <DialogHeader>
-              <DialogTitle>{selectedCall.type === "video" ? "Video" : "Audio"} Call</DialogTitle>
-              <DialogDescription>
-                {selectedCall.participants.length} participants
-              </DialogDescription>
-            </DialogHeader>
-            <div className="flex-1 min-h-0 w-full">
-              <iframe
-                title="Jitsi Meet Call"
-                src={`https://meet.jit.si/${getCallRoomId(selectedCall as CallView)}#userInfo.displayName=${
-                  localStorage.getItem("userName") || "User"
-                }`}
-                className="w-full h-full min-h-[520px] rounded-lg border border-border"
-                allow="camera; microphone; fullscreen; display-capture; autoplay"
-              />
-            </div>
+          <DialogContent className="max-w-7xl h-[90vh] flex flex-col overflow-hidden p-0">
+            <VideoCallRoom
+              roomId={selectedCall.callCode}
+              onLeave={() => setIsJoinDialogOpen(false)}
+              userName={localStorage.getItem("userName") || "User"}
+            />
           </DialogContent>
         </Dialog>
       )}
