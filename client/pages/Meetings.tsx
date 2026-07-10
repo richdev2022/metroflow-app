@@ -53,6 +53,7 @@ import {
   Info,
   Copy,
   Check,
+  X,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -78,7 +79,6 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import { Check, X } from "lucide-react";
 
 export default function Meetings() {
   const {
