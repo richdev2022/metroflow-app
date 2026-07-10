@@ -102,6 +102,7 @@ export default function Calls() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false);
+  const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState<Call | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
   const [callForm, setCallForm] = useState<CreateCallInput>({
@@ -199,6 +200,11 @@ export default function Calls() {
     } finally {
       setIsProcessing(false);
     }
+  };
+
+  const openDetailDialog = (call: Call) => {
+    setSelectedCall(call);
+    setIsDetailDialogOpen(true);
   };
 
   const handleOpenCallRoom = (call: Call) => {
@@ -586,6 +592,14 @@ export default function Calls() {
                       </Button>
                     </div>
                   )}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="w-full"
+                    onClick={() => openDetailDialog(call)}
+                  >
+                    View Details
+                  </Button>
                   <div className="flex gap-2">
                     {call.status === "ringing" || call.status === "ongoing" ? (
                       <>
@@ -639,6 +653,114 @@ export default function Calls() {
           )}
         </div>
       </div>
+
+      {selectedCall && (
+        <Dialog open={isDetailDialogOpen} onOpenChange={setIsDetailDialogOpen}>
+          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+            <DialogHeader>
+              <DialogTitle className="text-2xl">
+                {selectedCall.type === "video" ? "Video" : "Audio"} Call Details
+              </DialogTitle>
+              <DialogDescription>
+                {selectedCall.participants.length} participants
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-4 py-4">
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Call Code</div>
+                <div className="flex items-center gap-2">
+                  <Badge variant="secondary" className="text-lg font-mono">
+                    {selectedCall.callCode}
+                  </Badge>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    onClick={() => {
+                      navigator.clipboard.writeText(selectedCall.callCode);
+                      toast({
+                        title: "Copied!",
+                        description: "Call code copied to clipboard",
+                      });
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                  </Button>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Status</div>
+                <Badge variant="default" className="capitalize">
+                  {selectedCall.status}
+                </Badge>
+              </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Type</div>
+                  <div className="capitalize">
+                    {selectedCall.type === "video" ? "Video Call" : "Audio Call"}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Participants</div>
+                  <div>{selectedCall.participants.length}</div>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Features</div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedCall.waitingRoomEnabled && (
+                    <Badge variant="outline">Waiting Room</Badge>
+                  )}
+                  {selectedCall.recordingEnabled && (
+                    <Badge variant="outline">Recording</Badge>
+                  )}
+                  {selectedCall.isGroupCall && (
+                    <Badge variant="outline">Group Call</Badge>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <div className="text-sm text-muted-foreground">Participants</div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedCall.participants.map((participant) => {
+                    const member = teamMembers.find((m) => m.id === (participant as CallParticipant).userId);
+                    return (
+                      <Badge key={participant.id} variant="outline">
+                        {member?.name || (participant as CallParticipant).userId}
+                      </Badge>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+            <DialogFooter className="gap-2">
+              <Button
+                variant="outline"
+                onClick={() => setIsDetailDialogOpen(false)}
+              >
+                Close
+              </Button>
+              {selectedCall.status === "ringing" || selectedCall.status === "ongoing" ? (
+                <Button onClick={() => {
+                  setIsDetailDialogOpen(false);
+                  handleOpenCallRoom(selectedCall);
+                }}>
+                  {selectedCall.type === "video" ? (
+                    <Video className="h-4 w-4 mr-2" />
+                  ) : (
+                    <Phone className="h-4 w-4 mr-2" />
+                  )}
+                  Open Call
+                </Button>
+              ) : null}
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
 
       {selectedCall && selectedCall.callCode && (
         <Dialog open={isJoinDialogOpen} onOpenChange={setIsJoinDialogOpen}>
