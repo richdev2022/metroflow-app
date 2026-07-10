@@ -33,6 +33,7 @@ import NotFound from "./pages/NotFound";
 import Meetings from "./pages/Meetings";
 import Chat from "./pages/Chat";
 import Calls from "./pages/Calls";
+import Recordings from "./pages/Recordings";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -162,6 +163,10 @@ const App = () => (
             <Route
               path="/calls"
               element={<TokenProtectedRoute element={<Calls />} />}
+            />
+            <Route
+              path="/recordings"
+              element={<TokenProtectedRoute element={<Recordings />} />}
             />
             <Route path="/accept-invite/:token" element={<AcceptInvite />} />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
