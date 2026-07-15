@@ -16,7 +16,7 @@ export const useSocket = ({ userId, businessId }: UseSocketOptions = {}) => {
 
     // Connect to Socket.io server
     const socket = io('/', {
-      transports: ['websocket'],
+      transports: ['polling', 'websocket'],
     });
 
     socketRef.current = socket;
