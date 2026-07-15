@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic } from "lucide-react";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -218,6 +218,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link to="/calls">
                   <Video />
                   <span>Calls</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/recordings")} tooltip="Recordings">
+                <Link to="/recordings">
+                  <Mic />
+                  <span>Recordings</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

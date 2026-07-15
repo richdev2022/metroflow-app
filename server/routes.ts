@@ -4,23 +4,49 @@ import { storage } from "./storage";
 import multer from "multer";
 import { Server as SocketIOServer } from "socket.io";
 import type { CreateTaskStatusInput } from "../shared/api";
+import {
+  closePeer,
+  connectWebRtcTransport,
+  consume,
+  createWebRtcTransport,
+  getRoomProducers,
+  getRouterRtpCapabilities,
+  produce,
+  resumeConsumer,
+} from "./mediasoup-service";
 
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Store active users
 const activeUsers = new Map<string, { userId: string; businessId: string; socketId: string }>();
+// Store active recordings (roomId -> { id, startTime, userId, businessId, meetingId, callId })
+const activeRecordings = new Map<string, { id: string; startTime: number; userId: string; businessId: string; meetingId?: string; callId?: string }>();
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Middleware to simulate auth (get userId from header or token)
   // For this demo, we'll assume a fixed userId if not provided or handle it in handlers
   const getUserId = (req: any) => {
-    // In real app, extract from JWT
-    // For now, let's use a mock ID or rely on client sending a specific header if we implemented that
-    // But since we are using localStorage in client, let's look for Authorization header mock
+    const headerUserId = req.headers["x-user-id"];
+    if (typeof headerUserId === "string" && headerUserId.trim()) {
+      return headerUserId.trim();
+    }
+
+    const authHeader = req.headers.authorization;
+    if (typeof authHeader === "string" && authHeader.startsWith("Bearer mock_token_")) {
+      return authHeader.replace("Bearer mock_token_", "").trim();
+    }
+
     return "user_123"; // Mock User ID
   };
   
-  const getBusinessId = (req: any) => "biz_123"; // Mock Business ID
+  const getBusinessId = (req: any) => {
+    const headerBusinessId = req.headers["x-business-id"];
+    if (typeof headerBusinessId === "string" && headerBusinessId.trim()) {
+      return headerBusinessId.trim();
+    }
+
+    return "biz_123"; // Mock Business ID
+  };
 
   // --- Auth Routes ---
   app.post("/api/auth/register", async (req, res) => {
@@ -716,6 +742,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.get("/api/meetings/code/:code", async (req, res) => {
+    try {
+      const meeting = await storage.getMeetingByCode(req.params.code);
+      if (meeting) {
+        res.json({ success: true, data: meeting });
+      } else {
+        res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get meeting" });
+    }
+  });
+
   app.get("/api/meetings/:id", async (req, res) => {
     try {
       const meeting = await storage.getMeeting(req.params.id);
@@ -849,6 +888,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       const io = (global as any).io;
       if (io) {
         io.to(`conversation-${req.params.id}`).emit('message:created', message);
+        io.to(`conversation-${req.params.id}`).emit('chat:message', message);
       }
       
       res.json({ success: true, data: message });
@@ -867,6 +907,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: { calls, total } });
     } catch (err) {
       res.status(500).json({ error: "Failed to get calls" });
+    }
+  });
+
+  app.get("/api/calls/code/:code", async (req, res) => {
+    try {
+      const call = await storage.getCallByCode(req.params.code);
+      if (call) {
+        res.json({ success: true, data: call });
+      } else {
+        res.status(404).json({ success: false, error: "Call not found" });
+      }
+    } catch (err) {
+      res.status(500).json({ error: "Failed to get call" });
     }
   });
 
@@ -966,6 +1019,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/calls/:id/participants", async (req, res) => {
+    try {
+      const { participantIds = [] } = req.body;
+      if (!Array.isArray(participantIds) || participantIds.length === 0) {
+        return res.status(400).json({ success: false, error: "participantIds is required" });
+      }
+
+      const call = await storage.addCallParticipants(req.params.id, participantIds);
+      if (!call) {
+        return res.status(404).json({ success: false, error: "Call not found" });
+      }
+
+      const io = (global as any).io;
+      const businessId = getBusinessId(req);
+      if (io) {
+        io.to(businessId).emit('call:updated', call);
+        for (const targetUserId of participantIds) {
+          const activeUser = activeUsers.get(targetUserId);
+          if (activeUser) {
+            io.to(activeUser.socketId).emit('call:incoming', {
+              callId: call.id,
+              from: call.hostId,
+              type: call.type,
+              callCode: call.callCode,
+            });
+          }
+        }
+      }
+
+      res.json({ success: true, data: call });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to add call participants" });
+    }
+  });
+
   // --- Recordings Endpoints ---
   app.get("/api/recordings", async (req, res) => {
     try {
@@ -1036,7 +1124,32 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/calls/:id/join", async (req, res) => {
     try {
       const userId = getUserId(req);
-      // Optional: Verify password here if provided
+      const existingCall = await storage.getCall(req.params.id);
+      if (!existingCall) {
+        return res.status(404).json({ success: false, error: "Call not found" });
+      }
+
+      const isHost = existingCall.hostId === userId || existingCall.createdById === userId;
+      if (existingCall.password && !isHost) {
+        const password = typeof req.body?.password === "string" ? req.body.password : "";
+        if (!password) {
+          return res.status(403).json({
+            success: false,
+            error: "Password required",
+            code: "PASSWORD_REQUIRED",
+          });
+        }
+
+        const passwordIsValid = await storage.verifyCallPassword(req.params.id, password);
+        if (!passwordIsValid) {
+          return res.status(403).json({
+            success: false,
+            error: "Invalid password",
+            code: "INVALID_PASSWORD",
+          });
+        }
+      }
+
       const call = await storage.joinCall(userId, req.params.id);
       if (call) {
         // Emit real-time event
@@ -1126,13 +1239,23 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     // --- Call Events ---
     socket.on('call:invite', ({ callId, targetUserId, type }) => {
+      const caller = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
       // Find target user and send invite
       for (const [userId, user] of activeUsers.entries()) {
         if (userId === targetUserId) {
-          io.to(user.socketId).emit('call:incoming', { callId, from: targetUserId, type, callCode: '' });
+          io.to(user.socketId).emit('call:incoming', {
+            callId,
+            from: caller?.userId || '',
+            type,
+            callCode: callId,
+          });
           break;
         }
       }
+    });
+
+    socket.on('call:join', ({ roomId }) => {
+      socket.join(roomId);
     });
 
     socket.on('call:accept', ({ callId }) => {
@@ -1147,8 +1270,28 @@ export async function registerRoutes(app: Express): Promise<Server> {
       io.emit('call:ended', { callId });
     });
 
+    socket.on('call:audio-level', ({ roomId, isTalking, userName }) => {
+      const activeUser = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+      socket.to(roomId).emit('call:audio-level', {
+        userId: activeUser?.userId || socket.id,
+        userName,
+        isTalking: Boolean(isTalking),
+      });
+    });
+
+    socket.on('call:media-state', ({ roomId, audioEnabled, videoEnabled, screenSharing }) => {
+      const activeUser = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+      socket.to(roomId).emit('call:media-state', {
+        userId: activeUser?.userId || socket.id,
+        audioEnabled,
+        videoEnabled,
+        screenSharing,
+      });
+    });
+
     // --- Meeting Events ---
     socket.on('meeting:join', ({ meetingId }) => {
+      socket.join(meetingId);
       socket.join(`meeting-${meetingId}`);
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
@@ -1159,6 +1302,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     socket.on('meeting:leave', ({ meetingId }) => {
+      socket.leave(meetingId);
       socket.leave(`meeting-${meetingId}`);
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
@@ -1173,31 +1317,85 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // --- WebRTC Signaling (Mediasoup) ---
-    socket.on('mediasoup:getRouterRtpCapabilities', (callback) => {
-      // Mock router capabilities
-      callback({ rtpCapabilities: {} });
+    socket.on('mediasoup:getRouterRtpCapabilities', async (payload = {}, callback) => {
+      const responseCallback = typeof payload === "function" ? payload : callback;
+      const roomId = typeof payload === "function" ? socket.id : payload?.roomId;
+
+      try {
+        const rtpCapabilities = await getRouterRtpCapabilities(roomId || socket.id);
+        responseCallback?.({ rtpCapabilities, routerRtpCapabilities: rtpCapabilities });
+      } catch (error: any) {
+        responseCallback?.({ error: error.message || "Failed to get router RTP capabilities" });
+      }
     });
 
-    socket.on('mediasoup:createWebRtcTransport', ({ roomId }, callback) => {
-      callback({ id: `transport-${Date.now()}`, iceParameters: {}, iceCandidates: [], dtlsParameters: {} });
+    socket.on('mediasoup:createWebRtcTransport', async ({ roomId }, callback) => {
+      try {
+        const activeUser = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+        const transport = await createWebRtcTransport(roomId, {
+          socketId: socket.id,
+          userId: activeUser?.userId,
+        });
+        callback(transport);
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to create WebRTC transport" });
+      }
     });
 
-    socket.on('mediasoup:connectWebRtcTransport', ({ transportId, dtlsParameters, roomId }, callback) => {
-      callback();
+    socket.on('mediasoup:connectWebRtcTransport', async ({ transportId, dtlsParameters, roomId }, callback) => {
+      try {
+        await connectWebRtcTransport(roomId, transportId, dtlsParameters);
+        callback();
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to connect WebRTC transport" });
+      }
     });
 
-    socket.on('mediasoup:produce', ({ transportId, kind, rtpParameters, roomId }, callback) => {
-      const producerId = `producer-${Date.now()}`;
-      socket.to(roomId).emit('mediasoup:newProducer', { producerId, kind });
-      callback({ id: producerId });
+    socket.on('mediasoup:produce', async ({ transportId, kind, rtpParameters, appData, roomId }, callback) => {
+      try {
+        const activeUser = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+        const createdProducer = await produce(roomId, transportId, kind, rtpParameters, {
+          ...appData,
+          userId: activeUser?.userId,
+        });
+        socket.to(roomId).emit('mediasoup:newProducer', {
+          producerId: createdProducer.id,
+          kind: createdProducer.kind,
+          peerId: createdProducer.peer.userId || createdProducer.peer.socketId,
+          peerName: createdProducer.appData?.userName,
+          appData: createdProducer.appData,
+        });
+        callback({ id: createdProducer.id });
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to produce media" });
+      }
     });
 
-    socket.on('mediasoup:consume', ({ transportId, producerId, rtpCapabilities, roomId }, callback) => {
-      callback({ id: `consumer-${Date.now()}`, producerId, kind: 'video', rtpParameters: {} });
+    socket.on('mediasoup:consume', async ({ transportId, producerId, rtpCapabilities, roomId }, callback) => {
+      try {
+        const consumer = await consume(roomId, transportId, producerId, rtpCapabilities);
+        callback(consumer);
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to consume media" });
+      }
     });
 
-    socket.on('mediasoup:resume', ({ consumerId, roomId }, callback) => {
-      callback();
+    socket.on('mediasoup:resume', async ({ consumerId, roomId }, callback) => {
+      try {
+        await resumeConsumer(roomId, consumerId);
+        callback();
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to resume consumer" });
+      }
+    });
+
+    socket.on('mediasoup:getProducers', async ({ roomId }, callback) => {
+      try {
+        const producers = await getRoomProducers(roomId, socket.id);
+        callback({ producers });
+      } catch (error: any) {
+        callback({ error: error.message || "Failed to get room producers" });
+      }
     });
 
     // --- Recording Events ---
@@ -1210,29 +1408,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // --- Screen Sharing ---
-    socket.on('screen-share:start', ({ meetingId }) => {
+    socket.on('screen-share:start', ({ roomId }) => {
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
-          io.to(`meeting-${meetingId}`).emit('screen-share:started', { userId });
+          io.to(roomId).emit('screen-share:started', { userId, userName: user.userId });
           break;
         }
       }
     });
 
-    socket.on('screen-share:stop', ({ meetingId }) => {
+    socket.on('screen-share:stop', ({ roomId }) => {
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
-          io.to(`meeting-${meetingId}`).emit('screen-share:stopped', { userId });
+          io.to(roomId).emit('screen-share:stopped', { userId });
           break;
         }
       }
     });
 
-    // --- In-Meeting Chat ---
-    socket.on('meeting-chat:message', ({ meetingId, message }) => {
+    // --- In-Meeting/Chat ---
+    socket.on('meeting-chat:message', ({ roomId, message }) => {
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
-          io.to(`meeting-${meetingId}`).emit('meeting-chat:message', { 
+          io.to(roomId).emit('meeting-chat:message', { 
             userId, 
             message, 
             timestamp: new Date().toISOString() 
@@ -1251,6 +1449,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
     // Handle disconnection
     socket.on('disconnect', () => {
       console.log('Client disconnected:', socket.id);
+      closePeer(socket.id);
       
       // Find and remove user from activeUsers
       for (const [userId, user] of activeUsers.entries()) {

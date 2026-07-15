@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { api } from '@/lib/api-client';
-import { Task, ApiResponse, TeamMember, Comment, CreateCommentInput, Reaction, TaskStatus, CreateTaskStatusInput } from '@shared/api';
+import { Task, ApiResponse, TeamMember, Comment, CreateCommentInput, Reaction, TaskStatus, CreateTaskStatusInput, BoardColumn } from '@shared/api';
 import Layout from '@/components/layout';
 import {
   DndContext,
@@ -292,7 +292,7 @@ const SortableTaskColumn = ({
 };
 
 export default function Board() {
-  const [tasks, setTasks] = useState<Task[]>([]);
+  const [boardData, setBoardData] = useState<BoardColumn[]>([]);
   const [taskStatuses, setTaskStatuses] = useState<TaskStatus[]>([]);
   const [loading, setLoading] = useState(true);
   const [activeTask, setActiveTask] = useState<Task | null>(null);
@@ -333,24 +333,31 @@ export default function Board() {
     })
   );
 
-  const getTasksByStatus = (status: string) => {
-    return tasks.filter(task => task.status === status);
-  };
-
-  const fetchTasks = async () => {
+  const fetchBoardData = async () => {
     try {
       setLoading(true);
-      const response = await api.get('/tasks?limit=10000');
-      const data = response.data as ApiResponse<{ tasks: Task[] }>;
-      console.log('Fetched tasks:', data); // Added for debugging
+      const response = await api.get('/board');
+      const data = response.data as ApiResponse<BoardColumn[]>;
+      console.log('Fetched board data:', data);
       if (data.success && data.data) {
-        setTasks(data.data.tasks);
+        setBoardData(data.data);
+        // Extract task statuses from board data
+        setTaskStatuses(data.data.map(col => ({
+          id: col.id,
+          business_id: col.business_id,
+          name: col.name,
+          color: col.color,
+          is_default: col.is_default,
+          sort_order: col.sort_order,
+          created_at: col.created_at,
+          updated_at: col.updated_at
+        })));
       }
     } catch (error: any) {
-      console.error('Failed to fetch tasks:', error);
+      console.error('Failed to fetch board data:', error);
       toast({
         title: 'Error',
-        description: error.response?.data?.error || error.response?.data?.message || 'Failed to fetch tasks',
+        description: error.response?.data?.error || error.response?.data?.message || 'Failed to fetch board',
         variant: 'destructive',
       });
     } finally {
@@ -358,19 +365,9 @@ export default function Board() {
     }
   };
 
-  const fetchTaskStatuses = async () => {
-    try {
-      const response = await api.get('/task-statuses');
-      const data = response.data as ApiResponse<TaskStatus[]>;
-      console.log('Fetched task statuses:', data); // Added for debugging
-      if (data.success && data.data) {
-        // Make sure we sort by sort_order
-        const sorted = [...data.data].sort((a, b) => a.sort_order - b.sort_order);
-        setTaskStatuses(sorted);
-      }
-    } catch (error) {
-      console.error('Failed to fetch task statuses:', error);
-    }
+  const getTasksByStatus = (statusId: string) => {
+    const column = boardData.find(col => col.id === statusId);
+    return column?.tasks || [];
   };
 
   const fetchTeamMembers = async () => {
@@ -400,10 +397,7 @@ export default function Board() {
       } as CreateTaskStatusInput);
       const data = response.data as ApiResponse<TaskStatus>;
       if (data.success && data.data) {
-        setTaskStatuses(prev => {
-          const updated = [...prev, data.data!];
-          return updated.sort((a, b) => a.sort_order - b.sort_order);
-        });
+        await fetchBoardData();
         setShowCreateColumnModal(false);
         setNewColumnName('');
         setNewColumnColor('#6b7280');
@@ -428,10 +422,7 @@ export default function Board() {
       });
       const data = response.data as ApiResponse<TaskStatus>;
       if (data.success && data.data) {
-        setTaskStatuses(prev => {
-          const updated = prev.map(s => s.id === selectedStatus.id ? data.data! : s);
-          return updated.sort((a, b) => a.sort_order - b.sort_order);
-        });
+        await fetchBoardData();
         setShowEditColumnModal(false);
         setSelectedStatus(null);
         toast({ title: 'Column updated', description: 'Status column updated successfully' });
@@ -452,10 +443,7 @@ export default function Board() {
       const response = await api.delete(`/task-statuses/${selectedStatus.id}`);
       const data = response.data as ApiResponse<boolean>;
       if (data.success) {
-        setTaskStatuses(prev => {
-          const updated = prev.filter(s => s.id !== selectedStatus.id);
-          return updated.sort((a, b) => a.sort_order - b.sort_order);
-        });
+        await fetchBoardData();
         setShowDeleteColumnModal(false);
         setSelectedStatus(null);
         toast({ title: 'Column deleted', description: 'Status column deleted successfully' });
@@ -476,7 +464,13 @@ export default function Board() {
       const response = await api.put(`/tasks/${taskId}`, updates);
       const data = response.data as ApiResponse<Task>;
       if (data.success && data.data) {
-        setTasks(prev => prev.map(task => task.id === taskId ? data.data! : task));
+        // Update the task in board data
+        setBoardData(prev => prev.map(column => ({
+          ...column,
+          tasks: column.tasks.map(task => 
+            task.id === taskId ? { ...task, ...data.data! } : task
+          )
+        })));
         if (selectedTask?.id === taskId) {
           setSelectedTask(data.data);
         }
@@ -497,18 +491,16 @@ export default function Board() {
     }
   };
 
-  const updateTaskStatus = async (taskId: string, newStatus: string) => {
+  const updateTaskStatus = async (taskId: string, newStatusId: string) => {
     try {
-      const response = await api.put(`/tasks/${taskId}`, { status: newStatus });
+      const response = await api.put(`/tasks/${taskId}`, { status: newStatusId });
       const data = response.data as ApiResponse<Task>;
       if (data.success && data.data) {
-        setTasks(prev => prev.map(task => task.id === taskId ? data.data! : task));
-        if (selectedTask?.id === taskId) {
-          setSelectedTask(data.data);
-        }
+        // Refresh board data
+        fetchBoardData();
         toast({
           title: 'Task status updated',
-          description: `Task moved to ${newStatus.replace('_', ' ')}`,
+          description: 'Task moved successfully',
         });
       }
     } catch (error: any) {
@@ -518,13 +510,17 @@ export default function Board() {
         description: error.response?.data?.error || error.response?.data?.message || 'Failed to update task status',
         variant: 'destructive',
       });
-      fetchTasks(); // Refresh tasks to revert the local state
+      fetchBoardData(); // Refresh board data to revert
     }
   };
 
   const handleDragStart = (event: DragStartEvent) => {
     // Check if we're dragging a task or a status
-    const task = tasks.find(t => t.id === event.active.id);
+    let task: Task | undefined;
+    for (const column of boardData) {
+      task = column.tasks.find(t => t.id === event.active.id);
+      if (task) break;
+    }
     const status = taskStatuses.find(s => s.id === event.active.id);
     setActiveTask(task || null);
     setActiveStatus(status || null);
@@ -551,8 +547,17 @@ export default function Board() {
     }
 
     // If dragging a task
-    const activeTaskItem = tasks.find(t => t.id === activeId);
-    if (!activeTaskItem) return;
+    let activeTaskItem: Task | undefined;
+    let currentColumnId: string | undefined;
+    for (const column of boardData) {
+      const found = column.tasks.find(t => t.id === activeId);
+      if (found) {
+        activeTaskItem = found;
+        currentColumnId = column.id;
+        break;
+      }
+    }
+    if (!activeTaskItem || !currentColumnId) return;
 
     // Determine target column
     let targetColumn: Column | undefined;
@@ -562,17 +567,34 @@ export default function Board() {
     
     // If over is a task, find its column
     if (!targetColumn) {
-      const overTaskItem = tasks.find(t => t.id === overId);
-      if (overTaskItem) {
-        targetColumn = columns.find(col => col.id === overTaskItem.status);
+      for (const column of boardData) {
+        const overTaskItem = column.tasks.find(t => t.id === overId);
+        if (overTaskItem) {
+          targetColumn = columns.find(col => col.id === column.id);
+          break;
+        }
       }
     }
 
-    if (targetColumn && activeTaskItem.status !== targetColumn.id) {
+    if (targetColumn && currentColumnId !== targetColumn.id) {
       // Update local state immediately for visual feedback
-      setTasks(prev => prev.map(t => 
-        t.id === activeId ? { ...t, status: targetColumn.id } : t
-      ));
+      setBoardData(prev => {
+        return prev.map(col => {
+          if (col.id === currentColumnId) {
+            return {
+              ...col,
+              tasks: col.tasks.filter(t => t.id !== activeId)
+            };
+          }
+          if (col.id === targetColumn!.id) {
+            return {
+              ...col,
+              tasks: [...col.tasks, { ...activeTaskItem!, status: targetColumn!.id }]
+            };
+          }
+          return col;
+        });
+      });
     }
   };
 
@@ -601,6 +623,8 @@ export default function Board() {
           const data = response.data as ApiResponse<TaskStatus[]>;
           if (data.success && data.data) {
             setTaskStatuses(data.data);
+            // Refresh board data
+            fetchBoardData();
             toast({ title: 'Columns reordered', description: 'Column order updated successfully' });
           }
         } catch (error) {
@@ -612,9 +636,18 @@ export default function Board() {
     }
 
     // If dragging a task
-    // Find the task
-    const task = tasks.find(t => t.id === activeId);
-    if (!task) return;
+    // Find the task and its current column
+    let task: Task | undefined;
+    let currentColumnId: string | undefined;
+    for (const column of boardData) {
+      const found = column.tasks.find(t => t.id === activeId);
+      if (found) {
+        task = found;
+        currentColumnId = column.id;
+        break;
+      }
+    }
+    if (!task || !currentColumnId) return;
 
     // Determine target column
     let targetColumn: Column | undefined;
@@ -624,20 +657,23 @@ export default function Board() {
     
     // If over is a task, find its column
     if (!targetColumn) {
-      const overTaskItem = tasks.find(t => t.id === overId);
-      if (overTaskItem) {
-        targetColumn = columns.find(col => col.id === overTaskItem.status);
+      for (const column of boardData) {
+        const overTaskItem = column.tasks.find(t => t.id === overId);
+        if (overTaskItem) {
+          targetColumn = columns.find(col => col.id === column.id);
+          break;
+        }
       }
     }
 
     // Handle moving between columns
-    if (targetColumn && task.status !== targetColumn.id) {
+    if (targetColumn && currentColumnId !== targetColumn.id) {
       updateTaskStatus(task.id, targetColumn.id);
       return;
     }
 
     // Check if we're sorting within the same column
-    const activeColumn = columns.find(col => col.id === task.status);
+    const activeColumn = columns.find(col => col.id === currentColumnId);
     if (activeColumn) {
       const activeItems = getTasksByStatus(activeColumn.id);
       const fromIndex = activeItems.findIndex(t => t.id === activeId);
@@ -646,8 +682,12 @@ export default function Board() {
       if (fromIndex !== -1 && toIndex !== -1 && fromIndex !== toIndex) {
         // For simplicity, we'll just reorder locally without persisting to backend
         const newItems = arrayMove(activeItems, fromIndex, toIndex);
-        const otherTasks = tasks.filter(t => t.status !== activeColumn.id);
-        setTasks([...otherTasks, ...newItems]);
+        setBoardData(prev => prev.map(col => {
+          if (col.id === currentColumnId) {
+            return { ...col, tasks: newItems };
+          }
+          return col;
+        }));
       }
     }
   };
@@ -832,9 +872,8 @@ export default function Board() {
   const columns: Column[] = taskStatuses.map(taskStatusToColumn);
 
   useEffect(() => { 
-    fetchTasks();
+    fetchBoardData();
     fetchTeamMembers();
-    fetchTaskStatuses();
   }, []);
 
   const dropAnimation: DropAnimation = {

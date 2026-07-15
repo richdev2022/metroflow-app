@@ -58,6 +58,7 @@
     "framer-motion": "^12.23.12",
     "input-otp": "^1.4.2",
     "lucide-react": "^0.539.0",
+    "mediasoup": "^3.21.0",
     "mediasoup-client": "^3.21.0",
     "multer": "^2.0.2",
     "next-themes": "^0.4.6",
@@ -95,6 +96,7 @@
     "prettier": "^3.6.2",
     "tailwindcss": "^3.4.1",
     "tailwindcss-animate": "^1.0.7",
+    "tsx": "^4.23.1",
     "typescript": "^6.0.3",
     "vite": "^6.0.0",
     "vitest": "^4.1.10"

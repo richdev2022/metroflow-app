@@ -112,6 +112,11 @@ export interface IStorage {
   createMeeting(userId: string, businessId: string, data: CreateMeetingInput): Promise<Meeting>;
   updateMeeting(meetingId: string, data: UpdateMeetingInput): Promise<Meeting | undefined>;
   deleteMeeting(meetingId: string): Promise<boolean>;
+  verifyMeetingPassword(meetingId: string, password: string): Promise<boolean>;
+  addWaitingRoomParticipant(meetingId: string, userId: string, userName: string): Promise<void>;
+  admitWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean>;
+  denyWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean>;
+  getWaitingRoomParticipants(meetingId: string): Promise<Array<{ id: string; name: string }>>;
 
   // 10. Chat
   getConversations(userId: string): Promise<Conversation[]>;
@@ -119,6 +124,7 @@ export interface IStorage {
   createConversation(userId: string, businessId: string, data: CreateConversationInput): Promise<Conversation>;
   getMessages(conversationId: string, page?: number, limit?: number): Promise<{ messages: Message[], total: number }>;
   sendMessage(userId: string, conversationId: string, data: SendMessageInput): Promise<Message>;
+  updateConversationLastRead(conversationId: string, userId: string): Promise<void>;
 
   // 11. Calls
   getCalls(businessId: string, page?: number, limit?: number): Promise<{ calls: Call[], total: number }>;
@@ -127,8 +133,10 @@ export interface IStorage {
   createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call>;
   updateCall(callId: string, data: UpdateCallInput): Promise<Call | undefined>;
   joinCall(userId: string, callId: string): Promise<Call | undefined>;
+  addCallParticipants(callId: string, participantIds: string[]): Promise<Call | undefined>;
   leaveCall(userId: string, callId: string): Promise<Call | undefined>;
   deleteCall(callId: string): Promise<boolean>;
+  verifyCallPassword(callId: string, password: string): Promise<boolean>;
 
   // 12. Recordings
   getRecordings(businessId: string, page?: number, limit?: number): Promise<{ recordings: Recording[], total: number }>;
@@ -169,6 +177,8 @@ export class MemStorage implements IStorage {
   private messages: Map<string, Message[]>; // conversationId -> messages
   private calls: Map<string, Call[]>; // businessId -> calls
   private recordings: Map<string, Recording[]>; // businessId -> recordings
+  private waitingRoomParticipants: Map<string, Array<{ id: string; name: string }>>; // meeting/callId -> participants
+  private conversationLastRead: Map<string, Map<string, string>>; // conversationId -> userId -> timestamp
 
   constructor() {
     this.users = new Map();
@@ -201,6 +211,8 @@ export class MemStorage implements IStorage {
     this.messages = new Map();
     this.calls = new Map();
     this.recordings = new Map();
+    this.waitingRoomParticipants = new Map();
+    this.conversationLastRead = new Map();
     
     // Seed some data
     this.seed();
@@ -1403,6 +1415,8 @@ export class MemStorage implements IStorage {
 
   async createConversation(userId: string, businessId: string, data: CreateConversationInput): Promise<Conversation> {
     const now = new Date().toISOString();
+    const participantIds = (data as any).participantIds || (data as any).participant_ids || [];
+    const uniqueParticipantIds = Array.from(new Set([userId, ...participantIds]));
     const newConversation: Conversation = {
       id: `conv_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       name: data.name,
@@ -1410,7 +1424,7 @@ export class MemStorage implements IStorage {
       createdBy: userId,
       createdAt: now,
       updatedAt: now,
-      participants: data.participantIds.map(userId => ({
+      participants: uniqueParticipantIds.map(userId => ({
         id: `participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
         userId: userId
       }))
@@ -1492,7 +1506,8 @@ export class MemStorage implements IStorage {
   async createCall(userId: string, businessId: string, data: CreateCallInput): Promise<Call> {
     const now = new Date().toISOString();
     const callCode = Math.random().toString(36).slice(2, 8).toUpperCase();
-    const invitedParticipantIds = Array.from(new Set(data.participantIds.filter(id => id !== userId)));
+    const participantIds = ((data as any).participantIds || (data as any).participant_ids || []) as string[];
+    const invitedParticipantIds = Array.from(new Set(participantIds.filter(id => id !== userId)));
     const newCall: Call = {
       id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       type: data.type,
@@ -1501,11 +1516,11 @@ export class MemStorage implements IStorage {
       createdById: userId,
       hostId: userId,
       callCode,
-      isGroupCall: data.isGroupCall,
+      isGroupCall: data.isGroupCall ?? invitedParticipantIds.length > 1,
       password: data.password,
-      maxParticipants: data.maxParticipants,
-      waitingRoomEnabled: data.waitingRoomEnabled,
-      recordingEnabled: data.recordingEnabled,
+      maxParticipants: data.maxParticipants || 10,
+      waitingRoomEnabled: data.waitingRoomEnabled || false,
+      recordingEnabled: data.recordingEnabled || false,
       createdAt: now,
       updatedAt: now,
       participants: [
@@ -1571,6 +1586,31 @@ export class MemStorage implements IStorage {
           updatedCall.status = 'ongoing';
           updatedCall.startedAt = updatedCall.startedAt || now;
         }
+        calls[index] = updatedCall;
+        this.calls.set(businessId, calls);
+        return updatedCall;
+      }
+    }
+    return undefined;
+  }
+
+  async addCallParticipants(callId: string, participantIds: string[]): Promise<Call | undefined> {
+    for (const [businessId, calls] of this.calls.entries()) {
+      const index = calls.findIndex(c => c.id === callId);
+      if (index !== -1) {
+        const now = new Date().toISOString();
+        const updatedCall = { ...calls[index], updatedAt: now };
+        const existingIds = new Set(updatedCall.participants.map(participant => participant.userId));
+
+        const newParticipants = Array.from(new Set(participantIds))
+          .filter(userId => !existingIds.has(userId))
+          .map(userId => ({
+            id: `call_participant_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            userId,
+            status: 'invited' as const,
+          }));
+
+        updatedCall.participants = [...updatedCall.participants, ...newParticipants];
         calls[index] = updatedCall;
         this.calls.set(businessId, calls);
         return updatedCall;
@@ -1683,6 +1723,58 @@ export class MemStorage implements IStorage {
       }
     }
     return false;
+  }
+
+  // --- Meeting Waiting Room & Password Methods ---
+  async verifyMeetingPassword(meetingId: string, password: string): Promise<boolean> {
+    const meeting = await this.getMeeting(meetingId);
+    if (!meeting) return false;
+    return !meeting.password || meeting.password === password;
+  }
+
+  async addWaitingRoomParticipant(meetingId: string, userId: string, userName: string): Promise<void> {
+    const participants = this.waitingRoomParticipants.get(meetingId) || [];
+    if (!participants.find(p => p.id === userId)) {
+      participants.push({ id: userId, name: userName });
+      this.waitingRoomParticipants.set(meetingId, participants);
+    }
+  }
+
+  async admitWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean> {
+    const participants = this.waitingRoomParticipants.get(meetingId);
+    if (!participants) return false;
+    const filtered = participants.filter(p => p.id !== userId);
+    this.waitingRoomParticipants.set(meetingId, filtered);
+    return true;
+  }
+
+  async denyWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean> {
+    const participants = this.waitingRoomParticipants.get(meetingId);
+    if (!participants) return false;
+    const filtered = participants.filter(p => p.id !== userId);
+    this.waitingRoomParticipants.set(meetingId, filtered);
+    return true;
+  }
+
+  async getWaitingRoomParticipants(meetingId: string): Promise<Array<{ id: string; name: string }>> {
+    return this.waitingRoomParticipants.get(meetingId) || [];
+  }
+
+  // --- Call Password Method ---
+  async verifyCallPassword(callId: string, password: string): Promise<boolean> {
+    const call = await this.getCall(callId);
+    if (!call) return false;
+    return !call.password || call.password === password;
+  }
+
+  // --- Chat Last Read Method ---
+  async updateConversationLastRead(conversationId: string, userId: string): Promise<void> {
+    let lastReadMap = this.conversationLastRead.get(conversationId);
+    if (!lastReadMap) {
+      lastReadMap = new Map();
+      this.conversationLastRead.set(conversationId, lastReadMap);
+    }
+    lastReadMap.set(userId, new Date().toISOString());
   }
 }
 

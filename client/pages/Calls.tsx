@@ -60,8 +60,7 @@ import {
   useLeaveCall,
   useDeleteCall,
 } from "@/lib/meetings-chat-calls";
-import { Call, CreateCallInput, UpdateCallInput } from "@shared/api";
-import { TeamMember } from "@shared/api";
+import { Call, CreateCallInput, UpdateCallInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
 import {
@@ -78,18 +77,6 @@ import {
   CommandList,
 } from "@/components/ui/command";
 
-type CallParticipant = Call["participants"][number] & {
-  userId?: string;
-  joinedAt?: string;
-  leftAt?: string;
-};
-
-type CallView = Call & {
-  jitsiRoomId?: string;
-  createdAt?: string;
-  updatedAt?: string;
-};
-
 export default function Calls() {
   const { data: callsData, isLoading: callsLoading, error: callsError } = useCalls();
   const createCall = useCreateCall();
@@ -104,6 +91,9 @@ export default function Calls() {
   const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false);
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [selectedCall, setSelectedCall] = useState<Call | null>(null);
+  const [passwordCall, setPasswordCall] = useState<Call | null>(null);
+  const [joinPassword, setJoinPassword] = useState("");
+  const [joinPasswordError, setJoinPasswordError] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
   const [callForm, setCallForm] = useState<CreateCallInput>({
     type: "video",
@@ -181,17 +171,52 @@ export default function Calls() {
     }
   };
 
-  const handleJoinCall = async (call: Call) => {
+  const isCurrentUserHost = (call: Call) => {
+    const currentUserId = getCurrentUserId();
+    return call.hostId === currentUserId || call.createdById === currentUserId;
+  };
+
+  const isCurrentUserJoined = (call: Call) => {
+    const currentUserId = getCurrentUserId();
+    return call.participants.some(
+      (participant) => participant.userId === currentUserId && participant.status === "joined",
+    );
+  };
+
+  const promptForCallPassword = (call: Call, message = "") => {
+    setPasswordCall(call);
+    setJoinPassword("");
+    setJoinPasswordError(message);
+  };
+
+  const handleJoinCall = async (call: Call, password?: string) => {
+    if (call.password && !isCurrentUserHost(call) && !password) {
+      promptForCallPassword(call);
+      return;
+    }
+
     setIsProcessing(true);
     try {
-      const joinedCall = await joinCall.mutateAsync({ callId: call.id });
+      const joinedCall = await joinCall.mutateAsync({ callId: call.id, password });
       setSelectedCall(joinedCall);
       setIsJoinDialogOpen(true);
+      setPasswordCall(null);
+      setJoinPassword("");
+      setJoinPasswordError("");
       toast({
         title: "Joined call",
         description: "You have joined the call",
       });
     } catch (err) {
+      const code = (err as any)?.response?.data?.code;
+      if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
+        promptForCallPassword(
+          call,
+          code === "INVALID_PASSWORD" ? "Invalid password. Please try again." : "",
+        );
+        return;
+      }
+
       toast({
         variant: "destructive",
         title: "Error",
@@ -208,6 +233,11 @@ export default function Calls() {
   };
 
   const handleOpenCallRoom = (call: Call) => {
+    if (!isCurrentUserHost(call) && !isCurrentUserJoined(call)) {
+      handleJoinCall(call);
+      return;
+    }
+
     setSelectedCall(call);
     setIsJoinDialogOpen(true);
   };
@@ -215,7 +245,9 @@ export default function Calls() {
   const handleLeaveCall = async (call: Call) => {
     setIsProcessing(true);
     try {
-      await leaveCall.mutateAsync(call.id);
+      const updatedCall = await leaveCall.mutateAsync(call.id);
+      setSelectedCall(updatedCall);
+      setIsJoinDialogOpen(false);
       toast({
         title: "Left call",
         description: "You have left the call",
@@ -234,10 +266,12 @@ export default function Calls() {
   const handleEndCall = async (call: Call) => {
     setIsProcessing(true);
     try {
-      await updateCall.mutateAsync({
+      const updatedCall = await updateCall.mutateAsync({
         callId: call.id,
         data: { status: "completed" },
       });
+      setSelectedCall(updatedCall);
+      setIsJoinDialogOpen(false);
       toast({
         title: "Call ended",
         description: "The call has been completed",
@@ -272,11 +306,32 @@ export default function Calls() {
     }
   };
 
+  const handleParticipantsAdded = (participantIds: string[]) => {
+    if (!selectedCall) return;
+
+    const existingIds = new Set(selectedCall.participants.map(participant => participant.userId));
+    const now = new Date().toISOString();
+    setSelectedCall({
+      ...selectedCall,
+      updatedAt: now,
+      participants: [
+        ...selectedCall.participants,
+        ...participantIds
+          .filter(userId => !existingIds.has(userId))
+          .map(userId => ({
+            id: `pending_${userId}`,
+            userId,
+            status: 'invited' as const,
+          })),
+      ],
+    });
+  };
+
   const getCurrentUserId = () => {
     return localStorage.getItem("userId") || "";
   };
 
-  const getParticipantUserId = (participant: CallParticipant) => {
+  const getParticipantUserId = (participant: Call['participants'][number]) => {
     return participant.userId || "";
   };
 
@@ -285,11 +340,11 @@ export default function Calls() {
     return teamMembers.find((m) => m.id === userId)?.name || userId;
   };
 
-  const getCallRoomId = (call: CallView) => {
-    return call.jitsiRoomId || call.callCode || "";
+  const getCallRoomId = (call: Call) => {
+    return call.callCode || "";
   };
 
-  const getCallCreatedAt = (call: CallView) => {
+  const getCallCreatedAt = (call: Call) => {
     return call.createdAt || new Date().toISOString();
   };
 
@@ -394,7 +449,7 @@ export default function Calls() {
     );
   };
 
-  const calls = (callsData?.calls || []) as CallView[];
+  const calls = (callsData?.calls || []) as Call[];
 
   return (
     <Layout>
@@ -572,7 +627,7 @@ export default function Calls() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
                     {call.participants
-                      .map((p) => getParticipantName(getParticipantUserId(p as CallParticipant)))
+                      .map((p) => getParticipantName(getParticipantUserId(p)))
                       .join(", ")}
                   </div>
                   {getCallRoomId(call) && (
@@ -603,11 +658,7 @@ export default function Calls() {
                   <div className="flex gap-2">
                     {call.status === "ringing" || call.status === "ongoing" ? (
                       <>
-                        {!call.participants.find(
-                          (p) =>
-                            getParticipantUserId(p as CallParticipant) === getCurrentUserId() &&
-                            p.status === "joined"
-                        ) ? (
+                        {!isCurrentUserJoined(call) ? (
                           <Button
                             size="sm"
                             className="flex-1"
@@ -727,10 +778,10 @@ export default function Calls() {
                 <div className="text-sm text-muted-foreground">Participants</div>
                 <div className="flex flex-wrap gap-2">
                   {selectedCall.participants.map((participant) => {
-                    const member = teamMembers.find((m) => m.id === (participant as CallParticipant).userId);
+                    const member = teamMembers.find((m) => m.id === participant.userId);
                     return (
                       <Badge key={participant.id} variant="outline">
-                        {member?.name || (participant as CallParticipant).userId}
+                        {member?.name || participant.userId}
                       </Badge>
                     );
                   })}
@@ -763,13 +814,85 @@ export default function Calls() {
       )}
 
       {selectedCall && selectedCall.callCode && (
-        <Dialog open={isJoinDialogOpen} onOpenChange={setIsJoinDialogOpen}>
+        <Dialog
+          open={isJoinDialogOpen}
+          onOpenChange={(open) => {
+            if (!open && selectedCall) {
+              handleLeaveCall(selectedCall);
+              return;
+            }
+            setIsJoinDialogOpen(open);
+          }}
+        >
           <DialogContent className="max-w-7xl h-[90vh] flex flex-col overflow-hidden p-0">
-            <VideoCallRoom
-              roomId={selectedCall.callCode}
-              onLeave={() => setIsJoinDialogOpen(false)}
-              userName={localStorage.getItem("userName") || "User"}
-            />
+            <DialogHeader className="p-4 shrink-0">
+              <DialogTitle>{selectedCall.type === "video" ? "Video" : "Audio"} Call</DialogTitle>
+              <DialogDescription>Call Room</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1">
+              <VideoCallRoom
+                roomId={selectedCall.callCode}
+                callId={selectedCall.id}
+                callType={selectedCall.type}
+                onLeave={() => handleLeaveCall(selectedCall)}
+                userName={localStorage.getItem("userName") || "User"}
+                isHost={isCurrentUserHost(selectedCall)}
+                waitingRoomEnabled={selectedCall.waitingRoomEnabled}
+                teamMembers={teamMembers}
+                currentParticipantIds={selectedCall.participants.map(participant => participant.userId)}
+                onParticipantsAdded={handleParticipantsAdded}
+              />
+            </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {passwordCall && (
+        <Dialog open={!!passwordCall} onOpenChange={(open) => !open && setPasswordCall(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Enter Call Password</DialogTitle>
+              <DialogDescription>
+                This call is protected. Enter the password to join.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 py-2">
+              <Label htmlFor="join-call-password">Password</Label>
+              <Input
+                id="join-call-password"
+                type="password"
+                value={joinPassword}
+                onChange={(event) => {
+                  setJoinPassword(event.target.value);
+                  setJoinPasswordError("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && joinPassword.trim()) {
+                    handleJoinCall(passwordCall, joinPassword);
+                  }
+                }}
+                autoFocus
+              />
+              {joinPasswordError && (
+                <p className="text-sm text-destructive">{joinPasswordError}</p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setPasswordCall(null)}
+                disabled={isProcessing}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => handleJoinCall(passwordCall, joinPassword)}
+                disabled={isProcessing || !joinPassword.trim()}
+              >
+                {isProcessing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                Join Call
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
