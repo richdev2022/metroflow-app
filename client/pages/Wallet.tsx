@@ -570,7 +570,7 @@ export default function Wallet() {
                               <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
                             </div>
                             <p className="text-xs text-muted-foreground">{va.account_name}</p>
-                            <p className="text-xs text-muted-foreground">Provider: {va.payment_provider}</p>
+
                           </div>
                         </div>
                       ))
@@ -681,7 +681,7 @@ export default function Wallet() {
                               <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
                             </div>
                             <p className="text-xs text-muted-foreground">{va.account_name}</p>
-                            <p className="text-xs text-muted-foreground">Provider: {va.payment_provider}</p>
+
                           </div>
                         </div>
                       ))

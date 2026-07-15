@@ -911,3 +911,40 @@ export interface UpdateRecordingInput {
   duration?: number;
   size?: number;
 }
+
+// Notifications Types
+export interface Notification {
+  id: string;
+  businessId: string;
+  userId: string;
+  type: 'meeting' | 'task' | 'chat' | 'call' | 'credit' | 'debit' | string;
+  title: string;
+  message: string;
+  actionUrl: string | null;
+  actionType: string | null;
+  metadata: any | null;
+  isRead: boolean;
+  isActionable: boolean;
+  actionTaken: string | null;
+  createdAt: string;
+  expiresAt: string;
+  updatedAt: string;
+}
+
+export interface GetNotificationsResponse {
+  success: boolean;
+  data: {
+    notifications: Notification[];
+    total: number;
+  };
+}
+
+export interface GetNotificationsQuery {
+  page?: number;
+  limit?: number;
+  unreadOnly?: boolean;
+}
+
+export interface TakeNotificationActionInput {
+  action: string;
+}

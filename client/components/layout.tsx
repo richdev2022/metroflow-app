@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic } from "lucide-react";
+import { NotificationBell } from "./NotificationBell";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -321,10 +322,15 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <SidebarRail />
       </Sidebar>
       <SidebarInset>
-        <header className="flex h-16 shrink-0 items-center gap-2 border-b px-4 flex-row">
-          <SidebarTrigger className="-ml-1" />
-          <div className="h-4 w-[1px] bg-border mx-2 hidden md:block" />
-          {/* Breadcrumbs or Title could go here */}
+        <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b px-4 flex-row">
+          <div className="flex items-center gap-2">
+            <SidebarTrigger className="-ml-1" />
+            <div className="h-4 w-[1px] bg-border mx-2 hidden md:block" />
+            {/* Breadcrumbs or Title could go here */}
+          </div>
+          <div className="flex items-center gap-2">
+            <NotificationBell />
+          </div>
         </header>
         <div className="flex-1 space-y-4 p-4 md:p-8 pt-6 overflow-x-hidden">
           {children}
