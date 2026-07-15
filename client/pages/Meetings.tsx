@@ -949,11 +949,22 @@ export default function Meetings() {
       {selectedMeeting && (
         <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
           <DialogContent className="max-w-7xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden p-0">
-            <VideoCallRoom
-              roomId={selectedMeeting.meetingCode}
-              onLeave={() => setIsMeetingRoomOpen(false)}
-              userName={localStorage.getItem("userName") || "User"}
-            />
+            <DialogHeader className="p-4 shrink-0">
+              <DialogTitle>{selectedMeeting.title}</DialogTitle>
+              <DialogDescription>Meeting Room</DialogDescription>
+            </DialogHeader>
+            <div className="min-h-0 flex-1">
+              <VideoCallRoom
+                roomId={selectedMeeting.meetingCode}
+                meetingId={selectedMeeting.id}
+                onLeave={() => setIsMeetingRoomOpen(false)}
+                userName={localStorage.getItem("userName") || "User"}
+                isHost={true}
+                waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
+                teamMembers={teamMembers}
+                currentParticipantIds={selectedMeeting.attendees.map(attendee => attendee.userId)}
+              />
+            </div>
           </DialogContent>
         </Dialog>
       )}

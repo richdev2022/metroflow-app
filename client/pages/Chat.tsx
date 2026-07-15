@@ -47,9 +47,14 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { Check } from "lucide-react";
+import { useSocket } from "@/hooks/useSocket";
 
 type ChatParticipant = Conversation["participants"][number] & {
   userId?: string;
+  user_id?: string;
+  name?: string;
+  userName?: string;
+  user_name?: string;
 };
 
 type ChatMessage = {
@@ -65,7 +70,95 @@ type ChatMessage = {
   senderName?: string;
 };
 
+type ConversationView = Conversation & {
+  lastmessage?: string;
+  lastmessageat?: string;
+  last_message?: string;
+  last_message_at?: string;
+};
+
 export default function Chat() {
+  // Helper functions defined FIRST to avoid ReferenceErrors!
+  const getParticipantUserId = (participant?: ChatParticipant) => {
+    return participant?.userId || participant?.user_id || "";
+  };
+
+  const getCurrentUserId = () => {
+    return localStorage.getItem("userId") || "";
+  };
+
+  const getParticipantName = (teamMembers: TeamMember[], userId?: string, participant?: ChatParticipant) => {
+    const participantName = participant?.userName || participant?.user_name || participant?.name;
+    if (participantName?.trim()) return participantName;
+    if (!userId) return "Unknown";
+    if (userId === getCurrentUserId()) {
+      return localStorage.getItem("userName") || teamMembers.find((m) => m.id === userId)?.name || userId;
+    }
+    return teamMembers.find((m) => m.id === userId)?.name || userId;
+  };
+
+  const getDirectParticipant = (conversation: ConversationView) => {
+    const userId = getCurrentUserId();
+    return (conversation.participants as ChatParticipant[]).find(
+      (participant) => getParticipantUserId(participant) !== userId
+    ) || (conversation.participants as ChatParticipant[])[0];
+  };
+
+  const getConversationName = (teamMembers: TeamMember[], conversation: ConversationView) => {
+    if (conversation.name?.trim()) return conversation.name;
+    if (conversation.type === "direct") {
+      const participant = getDirectParticipant(conversation);
+      return getParticipantName(teamMembers, getParticipantUserId(participant), participant);
+    }
+    return "Group Chat";
+  };
+
+  const getConversationInitials = (teamMembers: TeamMember[], conversation: ConversationView) => {
+    const name = getConversationName(teamMembers, conversation) || "Chat";
+    return name.substring(0, 2).toUpperCase();
+  };
+
+  const getMessageSenderId = (message: ChatMessage) => {
+    return message.senderId || message.sender_id || "";
+  };
+
+  const getMessageSenderName = (teamMembers: TeamMember[], message: ChatMessage) => {
+    return message.senderName || message.sender_name || getParticipantName(teamMembers, getMessageSenderId(message));
+  };
+
+  const getMessageCreatedAt = (message: ChatMessage) => {
+    return message.createdAt || message.created_at || new Date().toISOString();
+  };
+
+  const getConversationLastMessage = (conversation: ConversationView) => {
+    return conversation.lastMessage || conversation.last_message || conversation.lastmessage || "";
+  };
+
+  const getConversationPresenceUserId = (conversation: ConversationView) => {
+    return getParticipantUserId(getDirectParticipant(conversation));
+  };
+
+  const formatTime = (dateStr: string) => {
+    const date = new Date(dateStr);
+    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  };
+
+  const getPresenceColor = (status: string) => {
+    // Always show green for available/active users as requested
+    if (!status || status === 'online') return 'bg-green-500';
+    switch (status) {
+      case 'busy':
+      case 'calling':
+      case 'in-meeting':
+      case 'do-not-disturb':
+        return 'bg-red-500';
+      case 'away':
+        return 'bg-yellow-500';
+      default:
+        return 'bg-green-500';
+    }
+  };
+
   const {
     data: conversations,
     isLoading: conversationsLoading,
@@ -81,6 +174,7 @@ export default function Chat() {
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [newMessage, setNewMessage] = useState("");
+  const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
   const [conversationForm, setConversationForm] = useState<CreateConversationInput>({
     name: "",
     type: "direct",
@@ -88,6 +182,13 @@ export default function Chat() {
   });
 
   const { data: messagesData } = useMessages(selectedConversation?.id || "", 1, 100);
+  
+  const { socket, isConnected, joinConversation, on, off } = useSocket({
+    userId: localStorage.getItem("userId") || "",
+    businessId: localStorage.getItem("businessId") || "",
+  });
+
+  const [userPresence, setUserPresence] = useState<Record<string, 'online' | 'offline' | 'busy' | 'calling' | 'in-meeting' | 'away' | 'do-not-disturb'>>({});
 
   useEffect(() => {
     fetchTeamMembers();
@@ -103,9 +204,64 @@ export default function Chat() {
     }
   }, [conversationsError, toast]);
 
+  // Join conversation when selected
+  useEffect(() => {
+    if (selectedConversation?.id && isConnected) {
+      joinConversation(selectedConversation.id);
+    }
+  }, [selectedConversation?.id, isConnected, joinConversation]);
+
+  // Listen for real-time chat messages
+  useEffect(() => {
+    if (!isConnected || !selectedConversation?.id) return;
+
+    const handleNewMessage = (message: ChatMessage) => {
+      setLocalMessages(prev => [...prev, {
+        ...message,
+        id: message.id || Date.now().toString(),
+        createdAt: message.createdAt || new Date().toISOString(),
+        conversationId: selectedConversation.id,
+      }]);
+    };
+
+    on('chat:message', handleNewMessage);
+
+    return () => {
+      off('chat:message', handleNewMessage);
+    };
+  }, [selectedConversation?.id, isConnected, on, off]);
+
+  // Listen for user presence updates
+  useEffect(() => {
+    if (!isConnected) return;
+
+    const handlePresenceUpdated = ({ userId, status }: { userId: string; status: any }) => {
+      setUserPresence(prev => ({ ...prev, [userId]: status }));
+    };
+
+    on('user-presence-updated', handlePresenceUpdated);
+
+    return () => {
+      off('user-presence-updated', handlePresenceUpdated);
+    };
+  }, [isConnected, on, off]);
+
+  // Reset local messages when conversation changes
+  useEffect(() => {
+    setLocalMessages([]);
+  }, [selectedConversation?.id]);
+
+  // Combine API messages with local real-time messages
+  const combinedMessages = [
+    ...(messagesData?.messages || []),
+    ...localMessages,
+  ].sort((a, b) => 
+    new Date(getMessageCreatedAt(a)).getTime() - new Date(getMessageCreatedAt(b)).getTime()
+  );
+
   useEffect(() => {
     scrollToBottom();
-  }, [messagesData]);
+  }, [combinedMessages]);
 
   const fetchTeamMembers = async () => {
     api
@@ -176,58 +332,6 @@ export default function Chat() {
       });
     }
   };
-
-  const getParticipantUserId = (participant?: ChatParticipant) => {
-    return participant?.userId || "";
-  };
-
-  const getCurrentUserId = () => {
-    return localStorage.getItem("userId") || "";
-  };
-
-  const getParticipantName = (userId?: string) => {
-    if (!userId) return "Unknown";
-    return teamMembers.find((m) => m.id === userId)?.name || userId;
-  };
-
-  const getConversationName = (conversation: Conversation) => {
-    if (conversation.name?.trim()) return conversation.name;
-    if (conversation.type === "direct") {
-      const userId = getCurrentUserId();
-      const otherParticipant = conversation.participants.find(
-        (p) => getParticipantUserId(p as ChatParticipant) !== userId
-      );
-      const participantId = getParticipantUserId(otherParticipant as ChatParticipant);
-      return otherParticipant
-        ? getParticipantName(participantId)
-        : "Direct Message";
-    }
-    return "Group Chat";
-  };
-
-  const getConversationInitials = (conversation: Conversation) => {
-    const name = getConversationName(conversation) || "Chat";
-    return name.substring(0, 2).toUpperCase();
-  };
-
-  const getMessageSenderId = (message: ChatMessage) => {
-    return message.senderId || "";
-  };
-
-  const getMessageSenderName = (message: ChatMessage) => {
-    return message.senderName || getParticipantName(getMessageSenderId(message));
-  };
-
-  const getMessageCreatedAt = (message: ChatMessage) => {
-    return message.createdAt || new Date().toISOString();
-  };
-
-  const formatTime = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
-  };
-
-  const messages = (messagesData?.messages || []) as ChatMessage[];
 
   const TeamMemberMultiSelect = ({
     selected,
@@ -417,40 +521,50 @@ export default function Chat() {
                 </div>
               ) : conversations && conversations.length > 0 ? (
                 <div className="divide-y divide-border">
-                  {conversations.map((conversation) => (
-                    <button
-                      key={conversation.id}
-                      onClick={() => setSelectedConversation(conversation)}
-                      className={`w-full p-4 text-left hover:bg-muted transition-colors ${
-                        selectedConversation?.id === conversation.id
-                          ? "bg-muted"
-                          : ""
-                      }`}
-                    >
-                      <div className="flex items-center gap-3">
-                        <Avatar>
-                          <AvatarFallback>
-                            {getConversationInitials(conversation)}
-                          </AvatarFallback>
-                        </Avatar>
-                        <div className="flex-1 min-w-0">
-                          <div className="flex justify-between items-baseline">
-                            <p className="font-medium truncate">
-                              {getConversationName(conversation)}
-                            </p>
-                            <Badge variant="outline" className="text-xs">
-                              {conversation.type}
-                            </Badge>
-                          </div>
-                          {conversation.lastMessage && (
-                            <p className="text-sm text-muted-foreground truncate">
-                              {conversation.lastMessage}
-                            </p>
-                          )}
-                        </div>
+                  {(conversations as ConversationView[]).map((conversation) => {
+                    const lastMessage = getConversationLastMessage(conversation);
+                    const presenceUserId = getConversationPresenceUserId(conversation);
+
+                    return (
+                <button
+                  key={conversation.id}
+                  onClick={() => setSelectedConversation(conversation)}
+                  className={`w-full p-4 text-left hover:bg-muted transition-colors ${
+                    selectedConversation?.id === conversation.id
+                      ? "bg-muted"
+                      : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="relative">
+                      <Avatar>
+                        <AvatarFallback>
+                          {getConversationInitials(teamMembers, conversation)}
+                        </AvatarFallback>
+                      </Avatar>
+                      {conversation.type === 'direct' && (
+                        <span className={`absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-white ${getPresenceColor(userPresence[presenceUserId] || 'online')}`}></span>
+                      )}
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-baseline">
+                        <p className="font-medium truncate">
+                          {getConversationName(teamMembers, conversation)}
+                        </p>
+                        <Badge variant="outline" className="text-xs">
+                          {conversation.type}
+                        </Badge>
                       </div>
-                    </button>
-                  ))}
+                      {lastMessage && (
+                        <p className="text-sm text-muted-foreground truncate">
+                          {lastMessage}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </button>
+              );
+            })}
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center p-8 text-center">
@@ -470,24 +584,34 @@ export default function Chat() {
               <>
                 <div className="p-4 border-b border-border">
                   <div className="flex items-center gap-3">
-                    <Avatar>
-                      <AvatarFallback>
-                        {getConversationInitials(selectedConversation)}
-                      </AvatarFallback>
-                    </Avatar>
+                    <div className="relative">
+                      <Avatar>
+                        <AvatarFallback>
+                          {getConversationInitials(teamMembers, selectedConversation as ConversationView)}
+                        </AvatarFallback>
+                      </Avatar>
+                      {selectedConversation.type === 'direct' && (
+                        <span className={`absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-white ${getPresenceColor(userPresence[getConversationPresenceUserId(selectedConversation as ConversationView)] || 'online')}`}></span>
+                      )}
+                    </div>
                     <div>
                       <h3 className="font-semibold">
-                        {getConversationName(selectedConversation)}
+                        {getConversationName(teamMembers, selectedConversation as ConversationView)}
                       </h3>
                       <p className="text-sm text-muted-foreground">
                         {selectedConversation.participants.length} participants
+                        {selectedConversation.type === 'direct' && (
+                          <span className="ml-2">
+                            • {userPresence[getConversationPresenceUserId(selectedConversation as ConversationView)] || 'online'}
+                          </span>
+                        )}
                       </p>
                     </div>
                   </div>
                 </div>
 
                 <div className="flex-1 overflow-y-auto p-4 space-y-4">
-                  {messages.length === 0 ? (
+                  {combinedMessages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-center">
                       <MessageSquare className="h-12 w-12 text-muted-foreground mb-4" />
                       <p className="text-muted-foreground">No messages yet</p>
@@ -496,7 +620,7 @@ export default function Chat() {
                       </p>
                     </div>
                   ) : (
-                    messages.map((message) => {
+                    combinedMessages.map((message) => {
                       const isOwn =
                         getMessageSenderId(message) === getCurrentUserId();
                       return (
@@ -513,7 +637,7 @@ export default function Chat() {
                           >
                             {!isOwn && (
                               <p className="text-xs font-medium mb-1 opacity-70">
-                                {getMessageSenderName(message)}
+                                {getMessageSenderName(teamMembers, message)}
                               </p>
                             )}
                             <p>{message.content || ""}</p>

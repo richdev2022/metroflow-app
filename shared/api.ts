@@ -713,6 +713,19 @@ export interface TaskStatus {
   updated_at: string;
 }
 
+// Board Types
+export interface BoardColumn {
+  id: string;
+  business_id: string;
+  name: string;
+  color: string;
+  is_default: boolean;
+  sort_order: number;
+  created_at: string;
+  updated_at: string;
+  tasks: Task[];
+}
+
 export interface CreateTaskStatusInput {
   name: string;
   color?: string;

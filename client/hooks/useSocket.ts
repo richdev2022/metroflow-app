@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 interface UseSocketOptions {
@@ -51,79 +51,88 @@ export const useSocket = ({ userId, businessId }: UseSocketOptions = {}) => {
     };
   }, [userId, businessId]);
 
-  const joinConversation = (conversationId: string) => {
+  const joinConversation = useCallback((conversationId: string) => {
     socketRef.current?.emit('join-conversation', conversationId);
-  };
+  }, []);
 
   // --- Call events
-  const inviteToCall = (callId: string, targetUserId: string, type: 'audio' | 'video') => {
+  const joinCall = useCallback((roomId: string) => {
+    socketRef.current?.emit('call:join', { roomId });
+  }, []);
+
+  const inviteToCall = useCallback((callId: string, targetUserId: string, type: 'audio' | 'video') => {
     socketRef.current?.emit('call:invite', { callId, targetUserId, type });
-  };
+  }, []);
 
-  const acceptCall = (callId: string) => {
+  const acceptCall = useCallback((callId: string) => {
     socketRef.current?.emit('call:accept', { callId });
-  };
+  }, []);
 
-  const rejectCall = (callId: string) => {
+  const rejectCall = useCallback((callId: string) => {
     socketRef.current?.emit('call:reject', { callId });
-  };
+  }, []);
 
-  const endCall = (callId: string) => {
+  const endCall = useCallback((callId: string) => {
     socketRef.current?.emit('call:end', { callId });
-  };
+  }, []);
 
   // --- Meeting events
-  const joinMeeting = (meetingId: string) => {
+  const joinMeeting = useCallback((meetingId: string) => {
     socketRef.current?.emit('meeting:join', { meetingId });
-  };
+  }, []);
 
-  const leaveMeeting = (meetingId: string) => {
+  const leaveMeeting = useCallback((meetingId: string) => {
     socketRef.current?.emit('meeting:leave', { meetingId });
-  };
+  }, []);
 
-  const endMeeting = (meetingId: string) => {
+  const endMeeting = useCallback((meetingId: string) => {
     socketRef.current?.emit('meeting:end', { meetingId });
-  };
+  }, []);
 
   // --- Recording events
-  const startRecording = (meetingId: string) => {
+  const startRecording = useCallback((meetingId: string) => {
     socketRef.current?.emit('recording:start', { meetingId });
-  };
+  }, []);
 
-  const stopRecording = (meetingId: string) => {
+  const stopRecording = useCallback((meetingId: string) => {
     socketRef.current?.emit('recording:stop', { meetingId });
-  };
+  }, []);
 
   // --- Screen sharing events
-  const startScreenShare = (meetingId: string) => {
-    socketRef.current?.emit('screen-share:start', { meetingId });
-  };
+  const startScreenShare = useCallback((roomId: string) => {
+    socketRef.current?.emit('screen-share:start', { roomId });
+  }, []);
 
-  const stopScreenShare = (meetingId: string) => {
-    socketRef.current?.emit('screen-share:stop', { meetingId });
-  };
+  const stopScreenShare = useCallback((roomId: string) => {
+    socketRef.current?.emit('screen-share:stop', { roomId });
+  }, []);
 
   // --- In-meeting chat
-  const sendMeetingChat = (meetingId: string, message: string) => {
-    socketRef.current?.emit('meeting-chat:message', { meetingId, message });
-  };
+  const sendMeetingChat = useCallback((roomId: string, message: string) => {
+    socketRef.current?.emit('meeting-chat:message', { roomId, message });
+  }, []);
 
-  const on = (event: string, callback: (...args: any[]) => void) => {
+  const on = useCallback((event: string, callback: (...args: any[]) => void) => {
     socketRef.current?.on(event, callback);
-  };
+  }, []);
 
-  const off = (event: string, callback: (...args: any[]) => void) => {
+  const off = useCallback((event: string, callback: (...args: any[]) => void) => {
     socketRef.current?.off(event, callback);
-  };
+  }, []);
 
-  const emit = (event: string, ...args: any[]) => {
+  const emit = useCallback((event: string, ...args: any[]) => {
     socketRef.current?.emit(event, ...args);
-  };
+  }, []);
+
+  const updateUserPresence = useCallback((status: 'online' | 'offline' | 'busy' | 'calling' | 'in-meeting' | 'away' | 'do-not-disturb') => {
+    socketRef.current?.emit('user-presence', status);
+  }, []);
 
   return {
     socket: socketRef.current,
     isConnected,
     joinConversation,
+    joinCall,
     inviteToCall,
     acceptCall,
     rejectCall,
@@ -136,6 +145,7 @@ export const useSocket = ({ userId, businessId }: UseSocketOptions = {}) => {
     startScreenShare,
     stopScreenShare,
     sendMeetingChat,
+    updateUserPresence,
     on,
     off,
     emit,

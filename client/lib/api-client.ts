@@ -22,6 +22,10 @@ api.interceptors.request.use((config) => {
   if (businessId) {
     config.headers["x-business-id"] = businessId;
   }
+  const userId = localStorage.getItem("userId");
+  if (userId) {
+    config.headers["x-user-id"] = userId;
+  }
   return config;
 });
 

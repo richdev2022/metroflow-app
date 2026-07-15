@@ -2,72 +2,212 @@ import { useEffect, useRef, useState } from 'react';
 import { Device, types } from 'mediasoup-client';
 import { useSocket } from '../hooks/useSocket';
 import { Button } from './ui/button';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, ScreenShare, ScreenShareOff, MessageSquare, Users, Radio } from 'lucide-react';
+import { api } from '../lib/api-client';
+import { unwrapApiData } from '../lib/api-response';
+import { Mic, MicOff, Video, VideoOff, PhoneOff, ScreenShare, ScreenShareOff, MessageSquare, Users, Radio, UserPlus, X } from 'lucide-react';
+import type { Recording, TeamMember } from '@shared/api';
+import { Avatar, AvatarFallback } from './ui/avatar';
 
 interface VideoCallRoomProps {
   roomId: string;
   onLeave: () => void;
   userName: string;
+  isHost: boolean;
+  waitingRoomEnabled: boolean;
+  meetingId?: string;
+  callId?: string;
+  callType?: 'audio' | 'video';
+  teamMembers?: TeamMember[];
+  currentParticipantIds?: string[];
+  onParticipantsAdded?: (participantIds: string[]) => void;
 }
 
 interface Peer {
   id: string;
-  producers: string[];
+  producers: Array<{ producerId: string; kind: types.MediaKind }>;
   name?: string;
+  isTalking?: boolean;
+  audioEnabled?: boolean;
+  videoEnabled?: boolean;
+  screenSharing?: boolean;
 }
 
-export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRoomProps) {
+export default function VideoCallRoom({
+  roomId,
+  onLeave,
+  userName,
+  isHost,
+  waitingRoomEnabled,
+  meetingId,
+  callId,
+  callType = 'video',
+  teamMembers = [],
+  currentParticipantIds = [],
+  onParticipantsAdded,
+}: VideoCallRoomProps) {
   const [device, setDevice] = useState<Device | null>(null);
   const [sendTransport, setSendTransport] = useState<types.Transport | null>(null);
   const [recvTransport, setRecvTransport] = useState<types.Transport | null>(null);
-  const [localProducer, setLocalProducer] = useState<types.Producer | null>(null);
+  const [localAudioProducer, setLocalAudioProducer] = useState<types.Producer | null>(null);
+  const [localVideoProducer, setLocalVideoProducer] = useState<types.Producer | null>(null);
   const [localScreenProducer, setLocalScreenProducer] = useState<types.Producer | null>(null);
   const [consumers, setConsumers] = useState<Map<string, types.Consumer>>(new Map());
   const [peers, setPeers] = useState<Map<string, Peer>>(new Map());
   const [isAudioEnabled, setIsAudioEnabled] = useState(true);
-  const [isVideoEnabled, setIsVideoEnabled] = useState(true);
+  const [isVideoEnabled, setIsVideoEnabled] = useState(callType === 'video');
   const [isScreenSharing, setIsScreenSharing] = useState(false);
   const [showChat, setShowChat] = useState(false);
   const [showParticipants, setShowParticipants] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [recordingDuration, setRecordingDuration] = useState(0);
-  const [isInWaitingRoom, setIsInWaitingRoom] = useState(true);
+  const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
+  const [isInWaitingRoom, setIsInWaitingRoom] = useState(!isHost && waitingRoomEnabled);
   const [waitingRoomParticipants, setWaitingRoomParticipants] = useState<Array<{ id: string; name: string }>>([]);
+  const [selectedInvitees, setSelectedInvitees] = useState<string[]>([]);
+  const [isAddingParticipants, setIsAddingParticipants] = useState(false);
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [enteredPassword, setEnteredPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
+  const [connectionError, setConnectionError] = useState('');
   const [chatMessages, setChatMessages] = useState<Array<{ id: string; userId: string; userName: string; content: string; timestamp: Date }>>([]);
+  const [isLocalTalking, setIsLocalTalking] = useState(false);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localScreenRef = useRef<HTMLVideoElement>(null);
   const remoteVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map());
+  const localAudioStreamRef = useRef<MediaStream | null>(null);
+  const localMediaStreamRef = useRef<MediaStream | null>(null);
+  const lastLocalTalkingRef = useRef(false);
+  const audioEnabledRef = useRef(true);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const recordedChunksRef = useRef<Blob[]>([]);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const analyserRef = useRef<AnalyserNode | null>(null);
+  const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
+  const animationFrameRef = useRef<number | null>(null);
   
-  const { socket, isConnected } = useSocket({
+  const { socket, isConnected, joinMeeting, joinCall, leaveMeeting, startScreenShare: emitScreenShareStart, stopScreenShare: emitScreenShareStop, startRecording: emitRecordingStart, stopRecording: emitRecordingStop, sendMeetingChat } = useSocket({
     userId: localStorage.getItem('userId') || '',
     businessId: localStorage.getItem('businessId') || '',
   });
 
+  const getInitials = (name: string) => {
+    const parts = name.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return 'U';
+    return parts.slice(0, 2).map(part => part[0]?.toUpperCase()).join('');
+  };
+
+  const emitMediaState = (nextState: Partial<{ audioEnabled: boolean; videoEnabled: boolean; screenSharing: boolean }>) => {
+    socket?.emit('call:media-state', {
+      roomId,
+      audioEnabled: nextState.audioEnabled ?? isAudioEnabled,
+      videoEnabled: nextState.videoEnabled ?? isVideoEnabled,
+      screenSharing: nextState.screenSharing ?? isScreenSharing,
+    });
+  };
+
+  useEffect(() => {
+    audioEnabledRef.current = isAudioEnabled;
+  }, [isAudioEnabled]);
+
+  useEffect(() => {
+    return () => {
+      if (animationFrameRef.current) {
+        cancelAnimationFrame(animationFrameRef.current);
+      }
+      
+      // Stop all media tracks
+      if (localMediaStreamRef.current) {
+        localMediaStreamRef.current.getTracks().forEach(track => track.stop());
+        localMediaStreamRef.current = null;
+      }
+      if (localAudioStreamRef.current) {
+        localAudioStreamRef.current.getTracks().forEach(track => track.stop());
+        localAudioStreamRef.current = null;
+      }
+      if (localVideoRef.current?.srcObject) {
+        (localVideoRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+      }
+      if (localScreenRef.current?.srcObject) {
+        (localScreenRef.current.srcObject as MediaStream).getTracks().forEach(track => track.stop());
+      }
+      
+      // Close transports
+      if (sendTransport) {
+        try {
+          sendTransport.close();
+        } catch (e) { /* ignore */ }
+      }
+      if (recvTransport) {
+        try {
+          recvTransport.close();
+        } catch (e) { /* ignore */ }
+      }
+      
+      // Close producers
+      if (localAudioProducer) {
+        try {
+          localAudioProducer.close();
+        } catch (e) { /* ignore */ }
+      }
+      if (localVideoProducer) {
+        try {
+          localVideoProducer.close();
+        } catch (e) { /* ignore */ }
+      }
+      if (localScreenProducer) {
+        try {
+          localScreenProducer.close();
+        } catch (e) { /* ignore */ }
+      }
+      
+      // Close all consumers
+      consumers.forEach(consumer => {
+        try {
+          consumer.close();
+        } catch (e) { /* ignore */ }
+      });
+    };
+  }, []);
+
   // Initialize device and get router capabilities
   useEffect(() => {
     if (!socket || !isConnected) return;
+    
+    let isMounted = true;
 
     const initializeDevice = async () => {
       try {
         const newDevice = new Device();
         
-        socket.emit('mediasoup:getRouterRtpCapabilities', (response: any) => {
-          const { routerRtpCapabilities } = response;
+        socket.emit('mediasoup:getRouterRtpCapabilities', { roomId }, (response: any) => {
+          if (!isMounted) return;
+          
+          if (response?.error) {
+            setConnectionError(response.error);
+            return;
+          }
+
+          const routerRtpCapabilities = response.routerRtpCapabilities || response.rtpCapabilities;
           
           newDevice.load({ routerRtpCapabilities })
             .then(() => {
-              setDevice(newDevice);
+              if (isMounted) {
+                setDevice(newDevice);
+                setConnectionError('');
+              }
             })
             .catch((error) => {
-              console.error('Error loading device:', error);
+              if (isMounted) {
+                console.error('Error loading device:', error);
+                setConnectionError('Unable to initialize media device for this room.');
+              }
             });
         });
       } catch (error) {
-        console.error('Error initializing device:', error);
+        if (isMounted) {
+          console.error('Error initializing device:', error);
+        }
       }
     };
 
@@ -75,15 +215,17 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
 
     // Listen for new producers from other peers
     const handleNewProducer = ({ producerId, kind, peerId, peerName }: any) => {
+      if (!isMounted) return;
       console.log('New producer:', producerId, kind, 'from peer:', peerId);
       
       setPeers(prev => {
         const newPeers = new Map(prev);
-        const peer = newPeers.get(peerId) || { id: peerId, producers: [], name: peerName };
-        if (!peer.producers.includes(producerId)) {
-          peer.producers.push(producerId);
+        const resolvedPeerId = peerId || producerId;
+        const peer = newPeers.get(resolvedPeerId) || { id: resolvedPeerId, producers: [], name: peerName };
+        if (!peer.producers.some(producer => producer.producerId === producerId)) {
+          peer.producers.push({ producerId, kind });
         }
-        newPeers.set(peerId, peer);
+        newPeers.set(resolvedPeerId, peer);
         return newPeers;
       });
       
@@ -96,17 +238,31 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     socket.on('mediasoup:newProducer', handleNewProducer);
 
     return () => {
+      isMounted = false;
       socket.off('mediasoup:newProducer', handleNewProducer);
+      // Clean up device, transports, producers, consumers
+      setDevice(null);
+      setSendTransport(null);
+      setRecvTransport(null);
     };
-  }, [socket, isConnected, recvTransport]);
+  }, [socket, isConnected, roomId]);
 
   // Create transports when device is ready
   useEffect(() => {
     if (!device || !socket || !isConnected) return;
+    
+    let isMounted = true;
 
     const createTransports = async () => {
       // Create send transport
       socket.emit('mediasoup:createWebRtcTransport', { roomId, direction: 'send' }, async (response: any) => {
+        if (!isMounted) return;
+        
+        if (response?.error) {
+          setConnectionError(response.error);
+          return;
+        }
+
         const { id, iceParameters, iceCandidates, dtlsParameters } = response;
         
         const transport = await device.createSendTransport({
@@ -117,18 +273,26 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
         });
 
         transport.on('connect', async ({ dtlsParameters }: any, callback: any, errback: any) => {
+          if (!isMounted) return;
           try {
             socket.emit('mediasoup:connectWebRtcTransport', {
               transportId: id,
               dtlsParameters,
               roomId
-            }, callback);
+            }, (response: any) => {
+              if (response?.error) {
+                errback(new Error(response.error));
+                return;
+              }
+              callback();
+            });
           } catch (error) {
             errback(error);
           }
         });
 
         transport.on('produce', async ({ kind, rtpParameters, appData }: any, callback: any, errback: any) => {
+          if (!isMounted) return;
           try {
             socket.emit('mediasoup:produce', {
               transportId: id,
@@ -137,6 +301,10 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
               appData,
               roomId
             }, (response: any) => {
+              if (response?.error) {
+                errback(new Error(response.error));
+                return;
+              }
               callback({ id: response.id });
             });
           } catch (error) {
@@ -149,6 +317,13 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
 
       // Create recv transport
       socket.emit('mediasoup:createWebRtcTransport', { roomId, direction: 'recv' }, async (response: any) => {
+        if (!isMounted) return;
+        
+        if (response?.error) {
+          setConnectionError(response.error);
+          return;
+        }
+
         const { id, iceParameters, iceCandidates, dtlsParameters } = response;
         
         const transport = await device.createRecvTransport({
@@ -159,12 +334,19 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
         });
 
         transport.on('connect', async ({ dtlsParameters }: any, callback: any, errback: any) => {
+          if (!isMounted) return;
           try {
             socket.emit('mediasoup:connectWebRtcTransport', {
               transportId: id,
               dtlsParameters,
               roomId
-            }, callback);
+            }, (response: any) => {
+              if (response?.error) {
+                errback(new Error(response.error));
+                return;
+              }
+              callback();
+            });
           } catch (error) {
             errback(error);
           }
@@ -175,20 +357,40 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     };
 
     createTransports();
+    
+    return () => {
+      isMounted = false;
+    };
   }, [device, socket, isConnected, roomId]);
 
   // When recv transport is ready, consume any existing producers
   useEffect(() => {
-    if (!recvTransport || !peers) return;
+    if (!recvTransport || !socket) return;
 
-    peers.forEach(peer => {
-      peer.producers.forEach(producerId => {
+    socket.emit('mediasoup:getProducers', { roomId }, (response: any) => {
+      if (response?.error) {
+        setConnectionError(response.error);
+        return;
+      }
+
+      (response.producers || []).forEach(({ producerId, kind, peerId, peerName }: any) => {
+        setPeers(prev => {
+          const newPeers = new Map(prev);
+          const resolvedPeerId = peerId || producerId;
+          const peer = newPeers.get(resolvedPeerId) || { id: resolvedPeerId, producers: [], name: peerName };
+          if (!peer.producers.some(producer => producer.producerId === producerId)) {
+            peer.producers.push({ producerId, kind });
+          }
+          newPeers.set(resolvedPeerId, peer);
+          return newPeers;
+        });
+
         if (!consumers.has(producerId)) {
-          // We don't know the kind here, but let's assume we'll get it later
+          consume(producerId, kind);
         }
       });
     });
-  }, [recvTransport, peers, consumers]);
+  }, [recvTransport, socket, roomId]);
 
   const consume = async (producerId: string, kind: types.MediaKind) => {
     if (!recvTransport || !device || !socket) return;
@@ -200,6 +402,11 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
         rtpCapabilities: device.recvRtpCapabilities,
         roomId
       }, async (response: any) => {
+        if (response?.error) {
+          setConnectionError(response.error);
+          return;
+        }
+
         const { id, rtpParameters, producerId: prodId } = response;
         
         const consumer = await recvTransport.consume({
@@ -210,11 +417,19 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
         });
 
         // Resume the consumer
-        socket.emit('mediasoup:resume', { consumerId: id, roomId }, () => {
+        socket.emit('mediasoup:resume', { consumerId: id, roomId }, (response: any) => {
+          if (response?.error) {
+            setConnectionError(response.error);
+            return;
+          }
           console.log('Consumer resumed');
         });
 
-        setConsumers(prev => new Map(prev.set(producerId, consumer)));
+        setConsumers(prev => {
+          const newConsumers = new Map(prev);
+          newConsumers.set(producerId, consumer);
+          return newConsumers;
+        });
       });
     } catch (error) {
       console.error('Error consuming:', error);
@@ -227,13 +442,50 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         audio: true,
-        video: true
+        video: callType === 'video'
       });
+      
+      localAudioStreamRef.current = stream;
+      localMediaStreamRef.current = stream;
 
       // Attach local video
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
       }
+
+      // Set up audio analysis for talking detection
+      if (!audioContextRef.current) {
+        audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      const audioContext = audioContextRef.current;
+      
+      if (audioContext.state === 'suspended') {
+        await audioContext.resume();
+      }
+      
+      const source = audioContext.createMediaStreamSource(stream);
+      analyserRef.current = audioContext.createAnalyser();
+      analyserRef.current.fftSize = 256;
+      dataArrayRef.current = new Uint8Array(analyserRef.current.frequencyBinCount);
+      source.connect(analyserRef.current);
+      
+      // Start animation loop to check audio levels
+      const checkAudioLevel = () => {
+        if (!analyserRef.current || !dataArrayRef.current) return;
+        
+        analyserRef.current.getByteFrequencyData(dataArrayRef.current);
+        const average = dataArrayRef.current.reduce((a, b) => a + b, 0) / dataArrayRef.current.length;
+        
+        const talking = audioEnabledRef.current && average > 30;
+        setIsLocalTalking(talking);
+        if (lastLocalTalkingRef.current !== talking) {
+          lastLocalTalkingRef.current = talking;
+          socket?.emit('call:audio-level', { roomId, isTalking: talking, userName });
+        }
+        
+        animationFrameRef.current = requestAnimationFrame(checkAudioLevel);
+      };
+      checkAudioLevel();
 
       // Produce audio
       const audioTrack = stream.getAudioTracks()[0];
@@ -242,7 +494,7 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
           track: audioTrack,
           appData: { userName }
         });
-        setLocalProducer(audioProducer);
+        setLocalAudioProducer(audioProducer);
       }
 
       // Produce video
@@ -252,43 +504,107 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
           track: videoTrack,
           appData: { userName }
         });
-        setLocalProducer(videoProducer);
+        setLocalVideoProducer(videoProducer);
       }
+      emitMediaState({ audioEnabled: true, videoEnabled: callType === 'video' });
     } catch (error) {
       console.error('Error starting local media:', error);
+      setConnectionError('Camera or microphone could not be started. Check browser permissions and device availability.');
     }
   };
 
   const stopLocalMedia = () => {
-    if (localProducer) {
-      localProducer.close();
-      setLocalProducer(null);
+    if (animationFrameRef.current) {
+      cancelAnimationFrame(animationFrameRef.current);
+      animationFrameRef.current = null;
+    }
+    if (audioContextRef.current) {
+      audioContextRef.current.close();
+      audioContextRef.current = null;
+    }
+    if (localAudioProducer) {
+      localAudioProducer.close();
+      setLocalAudioProducer(null);
+    }
+    if (localVideoProducer) {
+      localVideoProducer.close();
+      setLocalVideoProducer(null);
+    }
+    if (localScreenProducer) {
+      localScreenProducer.close();
+      setLocalScreenProducer(null);
+    }
+    if (localMediaStreamRef.current) {
+      localMediaStreamRef.current.getTracks().forEach(track => track.stop());
+      localMediaStreamRef.current = null;
+    }
+    if (localScreenRef.current?.srcObject) {
+      const tracks = (localScreenRef.current.srcObject as MediaStream).getTracks();
+      tracks.forEach(track => track.stop());
+      localScreenRef.current.srcObject = null;
     }
     if (localVideoRef.current?.srcObject) {
       const tracks = (localVideoRef.current.srcObject as MediaStream).getTracks();
       tracks.forEach(track => track.stop());
+      localVideoRef.current.srcObject = null;
     }
+    localAudioStreamRef.current = null;
+    lastLocalTalkingRef.current = false;
+    setIsLocalTalking(false);
   };
 
   const toggleAudio = () => {
-    if (localProducer) {
+    if (localAudioProducer) {
       if (isAudioEnabled) {
-        localProducer.pause();
+        localAudioProducer.pause();
+        // Also mute the track for good measure
+        if (localAudioStreamRef.current) {
+          localAudioStreamRef.current.getAudioTracks().forEach(track => {
+            track.enabled = false;
+          });
+        }
       } else {
-        localProducer.resume();
+        localAudioProducer.resume();
+        // Unmute the track
+        if (localAudioStreamRef.current) {
+          localAudioStreamRef.current.getAudioTracks().forEach(track => {
+            track.enabled = true;
+          });
+        }
       }
-      setIsAudioEnabled(!isAudioEnabled);
+      const nextAudioEnabled = !isAudioEnabled;
+      setIsAudioEnabled(nextAudioEnabled);
+      if (!nextAudioEnabled) {
+        lastLocalTalkingRef.current = false;
+        setIsLocalTalking(false);
+        socket?.emit('call:audio-level', { roomId, isTalking: false, userName });
+      }
+      emitMediaState({ audioEnabled: nextAudioEnabled });
     }
   };
 
   const toggleVideo = () => {
-    if (localProducer) {
+    if (localVideoProducer) {
       if (isVideoEnabled) {
-        localProducer.pause();
+        localVideoProducer.pause();
+        // Disable video track
+        if (localMediaStreamRef.current) {
+          localMediaStreamRef.current.getVideoTracks().forEach(track => {
+            track.enabled = false;
+          });
+        }
       } else {
-        localProducer.resume();
+        localVideoProducer.resume();
+        // Enable video track
+        if (localMediaStreamRef.current) {
+          localMediaStreamRef.current.getVideoTracks().forEach(track => {
+            track.enabled = true;
+          });
+        }
       }
-      setIsVideoEnabled(!isVideoEnabled);
+      const nextVideoEnabled = !isVideoEnabled;
+      setIsVideoEnabled(nextVideoEnabled);
+      emitMediaState({ videoEnabled: nextVideoEnabled });
     }
   };
 
@@ -313,6 +629,9 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
         });
         setLocalScreenProducer(screenProducer);
         setIsScreenSharing(true);
+        emitScreenShareStart(roomId);
+        emitMediaState({ screenSharing: true });
+        track.onended = () => stopScreenShare();
       }
     } catch (error) {
       console.error('Error starting screen share:', error);
@@ -329,12 +648,25 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
       tracks.forEach(track => track.stop());
     }
     setIsScreenSharing(false);
+    emitScreenShareStop(roomId);
+    emitMediaState({ screenSharing: false });
   };
 
-  const leaveCall = () => {
+  const leaveCall = async () => {
+    if (isRecording) {
+      await stopRecording();
+    }
     stopLocalMedia();
-    stopScreenShare();
     consumers.forEach(consumer => consumer.close());
+    sendTransport?.close();
+    recvTransport?.close();
+    socket?.emit('call:audio-level', { roomId, isTalking: false, userName });
+    socket?.emit('call:media-state', {
+      roomId,
+      audioEnabled: false,
+      videoEnabled: false,
+      screenSharing: false,
+    });
     onLeave();
   };
 
@@ -350,10 +682,7 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     };
 
     setChatMessages(prev => [...prev, message]);
-    socket.emit('meeting-chat:message', {
-      meetingId: roomId,
-      message: content
-    });
+    sendMeetingChat(roomId, content);
   };
 
   const verifyPassword = () => {
@@ -399,18 +728,130 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     setWaitingRoomParticipants([]);
   };
 
-  const startRecording = () => {
-    if (!socket) return;
-    setIsRecording(true);
-    setRecordingDuration(0);
-    socket.emit('recording:start', { meetingId: roomId });
+  const blobToDataUrl = (blob: Blob) => {
+    return new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(String(reader.result || ''));
+      reader.onerror = reject;
+      reader.readAsDataURL(blob);
+    });
   };
 
-  const stopRecording = () => {
-    if (!socket) return;
-    setIsRecording(false);
-    socket.emit('recording:stop', { meetingId: roomId });
+  const startLocalRecorder = () => {
+    const stream = localVideoRef.current?.srcObject as MediaStream | null;
+    if (!stream || typeof MediaRecorder === 'undefined') return;
+
+    recordedChunksRef.current = [];
+    const recorder = new MediaRecorder(stream);
+    recorder.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        recordedChunksRef.current.push(event.data);
+      }
+    };
+    recorder.start(1000);
+    mediaRecorderRef.current = recorder;
   };
+
+  const stopLocalRecorder = () => {
+    return new Promise<{ storageUrl: string; size: number }>((resolve) => {
+      const recorder = mediaRecorderRef.current;
+      if (!recorder) {
+        resolve({ storageUrl: '', size: 0 });
+        return;
+      }
+
+      recorder.onstop = async () => {
+        const mimeType = recorder.mimeType || 'video/webm';
+        const blob = new Blob(recordedChunksRef.current, { type: mimeType });
+        const storageUrl = blob.size > 0 ? await blobToDataUrl(blob) : '';
+        mediaRecorderRef.current = null;
+        recordedChunksRef.current = [];
+        resolve({ storageUrl, size: blob.size });
+      };
+
+      if (recorder.state !== 'inactive') {
+        recorder.stop();
+      } else {
+        recorder.onstop?.(new Event('stop'));
+      }
+    });
+  };
+
+  const startRecording = async () => {
+    if (!meetingId && !callId) {
+      setConnectionError('Cannot start recording because this room is missing a meeting or call id.');
+      return;
+    }
+
+    try {
+      const response = await api.post('/recordings', { meetingId, callId });
+      const recording = unwrapApiData<Recording>(response.data, 'Failed to start recording');
+      setActiveRecording(recording);
+      setIsRecording(true);
+      setRecordingDuration(0);
+      startLocalRecorder();
+      emitRecordingStart(roomId);
+    } catch (error) {
+      console.error('Error starting recording:', error);
+      setConnectionError('Recording could not be started.');
+      setIsRecording(false);
+    }
+  };
+
+  const stopRecording = async () => {
+    const { storageUrl, size } = await stopLocalRecorder();
+
+    if (!activeRecording) {
+      setIsRecording(false);
+      emitRecordingStop(roomId);
+      return;
+    }
+
+    try {
+      const duration = recordingDuration;
+      await api.put(`/recordings/${activeRecording.id}`, {
+        status: 'completed',
+        duration,
+        size,
+        storageUrl: storageUrl || activeRecording.storageUrl || '',
+      });
+      setActiveRecording(null);
+      setIsRecording(false);
+      setRecordingDuration(0);
+      emitRecordingStop(roomId);
+    } catch (error) {
+      console.error('Error stopping recording:', error);
+      setConnectionError('Recording could not be saved.');
+    }
+  };
+
+  const addParticipantsToCall = async () => {
+    if (!callId || selectedInvitees.length === 0) return;
+
+    setIsAddingParticipants(true);
+    try {
+      await api.post(`/calls/${callId}/participants`, {
+        participantIds: selectedInvitees,
+      });
+
+      selectedInvitees.forEach(targetUserId => {
+        socket?.emit('call:invite', { callId, targetUserId, type: callType });
+      });
+
+      onParticipantsAdded?.(selectedInvitees);
+      setSelectedInvitees([]);
+    } catch (error) {
+      console.error('Error adding participants:', error);
+      setConnectionError('Could not add participants to this call.');
+    } finally {
+      setIsAddingParticipants(false);
+    }
+  };
+
+  const inviteableMembers = teamMembers.filter(member => {
+    const currentUserId = localStorage.getItem('userId') || '';
+    return member.id !== currentUserId && !currentParticipantIds.includes(member.id);
+  });
 
   useEffect(() => {
     if (!isRecording) return;
@@ -447,11 +888,110 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
     };
   }, [socket]);
 
+  // Listen for screen share events
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleScreenShareStarted = ({ userId, userName: peerName }: any) => {
+      console.log('Screen share started by:', peerName);
+      setPeers(prev => {
+        const newPeers = new Map(prev);
+        const peer: Peer = newPeers.get(userId) || { id: userId, producers: [], name: peerName };
+        peer.name = peer.name || peerName;
+        peer.screenSharing = true;
+        newPeers.set(userId, peer);
+        return newPeers;
+      });
+    };
+
+    const handleScreenShareStopped = ({ userId }: any) => {
+      console.log('Screen share stopped by:', userId);
+      setPeers(prev => {
+        const newPeers = new Map(prev);
+        const peer = newPeers.get(userId);
+        if (peer) {
+          peer.screenSharing = false;
+          newPeers.set(userId, peer);
+        }
+        return newPeers;
+      });
+    };
+
+    const handleAudioLevel = ({ userId, userName: peerName, isTalking }: any) => {
+      setPeers(prev => {
+        const newPeers = new Map(prev);
+        const peer: Peer = newPeers.get(userId) || { id: userId, producers: [], name: peerName };
+        peer.name = peer.name || peerName;
+        peer.isTalking = Boolean(isTalking);
+        newPeers.set(userId, peer);
+        return newPeers;
+      });
+    };
+
+    const handleMediaState = ({ userId, audioEnabled, videoEnabled, screenSharing }: any) => {
+      setPeers(prev => {
+        const newPeers = new Map(prev);
+        const peer: Peer = newPeers.get(userId) || { id: userId, producers: [] };
+        peer.audioEnabled = audioEnabled;
+        peer.videoEnabled = videoEnabled;
+        peer.screenSharing = screenSharing;
+        if (!audioEnabled) peer.isTalking = false;
+        newPeers.set(userId, peer);
+        return newPeers;
+      });
+    };
+
+    socket.on('screen-share:started', handleScreenShareStarted);
+    socket.on('screen-share:stopped', handleScreenShareStopped);
+    socket.on('call:audio-level', handleAudioLevel);
+    socket.on('call:media-state', handleMediaState);
+
+    return () => {
+      socket.off('screen-share:started', handleScreenShareStarted);
+      socket.off('screen-share:stopped', handleScreenShareStopped);
+      socket.off('call:audio-level', handleAudioLevel);
+      socket.off('call:media-state', handleMediaState);
+    };
+  }, [socket]);
+
+  // Listen for recording events
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleRecordingStarted = (recording: any) => {
+      console.log('Recording started:', recording);
+      setIsRecording(true);
+    };
+
+    const handleRecordingPaused = (recording: any) => {
+      console.log('Recording paused:', recording);
+    };
+
+    const handleRecordingStopped = (recording: any) => {
+      console.log('Recording stopped:', recording);
+      setIsRecording(false);
+      setRecordingDuration(0);
+    };
+
+    socket.on('recording:started', handleRecordingStarted);
+    socket.on('recording:paused', handleRecordingPaused);
+    socket.on('recording:stopped', handleRecordingStopped);
+
+    return () => {
+      socket.off('recording:started', handleRecordingStarted);
+      socket.off('recording:paused', handleRecordingPaused);
+      socket.off('recording:stopped', handleRecordingStopped);
+    };
+  }, [socket]);
+
   // Listen for incoming chat messages
   useEffect(() => {
     if (!socket) return;
 
     const handleIncomingMessage = ({ userId, message, timestamp, userName: senderName }: any) => {
+      const currentUserId = localStorage.getItem('userId') || '';
+      if (userId === currentUserId) return;
+
       setChatMessages(prev => [...prev, {
         id: Date.now().toString(),
         userId,
@@ -467,6 +1007,25 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
       socket.off('meeting-chat:message', handleIncomingMessage);
     };
   }, [socket]);
+
+  // Join meeting/call when connected
+  useEffect(() => {
+    if (socket && isConnected && roomId && !isInWaitingRoom && !requiresPassword) {
+      if (meetingId) {
+        joinMeeting(roomId);
+      } else {
+        joinCall(roomId);
+      }
+    }
+
+    return () => {
+      if (socket && isConnected && roomId) {
+        if (meetingId) {
+          leaveMeeting(roomId);
+        }
+      }
+    };
+  }, [socket, isConnected, roomId, isInWaitingRoom, requiresPassword, joinMeeting, joinCall, leaveMeeting, meetingId]);
 
   // Start local media when component mounts
   useEffect(() => {
@@ -579,24 +1138,46 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
 
   return (
     <div className="flex flex-col h-full bg-black">
+      {connectionError && (
+        <div className="bg-red-950 text-red-100 px-4 py-2 text-sm text-center">
+          {connectionError}
+        </div>
+      )}
+
       <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
         {/* Local video */}
-        <div className="relative bg-gray-900 rounded-lg overflow-hidden">
-          <video
-            ref={localVideoRef}
-            autoPlay
-            playsInline
-            muted
-            className="w-full h-full object-cover"
-          />
-          <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded">
-            You
+        <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
+          {isLocalTalking && (
+            <div className="absolute -inset-1 z-10 rounded-2xl ring-4 ring-green-400 shadow-[0_0_30px_rgba(74,222,128,0.7)] animate-pulse pointer-events-none"></div>
+          )}
+          {callType === 'video' && isVideoEnabled ? (
+            <video
+              ref={localVideoRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover rounded-xl"
+            />
+          ) : (
+            <div className="flex h-full items-center justify-center bg-zinc-900 rounded-xl">
+              <Avatar className="h-32 w-32 border-4 border-white/20">
+                <AvatarFallback className="bg-gradient-to-br from-blue-600 to-purple-600 text-4xl font-bold text-white">
+                  {getInitials(userName)}
+                </AvatarFallback>
+              </Avatar>
+            </div>
+          )}
+          <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2">
+            <span className="font-medium">You</span>
+          </div>
+          <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
+            {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5 text-red-400" />}
           </div>
         </div>
 
         {/* Screen share */}
-        {isScreenSharing && localScreenRef.current && (
-          <div className="relative bg-gray-900 rounded-lg overflow-hidden md:col-span-2 lg:col-span-2">
+        {isScreenSharing && (
+          <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
             <video
               ref={localScreenRef}
               autoPlay
@@ -604,26 +1185,36 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
               muted
               className="w-full h-full object-cover"
             />
-            <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded">
-              Your Screen
+            <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
+              <span className="font-medium">Your Screen</span>
             </div>
           </div>
         )}
 
         {/* Remote videos */}
-        {Array.from(peers.values()).map(peer => (
-          peer.producers.map(producerId => {
+        {Array.from(peers.values()).map(peer => {
+          const videoProducer = peer.producers.find(({ producerId, kind }) => {
             const consumer = consumers.get(producerId);
-            if (!consumer) return null;
+            return kind === 'video' && consumer && !(consumer.appData as any)?.screenShare;
+          });
+          const audioProducers = peer.producers.filter(({ kind }) => kind === 'audio');
+          const videoConsumer = videoProducer ? consumers.get(videoProducer.producerId) : undefined;
+          const displayName = peer.name || peer.id;
+          const showVideo = Boolean(videoConsumer && peer.videoEnabled !== false);
+          const peerScreenSharing = peer.screenSharing;
 
-            return (
-              <div key={`${peer.id}-${producerId}`} className="relative bg-gray-900 rounded-lg overflow-hidden">
+          return (
+            <div key={peer.id} className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
+              {peer.isTalking && (
+                <div className="absolute inset-0 z-10 rounded-xl ring-4 ring-green-500/90 pointer-events-none"></div>
+              )}
+              {showVideo && videoProducer ? (
                 <video
                   ref={(el) => {
                     if (el) {
-                      remoteVideosRef.current.set(producerId, el);
-                      if (consumer.track) {
-                        const stream = new MediaStream([consumer.track]);
+                      remoteVideosRef.current.set(videoProducer.producerId, el);
+                      if (videoConsumer?.track) {
+                        const stream = new MediaStream([videoConsumer.track]);
                         el.srcObject = stream;
                       }
                     }
@@ -632,96 +1223,140 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
                   playsInline
                   className="w-full h-full object-cover"
                 />
-                <div className="absolute bottom-2 left-2 bg-black bg-opacity-50 text-white px-3 py-1 rounded">
-                  {peer.name || peer.id}
+              ) : (
+                <div className="flex h-full items-center justify-center bg-zinc-900">
+                  <Avatar className="h-32 w-32 border-4 border-white/20">
+                    <AvatarFallback className="bg-gradient-to-br from-indigo-600 to-pink-600 text-4xl font-bold text-white">
+                      {getInitials(displayName)}
+                    </AvatarFallback>
+                  </Avatar>
                 </div>
+              )}
+              {audioProducers.map(({ producerId }) => {
+                const consumer = consumers.get(producerId);
+                if (!consumer?.track) return null;
+                return (
+                  <audio
+                    key={producerId}
+                    ref={(el) => {
+                      if (el) {
+                        el.srcObject = new MediaStream([consumer.track]);
+                        el.autoplay = true;
+                      }
+                    }}
+                    autoPlay
+                  />
+                );
+              })}
+              <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2">
+                <span className="font-medium">{displayName}</span>
               </div>
-            );
-          })
-        ))}
+              <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
+                {peer.audioEnabled === false ? <MicOff className="h-5 w-5 text-red-400" /> : <Mic className="h-5 w-5" />}
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {/* Recording indicator */}
       {isRecording && (
-        <div className="bg-red-900 text-white px-4 py-2 flex items-center justify-center gap-2 text-sm">
-          <div className="w-2 h-2 bg-red-500 rounded-full animate-pulse"></div>
-          <span>Recording • {Math.floor(recordingDuration / 60)}:{String(recordingDuration % 60).padStart(2, '0')}</span>
+        <div className="bg-gradient-to-r from-red-900 to-red-800 text-white px-6 py-3 flex items-center justify-center gap-3 text-base font-semibold border-b border-red-700">
+          <div className="flex items-center gap-2">
+            <div className="w-3.5 h-3.5 bg-red-500 rounded-full animate-pulse shadow-[0_0_10px_rgba(239,68,68,0.8)]"></div>
+            <span>REC</span>
+          </div>
+          <div className="text-red-100">
+            {Math.floor(recordingDuration / 60)}:{String(recordingDuration % 60).padStart(2, '0')}
+          </div>
         </div>
       )}
 
       {/* Controls */}
-      <div className="bg-gray-800 p-4 flex items-center justify-center gap-4 flex-wrap">
+      <div className="bg-gray-900/95 p-5 flex items-center justify-center gap-5 flex-wrap backdrop-blur-xl border-t border-gray-800">
         <Button
           onClick={toggleAudio}
-          variant="secondary"
-          className="rounded-full w-12 h-12 p-0"
+          variant={isAudioEnabled ? "secondary" : "destructive"}
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          {isAudioEnabled ? <Mic className="h-6 w-6" /> : <MicOff className="h-6 w-6" />}
+          {isAudioEnabled ? <Mic className="h-7 w-7" /> : <MicOff className="h-7 w-7" />}
         </Button>
 
         <Button
           onClick={toggleVideo}
-          variant="secondary"
-          className="rounded-full w-12 h-12 p-0"
+          variant={isVideoEnabled ? "secondary" : "destructive"}
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          {isVideoEnabled ? <Video className="h-6 w-6" /> : <VideoOff className="h-6 w-6" />}
+          {isVideoEnabled ? <Video className="h-7 w-7" /> : <VideoOff className="h-7 w-7" />}
         </Button>
 
         <Button
           onClick={isScreenSharing ? stopScreenShare : startScreenShare}
-          variant="secondary"
-          className="rounded-full w-12 h-12 p-0"
+          variant={isScreenSharing ? "destructive" : "secondary"}
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          {isScreenSharing ? <ScreenShareOff className="h-6 w-6" /> : <ScreenShare className="h-6 w-6" />}
+          {isScreenSharing ? <ScreenShareOff className="h-7 w-7" /> : <ScreenShare className="h-7 w-7" />}
         </Button>
 
         <Button
           onClick={() => setShowParticipants(!showParticipants)}
-          variant="secondary"
-          className="rounded-full w-12 h-12 p-0"
+          variant={showParticipants ? "default" : "secondary"}
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          <Users className="h-6 w-6" />
+          <Users className="h-7 w-7" />
         </Button>
 
         <Button
           onClick={() => setShowChat(!showChat)}
-          variant="secondary"
-          className="rounded-full w-12 h-12 p-0"
+          variant={showChat ? "default" : "secondary"}
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          <MessageSquare className="h-6 w-6" />
+          <MessageSquare className="h-7 w-7" />
         </Button>
 
         <Button
           onClick={isRecording ? stopRecording : startRecording}
           variant={isRecording ? "destructive" : "secondary"}
-          className="rounded-full w-12 h-12 p-0"
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          <Radio className="h-6 w-6" />
+          <Radio className="h-7 w-7" />
         </Button>
 
         <Button
           onClick={leaveCall}
           variant="destructive"
-          className="rounded-full w-12 h-12 p-0"
+          className="rounded-full w-14 h-14 p-0 shadow-lg hover:shadow-xl transition-all"
         >
-          <PhoneOff className="h-6 w-6" />
+          <PhoneOff className="h-7 w-7" />
         </Button>
       </div>
 
       {/* Waiting room panel (host only) */}
       {waitingRoomParticipants.length > 0 && !showChat && !showParticipants && (
-        <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l border-border flex flex-col shadow-lg">
-          <div className="p-4 border-b border-border bg-muted/50">
-            <h3 className="font-semibold text-foreground">Waiting Room ({waitingRoomParticipants.length})</h3>
+        <div className="absolute right-0 top-0 bottom-0 w-80 bg-gray-900 border-l border-gray-800 flex flex-col shadow-2xl backdrop-blur-xl">
+          <div className="p-5 border-b border-gray-800 bg-gray-900/80">
+            <h3 className="font-semibold text-white text-lg flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              Waiting Room ({waitingRoomParticipants.length})
+            </h3>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {waitingRoomParticipants.map(participant => (
-              <div key={participant.id} className="p-3 rounded-lg bg-muted/50 border border-border space-y-2">
-                <div className="font-semibold text-foreground truncate">{participant.name}</div>
+              <div key={participant.id} className="p-4 rounded-xl bg-gray-800/80 border border-gray-700 space-y-3">
+                <div className="flex items-center gap-3">
+                  <Avatar className="h-10 w-10">
+                    <AvatarFallback className="bg-gradient-to-br from-blue-600 to-purple-600 text-lg font-bold text-white">
+                      {getInitials(participant.name)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="font-semibold text-white truncate">
+                    {participant.name}
+                  </div>
+                </div>
                 <div className="flex gap-2">
                   <Button
                     size="sm"
-                    className="flex-1"
+                    className="flex-1 bg-green-600 hover:bg-green-700 text-white"
                     onClick={() => admitParticipant(participant.id)}
                   >
                     Admit
@@ -739,10 +1374,10 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
             ))}
           </div>
           {waitingRoomParticipants.length > 1 && (
-            <div className="p-4 border-t border-border bg-muted/50">
+            <div className="p-4 border-t border-gray-800 bg-gray-900/70">
               <Button
                 size="sm"
-                className="w-full"
+                className="w-full bg-green-600 hover:bg-green-700 text-white"
                 onClick={admitAll}
               >
                 Admit All
@@ -754,65 +1389,177 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
 
       {/* Participants panel */}
       {showParticipants && (
-        <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l border-border flex flex-col shadow-lg">
-          <div className="p-4 border-b border-border bg-muted/50">
-            <h3 className="font-semibold text-foreground">Participants ({1 + Array.from(peers.values()).length})</h3>
+        <div className="absolute right-0 top-0 bottom-0 w-80 bg-gray-900 border-l border-gray-800 flex flex-col shadow-2xl backdrop-blur-xl">
+          <div className="p-5 border-b border-gray-800 bg-gray-900/80">
+            <h3 className="font-semibold text-white text-lg flex items-center gap-2">
+              <Users className="h-5 w-5" />
+              Participants ({1 + Array.from(peers.values()).length})
+            </h3>
           </div>
-          <div className="flex-1 overflow-y-auto p-4 space-y-2">
-            <div className="text-sm p-3 rounded-lg bg-primary/10 border border-primary/20">
-              <div className="font-semibold text-foreground">You</div>
-              <div className="text-xs text-muted-foreground mt-1">
-                {isAudioEnabled ? '🎤 Audio On' : '🔇 Muted'} • {isVideoEnabled ? '📹 Camera On' : '📷 Camera Off'}
-              </div>
-            </div>
-
-            {Array.from(peers.values()).map(peer => (
-              <div key={peer.id} className="text-sm p-3 rounded-lg bg-muted/50 border border-border">
-                <div className="font-semibold text-foreground truncate">{peer.name || peer.id}</div>
-                <div className="text-xs text-muted-foreground mt-1">
-                  {peer.producers.length > 0 ? '✓ Connected' : '⏳ Connecting'}
+          <div className="flex-1 overflow-y-auto p-4 space-y-3">
+            {callId && inviteableMembers.length > 0 && (
+              <div className="mb-5 rounded-xl border border-gray-700 bg-gray-800/70 p-4 space-y-4">
+                <div className="flex items-center justify-between gap-2 text-sm font-semibold text-gray-200">
+                  <span>Add Participants</span>
+                  <UserPlus className="h-4 w-4 text-gray-400" />
                 </div>
-              </div>
-            ))}
-
-            {Array.from(peers.values()).length === 0 && (
-              <div className="text-center text-muted-foreground text-sm py-8">
-                Waiting for participants...
+                <div className="max-h-40 overflow-y-auto space-y-2">
+                  {inviteableMembers.map(member => {
+                    const checked = selectedInvitees.includes(member.id);
+                    return (
+                      <label
+                        key={member.id}
+                        className="flex items-center gap-3 rounded-lg px-3 py-2 text-sm text-gray-100 hover:bg-gray-700/80 cursor-pointer transition-all"
+                      >
+                        <input
+                          type="checkbox"
+                          checked={checked}
+                          onChange={(event) => {
+                            setSelectedInvitees(prev =>
+                              event.target.checked
+                                ? [...prev, member.id]
+                                : prev.filter(id => id !== member.id)
+                            );
+                          }}
+                          className="h-4 w-4 accent-blue-600"
+                        />
+                        <Avatar className="h-8 w-8 mr-2">
+                          <AvatarFallback className="bg-gray-700 text-sm font-semibold text-gray-200">
+                            {getInitials(member.name)}
+                          </AvatarFallback>
+                        </Avatar>
+                        <span className="min-w-0 flex-1 truncate">{member.name}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+                {selectedInvitees.length > 0 && (
+                  <div className="flex flex-wrap gap-2">
+                    {selectedInvitees.map(id => {
+                      const member = teamMembers.find(item => item.id === id);
+                      return (
+                        <span
+                          key={id}
+                          className="inline-flex max-w-full items-center gap-1 rounded-md bg-gray-700 px-3 py-1 text-xs text-gray-200"
+                        >
+                          <span className="truncate">{member?.name || id}</span>
+                          <button
+                            type="button"
+                            aria-label={`Remove ${member?.name || 'participant'}`}
+                            onClick={() => setSelectedInvitees(prev => prev.filter(item => item !== id))}
+                            className="hover:text-white"
+                          >
+                            <X className="h-3 w-3" />
+                          </button>
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                <Button
+                  size="sm"
+                  className="w-full bg-blue-600 hover:bg-blue-700 text-white"
+                  onClick={addParticipantsToCall}
+                  disabled={selectedInvitees.length === 0 || isAddingParticipants}
+                >
+                  {isAddingParticipants ? 'Adding...' : 'Add to Call'}
+                </Button>
               </div>
             )}
+
+            <div className="space-y-2">
+              <div className="text-sm font-semibold text-gray-400 uppercase tracking-wider mb-2">
+                In Call
+              </div>
+              <div className="p-3 rounded-xl bg-gray-800/80 border border-gray-700 flex items-center gap-3">
+                <Avatar className="h-10 w-10">
+                  <AvatarFallback className="bg-gradient-to-br from-blue-600 to-purple-600 text-lg font-bold text-white">
+                    {getInitials(userName)}
+                  </AvatarFallback>
+                </Avatar>
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-white truncate">
+                    You
+                  </div>
+                  <div className="text-xs text-gray-400 flex items-center gap-2 mt-0.5">
+                    {isAudioEnabled ? <Mic className="h-3 w-3" /> : <MicOff className="h-3 w-3 text-red-400" />}
+                    {isAudioEnabled ? 'Mic on' : 'Mic off'}
+                    {' • '}
+                    {callType === 'video' && (isVideoEnabled ? <Video className="h-3 w-3" /> : <VideoOff className="h-3 w-3 text-red-400" />)}
+                    {callType === 'video' && (isVideoEnabled ? 'Camera on' : 'Camera off')}
+                  </div>
+                </div>
+              </div>
+
+              {Array.from(peers.values()).map(peer => (
+                <div key={peer.id} className="p-3 rounded-xl bg-gray-800/80 border border-gray-700 flex items-center gap-3">
+                  <Avatar className="h-10 w-10">
+                    <AvatarFallback className="bg-gradient-to-br from-indigo-600 to-pink-600 text-lg font-bold text-white">
+                      {getInitials(peer.name || peer.id)}
+                    </AvatarFallback>
+                  </Avatar>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-semibold text-white truncate">
+                      {peer.name || peer.id}
+                    </div>
+                    <div className="text-xs text-gray-400 flex items-center gap-2 mt-0.5">
+                      {peer.audioEnabled === false ? (
+                        <MicOff className="h-3 w-3 text-red-400" />
+                      ) : (
+                        <Mic className="h-3 w-3" />
+                      )}
+                      {peer.audioEnabled === false ? 'Mic off' : 'Mic on'}
+                    </div>
+                  </div>
+                </div>
+              ))}
+
+              {Array.from(peers.values()).length === 0 && (
+                <div className="text-center text-gray-500 text-sm py-8">
+                  Waiting for participants...
+                </div>
+              )}
+            </div>
           </div>
         </div>
       )}
 
       {/* Chat panel */}
       {showChat && (
-        <div className="absolute right-0 top-0 bottom-0 w-80 bg-background border-l border-border flex flex-col shadow-lg">
-          <div className="p-4 border-b border-border bg-muted/50">
-            <h3 className="font-semibold text-foreground">Chat</h3>
+        <div className="absolute right-0 top-0 bottom-0 w-80 bg-gray-900 border-l border-gray-800 flex flex-col shadow-2xl backdrop-blur-xl">
+          <div className="p-5 border-b border-gray-800 bg-gray-900/80">
+            <h3 className="font-semibold text-white text-lg flex items-center gap-2">
+              <MessageSquare className="h-5 w-5" />
+              Chat
+            </h3>
           </div>
           <div className="flex-1 overflow-y-auto p-4 space-y-3">
             {chatMessages.length === 0 ? (
-              <div className="text-center text-muted-foreground text-sm py-8">
+              <div className="text-center text-gray-500 text-sm py-8">
                 No messages yet. Start the conversation!
               </div>
             ) : (
               chatMessages.map(msg => (
-                <div key={msg.id} className="text-sm">
-                  <div className="font-semibold text-foreground break-words">{msg.userName}</div>
-                  <div className="text-muted-foreground break-words">{msg.content}</div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                <div key={msg.id} className="text-sm p-3 rounded-xl bg-gray-800/80 border border-gray-700">
+                  <div className="font-semibold text-white break-words flex items-center gap-2">
+                    {msg.userName}
+                    <span className="text-xs text-gray-400">
+                      {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                    </span>
+                  </div>
+                  <div className="text-gray-200 break-words mt-1">
+                    {msg.content}
                   </div>
                 </div>
               ))
             )}
           </div>
-          <div className="p-4 border-t border-border bg-muted/50">
+          <div className="p-4 border-t border-gray-800 bg-gray-900/70">
             <div className="flex gap-2">
               <input
                 type="text"
                 placeholder="Type a message..."
-                className="flex-1 px-3 py-2 border border-input bg-background rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                className="flex-1 px-4 py-2.5 border border-gray-700 bg-gray-800/90 text-white rounded-xl text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 placeholder-gray-500"
                 onKeyDown={(e) => {
                   if (e.key === 'Enter' && !e.shiftKey) {
                     e.preventDefault();
@@ -834,7 +1581,7 @@ export default function VideoCallRoom({ roomId, onLeave, userName }: VideoCallRo
                     input.value = '';
                   }
                 }}
-                className="px-4"
+                className="bg-blue-600 hover:bg-blue-700 text-white px-5"
               >
                 Send
               </Button>
