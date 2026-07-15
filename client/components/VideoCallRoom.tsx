@@ -753,7 +753,7 @@ export default function VideoCallRoom({
   };
 
   const stopLocalRecorder = () => {
-    return new Promise<{ storageUrl: string; size: number }>((resolve) => {
+    return new Promise<{ storageUrl: string; size: number; blob?: Blob }>((resolve) => {
       const recorder = mediaRecorderRef.current;
       if (!recorder) {
         resolve({ storageUrl: '', size: 0 });
@@ -765,8 +765,8 @@ export default function VideoCallRoom({
         const blob = new Blob(recordedChunksRef.current, { type: mimeType });
         const storageUrl = blob.size > 0 ? await blobToDataUrl(blob) : '';
         mediaRecorderRef.current = null;
-        recordedChunksRef.current = [];
-        resolve({ storageUrl, size: blob.size });
+        // Don't clear chunks here - we'll clear them in stopRecording
+        resolve({ storageUrl, size: blob.size, blob });
       };
 
       if (recorder.state !== 'inactive') {
@@ -799,29 +799,41 @@ export default function VideoCallRoom({
   };
 
   const stopRecording = async () => {
-    const { storageUrl, size } = await stopLocalRecorder();
+    const { storageUrl, size, blob } = await stopLocalRecorder();
 
     if (!activeRecording) {
       setIsRecording(false);
       emitRecordingStop(roomId);
+      recordedChunksRef.current = [];
       return;
     }
 
     try {
       const duration = recordingDuration;
-      await api.put(`/recordings/${activeRecording.id}`, {
-        status: 'completed',
-        duration,
-        size,
-        storageUrl: storageUrl || activeRecording.storageUrl || '',
-      });
+      
+      // Create form data
+      const formData = new FormData();
+      
+      // If we have the blob, add it as file
+      if (blob) {
+        formData.append('file', blob, `recording-${activeRecording.id}.webm`);
+      }
+      
+      // Add duration
+      formData.append('duration', duration.toString());
+      
+      // Upload the recording
+      await api.post(`/recordings/${activeRecording.id}/upload`, formData);
+      
       setActiveRecording(null);
       setIsRecording(false);
       setRecordingDuration(0);
       emitRecordingStop(roomId);
+      recordedChunksRef.current = [];
     } catch (error) {
       console.error('Error stopping recording:', error);
       setConnectionError('Recording could not be saved.');
+      recordedChunksRef.current = [];
     }
   };
 
@@ -1145,10 +1157,57 @@ export default function VideoCallRoom({
       )}
 
       <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
+        {/* Remote screen share - show first */}
+        {Array.from(peers.values()).filter(peer => peer.screenSharing).map(peer => {
+          const screenProducer = peer.producers.find(({ producerId, kind }) => {
+            const consumer = consumers.get(producerId);
+            return kind === 'video' && consumer && (consumer.appData as any)?.screenShare;
+          });
+          const screenConsumer = screenProducer ? consumers.get(screenProducer.producerId) : undefined;
+          
+          return screenProducer && screenConsumer ? (
+            <div key={`screen-${peer.id}`} className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
+              <video
+                ref={(el) => {
+                  if (el) {
+                    remoteVideosRef.current.set(screenProducer.producerId, el);
+                    if (screenConsumer?.track) {
+                      const stream = new MediaStream([screenConsumer.track]);
+                      el.srcObject = stream;
+                    }
+                  }
+                }}
+                autoPlay
+                playsInline
+                className="w-full h-full object-cover"
+              />
+              <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
+                <span className="font-medium">{peer.name || peer.id}'s Screen</span>
+              </div>
+            </div>
+          ) : null;
+        })}
+
+        {/* Local screen share */}
+        {isScreenSharing && (
+          <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
+            <video
+              ref={localScreenRef}
+              autoPlay
+              playsInline
+              muted
+              className="w-full h-full object-cover"
+            />
+            <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
+              <span className="font-medium">Your Screen</span>
+            </div>
+          </div>
+        )}
+
         {/* Local video */}
         <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
           {isLocalTalking && (
-            <div className="absolute -inset-1 z-10 rounded-2xl ring-4 ring-green-400 shadow-[0_0_30px_rgba(74,222,128,0.7)] animate-pulse pointer-events-none"></div>
+            <div className="absolute -inset-2 z-20 rounded-2xl ring-8 ring-green-400 shadow-[0_0_50px_rgba(74,222,128,0.9)] animate-pulse pointer-events-none"></div>
           )}
           {callType === 'video' && isVideoEnabled ? (
             <video
@@ -1167,29 +1226,13 @@ export default function VideoCallRoom({
               </Avatar>
             </div>
           )}
-          <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2">
+          <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2 z-10">
             <span className="font-medium">You</span>
           </div>
-          <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
+          <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm z-10">
             {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5 text-red-400" />}
           </div>
         </div>
-
-        {/* Screen share */}
-        {isScreenSharing && (
-          <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
-            <video
-              ref={localScreenRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
-              <span className="font-medium">Your Screen</span>
-            </div>
-          </div>
-        )}
 
         {/* Remote videos */}
         {Array.from(peers.values()).map(peer => {
@@ -1201,12 +1244,11 @@ export default function VideoCallRoom({
           const videoConsumer = videoProducer ? consumers.get(videoProducer.producerId) : undefined;
           const displayName = peer.name || peer.id;
           const showVideo = Boolean(videoConsumer && peer.videoEnabled !== false);
-          const peerScreenSharing = peer.screenSharing;
 
           return (
             <div key={peer.id} className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
               {peer.isTalking && (
-                <div className="absolute inset-0 z-10 rounded-xl ring-4 ring-green-500/90 pointer-events-none"></div>
+                <div className="absolute -inset-2 z-20 rounded-2xl ring-8 ring-green-500 shadow-[0_0_50px_rgba(34,197,94,0.9)] animate-pulse pointer-events-none"></div>
               )}
               {showVideo && videoProducer ? (
                 <video
