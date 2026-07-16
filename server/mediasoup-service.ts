@@ -185,6 +185,7 @@ export async function consume(roomId: string, transportId: string, producerId: s
     producerId,
     kind: consumer.kind,
     rtpParameters: consumer.rtpParameters,
+    appData: producer.appData,
   };
 }
 
