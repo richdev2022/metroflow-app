@@ -1,6 +1,7 @@
 import express, { type Request, Response, NextFunction } from "express";
 import { registerRoutes } from "./routes";
 import cors from "cors";
+import path from "path";
 
 const app = express();
 
@@ -14,6 +15,9 @@ app.use(cors({
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: false }));
+
+// Serve static files from the dist directory in production
+app.use(express.static(path.join(process.cwd(), 'dist')));
 
 // Logging middleware
 app.use((req, res, next) => {
@@ -48,6 +52,11 @@ app.use((req, res, next) => {
 
 (async () => {
   const server = await registerRoutes(app);
+
+  // Catch-all route to serve index.html for SPA
+  app.get('/{*splat}', (req: Request, res: Response) => {
+    res.sendFile(path.join(process.cwd(), 'dist', 'index.html'));
+  });
 
   app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
     const status = err.status || err.statusCode || 500;

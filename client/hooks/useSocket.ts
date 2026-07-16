@@ -15,8 +15,10 @@ export const useSocket = ({ userId, businessId }: UseSocketOptions = {}) => {
     if (!userId || !businessId) return;
 
     // Connect to Socket.io server
-    const socket = io('/', {
+    const socket = io({
       transports: ['polling', 'websocket'],
+      path: '/socket.io',
+      withCredentials: true
     });
 
     socketRef.current = socket;

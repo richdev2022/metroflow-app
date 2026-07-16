@@ -4,7 +4,7 @@ import { useSocket } from '../hooks/useSocket';
 import { Button } from './ui/button';
 import { api } from '../lib/api-client';
 import { unwrapApiData } from '../lib/api-response';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, ScreenShare, ScreenShareOff, MessageSquare, Users, Radio, UserPlus, X } from 'lucide-react';
+import { Maximize2, Mic, MicOff, Minimize2, PhoneOff, Radio, ScreenShare, ScreenShareOff, MessageSquare, UserPlus, Users, Video, VideoOff, X } from 'lucide-react';
 import type { Recording, TeamMember } from '@shared/api';
 import { Avatar, AvatarFallback } from './ui/avatar';
 
@@ -24,7 +24,7 @@ interface VideoCallRoomProps {
 
 interface Peer {
   id: string;
-  producers: Array<{ producerId: string; kind: types.MediaKind }>;
+  producers: Array<{ producerId: string; kind: types.MediaKind; appData?: Record<string, any> }>;
   name?: string;
   isTalking?: boolean;
   audioEnabled?: boolean;
@@ -71,6 +71,7 @@ export default function VideoCallRoom({
   const [connectionError, setConnectionError] = useState('');
   const [chatMessages, setChatMessages] = useState<Array<{ id: string; userId: string; userName: string; content: string; timestamp: Date }>>([]);
   const [isLocalTalking, setIsLocalTalking] = useState(false);
+  const [isScreenShareExpanded, setIsScreenShareExpanded] = useState(true);
   
   const localVideoRef = useRef<HTMLVideoElement>(null);
   const localScreenRef = useRef<HTMLVideoElement>(null);
@@ -96,6 +97,14 @@ export default function VideoCallRoom({
     if (parts.length === 0) return 'U';
     return parts.slice(0, 2).map(part => part[0]?.toUpperCase()).join('');
   };
+
+  const talkingRingClass = 'ring-4 ring-emerald-400 shadow-[0_0_0_8px_rgba(52,211,153,0.18),0_0_36px_rgba(52,211,153,0.65)] animate-pulse';
+  const avatarBaseClass = 'border-4 border-white/15 transition-all duration-300';
+
+  const isScreenShareProducer = (
+    producer?: { appData?: Record<string, any> },
+    consumer?: types.Consumer,
+  ) => Boolean(producer?.appData?.screenShare || (consumer?.appData as any)?.screenShare);
 
   const emitMediaState = (nextState: Partial<{ audioEnabled: boolean; videoEnabled: boolean; screenSharing: boolean }>) => {
     socket?.emit('call:media-state', {
@@ -214,7 +223,7 @@ export default function VideoCallRoom({
     initializeDevice();
 
     // Listen for new producers from other peers
-    const handleNewProducer = ({ producerId, kind, peerId, peerName }: any) => {
+    const handleNewProducer = ({ producerId, kind, peerId, peerName, appData }: any) => {
       if (!isMounted) return;
       console.log('New producer:', producerId, kind, 'from peer:', peerId);
       
@@ -223,8 +232,9 @@ export default function VideoCallRoom({
         const resolvedPeerId = peerId || producerId;
         const peer = newPeers.get(resolvedPeerId) || { id: resolvedPeerId, producers: [], name: peerName };
         if (!peer.producers.some(producer => producer.producerId === producerId)) {
-          peer.producers.push({ producerId, kind });
+          peer.producers.push({ producerId, kind, appData });
         }
+        if (appData?.screenShare) peer.screenSharing = true;
         newPeers.set(resolvedPeerId, peer);
         return newPeers;
       });
@@ -373,14 +383,15 @@ export default function VideoCallRoom({
         return;
       }
 
-      (response.producers || []).forEach(({ producerId, kind, peerId, peerName }: any) => {
+      (response.producers || []).forEach(({ producerId, kind, peerId, peerName, appData }: any) => {
         setPeers(prev => {
           const newPeers = new Map(prev);
           const resolvedPeerId = peerId || producerId;
           const peer = newPeers.get(resolvedPeerId) || { id: resolvedPeerId, producers: [], name: peerName };
           if (!peer.producers.some(producer => producer.producerId === producerId)) {
-            peer.producers.push({ producerId, kind });
+            peer.producers.push({ producerId, kind, appData });
           }
+          if (appData?.screenShare) peer.screenSharing = true;
           newPeers.set(resolvedPeerId, peer);
           return newPeers;
         });
@@ -407,13 +418,14 @@ export default function VideoCallRoom({
           return;
         }
 
-        const { id, rtpParameters, producerId: prodId } = response;
+        const { id, rtpParameters, producerId: prodId, appData } = response;
         
         const consumer = await recvTransport.consume({
           id,
           producerId: prodId,
           kind,
-          rtpParameters
+          rtpParameters,
+          appData,
         });
 
         // Resume the consumer
@@ -1148,157 +1160,188 @@ export default function VideoCallRoom({
     );
   }
 
+  const remoteScreenShares = Array.from(peers.values()).flatMap(peer =>
+    peer.producers
+      .filter(producer => {
+        const consumer = consumers.get(producer.producerId);
+        return producer.kind === 'video' && consumer && isScreenShareProducer(producer, consumer);
+      })
+      .map(producer => ({
+        peer,
+        producer,
+        consumer: consumers.get(producer.producerId),
+      }))
+  );
+  const hasScreenShare = isScreenSharing || remoteScreenShares.length > 0;
+  const participantGridClass = hasScreenShare && isScreenShareExpanded
+    ? 'min-h-0 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-1 gap-3 content-start pr-1'
+    : 'min-h-0 flex-1 overflow-y-auto grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4 gap-3 content-start';
+  const participantTileClass = 'relative min-h-[190px] bg-zinc-900 rounded-lg overflow-hidden aspect-video border border-white/10';
+  const screenTileClass = hasScreenShare && isScreenShareExpanded
+    ? 'relative min-h-[320px] h-full bg-zinc-950 rounded-lg overflow-hidden border border-white/10'
+    : 'relative min-h-[220px] bg-zinc-950 rounded-lg overflow-hidden aspect-video border border-white/10';
+
   return (
-    <div className="flex flex-col h-full bg-black">
+    <div className="relative flex h-full min-h-0 flex-col bg-black">
       {connectionError && (
         <div className="bg-red-950 text-red-100 px-4 py-2 text-sm text-center">
           {connectionError}
         </div>
       )}
 
-      <div className="flex-1 grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 p-4">
-        {/* Remote screen share - show first */}
-        {Array.from(peers.values()).filter(peer => peer.screenSharing).map(peer => {
-          const screenProducer = peer.producers.find(({ producerId, kind }) => {
-            const consumer = consumers.get(producerId);
-            return kind === 'video' && consumer && (consumer.appData as any)?.screenShare;
-          });
-          const screenConsumer = screenProducer ? consumers.get(screenProducer.producerId) : undefined;
-          
-          return screenProducer && screenConsumer ? (
-            <div key={`screen-${peer.id}`} className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
-              <video
-                ref={(el) => {
-                  if (el) {
-                    remoteVideosRef.current.set(screenProducer.producerId, el);
-                    if (screenConsumer?.track) {
-                      const stream = new MediaStream([screenConsumer.track]);
-                      el.srcObject = stream;
-                    }
-                  }
-                }}
-                autoPlay
-                playsInline
-                className="w-full h-full object-cover"
-              />
-              <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
-                <span className="font-medium">{peer.name || peer.id}'s Screen</span>
+      <div className="min-h-0 flex-1 overflow-hidden">
+        <div className={`h-full min-h-0 gap-3 p-3 sm:p-4 ${hasScreenShare && isScreenShareExpanded ? 'grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(280px,26rem)]' : 'flex flex-col'}`}>
+          {hasScreenShare && (
+            <div className={`${screenTileClass} ${isScreenShareExpanded ? 'xl:min-h-0' : ''}`}>
+              <div className={`grid h-full gap-3 ${remoteScreenShares.length + (isScreenSharing ? 1 : 0) > 1 ? 'md:grid-cols-2' : 'grid-cols-1'}`}>
+                {remoteScreenShares.map(({ peer, producer, consumer }) => (
+                  <div key={`screen-${peer.id}-${producer.producerId}`} className="relative min-h-[220px] overflow-hidden rounded-lg bg-zinc-950">
+                    <video
+                      ref={(el) => {
+                        if (el) {
+                          remoteVideosRef.current.set(producer.producerId, el);
+                          if (consumer?.track) {
+                            const stream = new MediaStream([consumer.track]);
+                            el.srcObject = stream;
+                          }
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      className="h-full w-full object-contain"
+                    />
+                    <div className="absolute bottom-3 left-3 rounded-md bg-black/80 px-3 py-2 text-sm font-medium text-white backdrop-blur-sm">
+                      {peer.name || peer.id}'s Screen
+                    </div>
+                  </div>
+                ))}
+                {isScreenSharing && (
+                  <div className="relative min-h-[220px] overflow-hidden rounded-lg bg-slate-950">
+                    <video
+                      ref={localScreenRef}
+                      autoPlay
+                      playsInline
+                      muted
+                      className="h-full w-full object-contain"
+                    />
+                    <div className="absolute bottom-3 left-3 rounded-md bg-black/80 px-3 py-2 text-sm font-medium text-white backdrop-blur-sm">
+                      Your Screen
+                    </div>
+                  </div>
+                )}
               </div>
-            </div>
-          ) : null;
-        })}
-
-        {/* Local screen share */}
-        {isScreenSharing && (
-          <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video md:col-span-2 lg:col-span-2">
-            <video
-              ref={localScreenRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover"
-            />
-            <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm">
-              <span className="font-medium">Your Screen</span>
-            </div>
-          </div>
-        )}
-
-        {/* Local video */}
-        <div className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
-          {isLocalTalking && (
-            <div className="absolute -inset-2 z-20 rounded-2xl ring-8 ring-green-400 shadow-[0_0_50px_rgba(74,222,128,0.9)] animate-pulse pointer-events-none"></div>
-          )}
-          {callType === 'video' && isVideoEnabled ? (
-            <video
-              ref={localVideoRef}
-              autoPlay
-              playsInline
-              muted
-              className="w-full h-full object-cover rounded-xl"
-            />
-          ) : (
-            <div className="flex h-full items-center justify-center bg-zinc-900 rounded-xl">
-              <Avatar className="h-32 w-32 border-4 border-white/20">
-                <AvatarFallback className="bg-gradient-to-br from-blue-600 to-purple-600 text-4xl font-bold text-white">
-                  {getInitials(userName)}
-                </AvatarFallback>
-              </Avatar>
+              <Button
+                type="button"
+                size="icon"
+                variant="secondary"
+                className="absolute right-3 top-3 h-10 w-10 rounded-full bg-black/70 text-white hover:bg-black/90"
+                onClick={() => setIsScreenShareExpanded(prev => !prev)}
+                aria-label={isScreenShareExpanded ? 'Collapse screen share preview' : 'Expand screen share preview'}
+                title={isScreenShareExpanded ? 'Collapse screen share preview' : 'Expand screen share preview'}
+              >
+                {isScreenShareExpanded ? <Minimize2 className="h-5 w-5" /> : <Maximize2 className="h-5 w-5" />}
+              </Button>
             </div>
           )}
-          <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2 z-10">
-            <span className="font-medium">You</span>
-          </div>
-          <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm z-10">
-            {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5 text-red-400" />}
-          </div>
-        </div>
 
-        {/* Remote videos */}
-        {Array.from(peers.values()).map(peer => {
-          const videoProducer = peer.producers.find(({ producerId, kind }) => {
-            const consumer = consumers.get(producerId);
-            return kind === 'video' && consumer && !(consumer.appData as any)?.screenShare;
-          });
-          const audioProducers = peer.producers.filter(({ kind }) => kind === 'audio');
-          const videoConsumer = videoProducer ? consumers.get(videoProducer.producerId) : undefined;
-          const displayName = peer.name || peer.id;
-          const showVideo = Boolean(videoConsumer && peer.videoEnabled !== false);
-
-          return (
-            <div key={peer.id} className="relative bg-gray-900 rounded-xl overflow-hidden aspect-video">
-              {peer.isTalking && (
-                <div className="absolute -inset-2 z-20 rounded-2xl ring-8 ring-green-500 shadow-[0_0_50px_rgba(34,197,94,0.9)] animate-pulse pointer-events-none"></div>
-              )}
-              {showVideo && videoProducer ? (
+          <div className={participantGridClass}>
+            {/* Local video */}
+            <div className={participantTileClass}>
+              {callType === 'video' && isVideoEnabled ? (
                 <video
-                  ref={(el) => {
-                    if (el) {
-                      remoteVideosRef.current.set(videoProducer.producerId, el);
-                      if (videoConsumer?.track) {
-                        const stream = new MediaStream([videoConsumer.track]);
-                        el.srcObject = stream;
-                      }
-                    }
-                  }}
+                  ref={localVideoRef}
                   autoPlay
                   playsInline
-                  className="w-full h-full object-cover"
+                  muted
+                  className="h-full w-full rounded-lg object-cover"
                 />
               ) : (
                 <div className="flex h-full items-center justify-center bg-zinc-900">
-                  <Avatar className="h-32 w-32 border-4 border-white/20">
-                    <AvatarFallback className="bg-gradient-to-br from-indigo-600 to-pink-600 text-4xl font-bold text-white">
-                      {getInitials(displayName)}
+                  <Avatar className={`h-24 w-24 sm:h-28 sm:w-28 xl:h-32 xl:w-32 ${avatarBaseClass} ${isLocalTalking ? talkingRingClass : ''}`}>
+                    <AvatarFallback className="bg-gradient-to-br from-blue-600 to-purple-600 text-4xl font-bold text-white">
+                      {getInitials(userName)}
                     </AvatarFallback>
                   </Avatar>
                 </div>
               )}
-              {audioProducers.map(({ producerId }) => {
-                const consumer = consumers.get(producerId);
-                if (!consumer?.track) return null;
-                return (
-                  <audio
-                    key={producerId}
-                    ref={(el) => {
-                      if (el) {
-                        el.srcObject = new MediaStream([consumer.track]);
-                        el.autoplay = true;
-                      }
-                    }}
-                    autoPlay
-                  />
-                );
-              })}
-              <div className="absolute bottom-3 left-3 bg-black/80 text-white px-4 py-2 rounded-lg backdrop-blur-sm flex items-center gap-2">
-                <span className="font-medium">{displayName}</span>
+              {callType === 'video' && isVideoEnabled && isLocalTalking && (
+                <div className="absolute inset-0 rounded-lg ring-4 ring-emerald-400/80 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.45),0_0_36px_rgba(52,211,153,0.45)] pointer-events-none"></div>
+              )}
+              <div className="absolute bottom-3 left-3 z-10 flex items-center gap-2 rounded-md bg-black/80 px-3 py-2 text-sm font-medium text-white backdrop-blur-sm">
+                <span>You</span>
               </div>
-              <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
-                {peer.audioEnabled === false ? <MicOff className="h-5 w-5 text-red-400" /> : <Mic className="h-5 w-5" />}
+              <div className="absolute bottom-3 right-3 z-10 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
+                {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5 text-red-400" />}
               </div>
             </div>
-          );
-        })}
+
+            {/* Remote videos */}
+            {Array.from(peers.values()).map(peer => {
+              const videoProducer = peer.producers.find(producer => {
+                const consumer = consumers.get(producer.producerId);
+                return producer.kind === 'video' && consumer && !isScreenShareProducer(producer, consumer);
+              });
+              const audioProducers = peer.producers.filter(({ kind }) => kind === 'audio');
+              const videoConsumer = videoProducer ? consumers.get(videoProducer.producerId) : undefined;
+              const displayName = peer.name || peer.id;
+              const showVideo = Boolean(videoConsumer && peer.videoEnabled !== false);
+
+              return (
+                <div key={peer.id} className={participantTileClass}>
+                  {showVideo && videoProducer ? (
+                    <video
+                      ref={(el) => {
+                        if (el) {
+                          remoteVideosRef.current.set(videoProducer.producerId, el);
+                          if (videoConsumer?.track) {
+                            const stream = new MediaStream([videoConsumer.track]);
+                            el.srcObject = stream;
+                          }
+                        }
+                      }}
+                      autoPlay
+                      playsInline
+                      className="h-full w-full object-cover"
+                    />
+                  ) : (
+                    <div className="flex h-full items-center justify-center bg-zinc-900">
+                      <Avatar className={`h-24 w-24 sm:h-28 sm:w-28 xl:h-32 xl:w-32 ${avatarBaseClass} ${peer.isTalking ? talkingRingClass : ''}`}>
+                        <AvatarFallback className="bg-gradient-to-br from-indigo-600 to-pink-600 text-4xl font-bold text-white">
+                          {getInitials(displayName)}
+                        </AvatarFallback>
+                      </Avatar>
+                    </div>
+                  )}
+                  {showVideo && peer.isTalking && (
+                    <div className="absolute inset-0 rounded-lg ring-4 ring-emerald-400/80 shadow-[inset_0_0_0_1px_rgba(52,211,153,0.45),0_0_36px_rgba(52,211,153,0.45)] pointer-events-none"></div>
+                  )}
+                  {audioProducers.map(({ producerId }) => {
+                    const consumer = consumers.get(producerId);
+                    if (!consumer?.track) return null;
+                    return (
+                      <audio
+                        key={producerId}
+                        ref={(el) => {
+                          if (el) {
+                            el.srcObject = new MediaStream([consumer.track]);
+                            el.autoplay = true;
+                          }
+                        }}
+                        autoPlay
+                      />
+                    );
+                  })}
+                  <div className="absolute bottom-3 left-3 flex max-w-[70%] items-center gap-2 rounded-md bg-black/80 px-3 py-2 text-sm font-medium text-white backdrop-blur-sm">
+                    <span className="truncate">{displayName}</span>
+                  </div>
+                  <div className="absolute bottom-3 right-3 rounded-full bg-black/80 p-2 text-white backdrop-blur-sm">
+                    {peer.audioEnabled === false ? <MicOff className="h-5 w-5 text-red-400" /> : <Mic className="h-5 w-5" />}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
       </div>
 
       {/* Recording indicator */}

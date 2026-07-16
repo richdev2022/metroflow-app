@@ -630,23 +630,6 @@ export default function Calls() {
                       .map((p) => getParticipantName(getParticipantUserId(p)))
                       .join(", ")}
                   </div>
-                  {getCallRoomId(call) && (
-                    <div>
-                      <Button
-                        variant="outline"
-                        size="sm"
-                        className="w-full"
-                        onClick={() => handleOpenCallRoom(call)}
-                      >
-                        {call.type === "video" ? (
-                          <Video className="h-4 w-4 mr-2" />
-                        ) : (
-                          <Phone className="h-4 w-4 mr-2" />
-                        )}
-                        Open Call Room
-                      </Button>
-                    </div>
-                  )}
                   <Button
                     variant="outline"
                     size="sm"
@@ -658,43 +641,42 @@ export default function Calls() {
                   <div className="flex gap-2">
                     {call.status === "ringing" || call.status === "ongoing" ? (
                       <>
-                        {!isCurrentUserJoined(call) ? (
+                        <Button
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => handleOpenCallRoom(call)}
+                          disabled={isProcessing}
+                        >
+                          {call.type === "video" ? (
+                            <Video className="h-4 w-4 mr-2" />
+                          ) : (
+                            <Phone className="h-4 w-4 mr-2" />
+                          )}
+                          {isCurrentUserJoined(call) || isCurrentUserHost(call) ? "Open Call Room" : "Join Call"}
+                        </Button>
+                        {isCurrentUserJoined(call) ? (
                           <Button
+                            variant="destructive"
                             size="sm"
                             className="flex-1"
-                            onClick={() => handleJoinCall(call)}
+                            onClick={() => handleLeaveCall(call)}
                             disabled={isProcessing}
                           >
-                            {call.type === "video" ? (
-                              <Video className="h-4 w-4 mr-2" />
-                            ) : (
-                              <Phone className="h-4 w-4 mr-2" />
-                            )}
-                            Join Call
+                            <Phone className="h-4 w-4 mr-2 rotate-135" />
+                            Leave
                           </Button>
-                        ) : (
-                          <>
-                            <Button
-                              variant="destructive"
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => handleLeaveCall(call)}
-                              disabled={isProcessing}
-                            >
-                              <Phone className="h-4 w-4 mr-2 rotate-135" />
-                              Leave
-                            </Button>
-                            <Button
-                              variant="outline"
-                              size="sm"
-                              className="flex-1"
-                              onClick={() => handleEndCall(call)}
-                              disabled={isProcessing}
-                            >
-                              End Call
-                            </Button>
-                          </>
-                        )}
+                        ) : null}
+                        {isCurrentUserHost(call) ? (
+                          <Button
+                            variant="outline"
+                            size="sm"
+                            className="flex-1"
+                            onClick={() => handleEndCall(call)}
+                            disabled={isProcessing}
+                          >
+                            End Call
+                          </Button>
+                        ) : null}
                       </>
                     ) : null}
                   </div>
@@ -805,7 +787,7 @@ export default function Calls() {
                   ) : (
                     <Phone className="h-4 w-4 mr-2" />
                   )}
-                  Open Call
+                  {isCurrentUserJoined(selectedCall) || isCurrentUserHost(selectedCall) ? "Open Call Room" : "Join Call"}
                 </Button>
               ) : null}
             </DialogFooter>

@@ -474,7 +474,8 @@ export class MemStorage implements IStorage {
   }
 
   async getUserByEmail(email: string): Promise<User | undefined> {
-    return Array.from(this.users.values()).find(u => u.email === email);
+    const normalizedEmail = String(email || "").trim().toLowerCase();
+    return Array.from(this.users.values()).find(u => u.email.toLowerCase() === normalizedEmail);
   }
 
   // KYC
@@ -598,7 +599,11 @@ export class MemStorage implements IStorage {
     }
     
     this.wallets.set(userId, wallet);
-    return { payment_url: "https://checkout.squadco.com/test-payment" };
+
+    const reference = `FUND-${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+    const callbackUrl = new URL(data.redirect_url);
+    callbackUrl.searchParams.set("paymentReference", reference);
+    return { payment_url: `/api/wallet/verify?redirect_url=${encodeURIComponent(callbackUrl.toString())}` };
   }
 
   async createBusinessWallet(userId: string, data: CreateBusinessWalletInput): Promise<BusinessWallet> {

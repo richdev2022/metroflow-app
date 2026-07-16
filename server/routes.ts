@@ -85,7 +85,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   app.post("/api/auth/login", async (req, res) => {
     try {
       const { email, password } = req.body;
-      const user = await storage.validateUser(email, password);
+      const user = await storage.validateUser(String(email || "").trim(), password);
       
       if (!user) {
         return res.status(401).json({ success: false, message: "Invalid email or password" });
@@ -106,8 +106,9 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   app.post("/api/auth/verify-otp", async (req, res) => {
     // Mock verification
-    const { email, otp } = req.body;
-    if (otp === "123456") {
+    const { email, otp, otpCode } = req.body;
+    const submittedOtp = otp ?? otpCode;
+    if (submittedOtp === "123456") {
        const user = await storage.getUserByEmail(email);
        if (user) {
          res.json({ 
@@ -123,6 +124,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     } else {
       res.status(400).json({ success: false, message: "Invalid OTP" });
     }
+  });
+
+  app.post("/api/auth/resend-otp", async (_req, res) => {
+    res.json({ success: true, message: "OTP sent successfully" });
   });
 
   // --- New Features Routes ---
@@ -396,6 +401,46 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json(result);
     } catch (err) {
       res.status(500).json({ error: "Funding failed" });
+    }
+  });
+
+  app.get("/api/wallet/verify", async (req, res) => {
+    const rawRedirectUrl = typeof req.query.redirect_url === "string" ? req.query.redirect_url : "";
+    let reference =
+      (typeof req.query.reference === "string" && req.query.reference) ||
+      (typeof req.query.paymentReference === "string" && req.query.paymentReference) ||
+      (typeof req.query.transaction_reference === "string" && req.query.transaction_reference) ||
+      "";
+    let redirectUrl = rawRedirectUrl;
+
+    if (rawRedirectUrl) {
+      try {
+        const parsedRedirect = new URL(rawRedirectUrl);
+        reference =
+          reference ||
+          parsedRedirect.searchParams.get("reference") ||
+          parsedRedirect.searchParams.get("paymentReference") ||
+          parsedRedirect.searchParams.get("transaction_reference") ||
+          "";
+        redirectUrl = parsedRedirect.toString();
+      } catch {
+        // Keep the original value and fall back to the default callback below.
+      }
+    }
+
+    if (!reference) {
+      res.status(400).send("Transaction reference is required");
+      return;
+    }
+
+    try {
+      const callbackUrl = new URL(redirectUrl || `${req.protocol}://${req.get("host")}/payment-callback`);
+      callbackUrl.searchParams.set("reference", reference);
+      callbackUrl.searchParams.delete("paymentReference");
+      callbackUrl.searchParams.delete("transaction_reference");
+      res.redirect(callbackUrl.toString());
+    } catch {
+      res.redirect(`/payment-callback?reference=${encodeURIComponent(reference)}`);
     }
   });
 
@@ -1196,7 +1241,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
     cors: {
       origin: true,
       credentials: true
-    }
+    },
+    transports: ['polling', 'websocket'],
+    allowEIO3: true,
+    path: '/socket.io'
   });
 
   io.on('connection', (socket) => {
