@@ -8,6 +8,7 @@ import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { useToast } from "@/components/ui/use-toast";
 import { KycModal } from "./KycModal";
+import { AudioUtils } from "@/lib/audio-utils";
 import {
   Sidebar,
   SidebarContent,
@@ -43,6 +44,25 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   
   const [showSubscriptionAlert, setShowSubscriptionAlert] = useState(false);
   const [alertType, setAlertType] = useState<'expired' | 'trial_ended'>('expired');
+  const [audioContextInitialized, setAudioContextInitialized] = useState(false);
+
+  // Initialize AudioContext on first user interaction
+  useEffect(() => {
+    const initializeAudio = async () => {
+      if (!audioContextInitialized) {
+        await AudioUtils.initAudioContext();
+        setAudioContextInitialized(true);
+      }
+    };
+
+    document.addEventListener('click', initializeAudio, { once: true });
+    document.addEventListener('keydown', initializeAudio, { once: true });
+
+    return () => {
+      document.removeEventListener('click', initializeAudio);
+      document.removeEventListener('keydown', initializeAudio);
+    };
+  }, [audioContextInitialized]);
 
   // KYC State
   const [showKycModal, setShowKycModal] = useState(false);

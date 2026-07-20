@@ -34,6 +34,8 @@ import Meetings from "./pages/Meetings";
 import Chat from "./pages/Chat";
 import Calls from "./pages/Calls";
 import Recordings from "./pages/Recordings";
+import JoinMeeting from "./pages/JoinMeeting";
+import JoinCall from "./pages/JoinCall";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -155,6 +157,14 @@ const App = () => (
             <Route
               path="/meetings"
               element={<TokenProtectedRoute element={<Meetings />} />}
+            />
+            <Route
+              path="/meetings/:meetingCode"
+              element={<TokenProtectedRoute element={<JoinMeeting />} />}
+            />
+            <Route
+              path="/calls/:callCode"
+              element={<TokenProtectedRoute element={<JoinCall />} />}
             />
             <Route
               path="/chat"

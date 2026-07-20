@@ -948,3 +948,16 @@ export interface GetNotificationsQuery {
 export interface TakeNotificationActionInput {
   action: string;
 }
+
+// Add Participants
+export interface AddParticipantsInput {
+  participantIds: string[];
+}
+
+export interface AddParticipantsResponse {
+  success: boolean;
+  message: string;
+  data: {
+    added: string[];
+  };
+}

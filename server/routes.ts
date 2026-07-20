@@ -1093,9 +1093,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
         }
       }
 
-      res.json({ success: true, data: call });
+      res.json({ 
+        success: true, 
+        message: `${participantIds.length} participant(s) added`,
+        data: { added: participantIds }
+      });
     } catch (err) {
       res.status(500).json({ error: "Failed to add call participants" });
+    }
+  });
+
+  app.post("/api/meetings/:id/participants", async (req, res) => {
+    try {
+      const { participantIds = [] } = req.body;
+      if (!Array.isArray(participantIds) || participantIds.length === 0) {
+        return res.status(400).json({ success: false, error: "participantIds is required" });
+      }
+
+      const meeting = await storage.addMeetingParticipants(req.params.id, participantIds);
+      if (!meeting) {
+        return res.status(404).json({ success: false, error: "Meeting not found" });
+      }
+
+      const io = (global as any).io;
+      const businessId = getBusinessId(req);
+      if (io) {
+        io.to(businessId).emit('meeting:updated', meeting);
+      }
+
+      res.json({ 
+        success: true, 
+        message: `${participantIds.length} participant(s) added`,
+        data: { added: participantIds }
+      });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to add meeting participants" });
     }
   });
 
