@@ -117,6 +117,7 @@ export interface IStorage {
   admitWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean>;
   denyWaitingRoomParticipant(meetingId: string, userId: string): Promise<boolean>;
   getWaitingRoomParticipants(meetingId: string): Promise<Array<{ id: string; name: string }>>;
+  addMeetingParticipants(meetingId: string, participantIds: string[]): Promise<Meeting | undefined>;
 
   // 10. Chat
   getConversations(userId: string): Promise<Conversation[]>;
@@ -1394,6 +1395,31 @@ export class MemStorage implements IStorage {
       }
     }
     return false;
+  }
+
+  async addMeetingParticipants(meetingId: string, participantIds: string[]): Promise<Meeting | undefined> {
+    for (const [businessId, meetings] of this.meetings.entries()) {
+      const index = meetings.findIndex(m => m.id === meetingId);
+      if (index !== -1) {
+        const now = new Date().toISOString();
+        const updatedMeeting = { ...meetings[index], updatedAt: now };
+        const existingIds = new Set(updatedMeeting.attendees.map(attendee => attendee.userId));
+
+        const newAttendees = Array.from(new Set(participantIds))
+          .filter(userId => !existingIds.has(userId))
+          .map(userId => ({
+            id: `attendee_${Date.now()}_${Math.random().toString(36).slice(2)}`,
+            userId,
+            status: 'invited' as const,
+          }));
+
+        updatedMeeting.attendees = [...updatedMeeting.attendees, ...newAttendees];
+        meetings[index] = updatedMeeting;
+        this.meetings.set(businessId, meetings);
+        return updatedMeeting;
+      }
+    }
+    return undefined;
   }
 
   // --- Chat Methods ---

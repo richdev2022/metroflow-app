@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import Layout from "@/components/layout";
 import VideoCallRoom from "@/components/VideoCallRoom";
 import {
@@ -50,6 +50,7 @@ import {
   Check,
   Trash2,
   Copy,
+  PhoneOff,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -60,6 +61,7 @@ import {
   useLeaveCall,
   useDeleteCall,
 } from "@/lib/meetings-chat-calls";
+import { AudioUtils } from "@/lib/audio-utils";
 import { Call, CreateCallInput, UpdateCallInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
@@ -76,9 +78,58 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { useSocket } from "@/hooks/useSocket";
+import { ScrollArea } from "@/components/ui/scroll-area";
 
+// ==========================================
+// Constants
+// ==========================================
+const CURRENT_USER_ID = () => localStorage.getItem("userId") || "";
+const CURRENT_USER_NAME = () => localStorage.getItem("userName") || "User";
+
+const INITIAL_CALL_FORM: CreateCallInput = {
+  type: "video",
+  isGroupCall: false,
+  maxParticipants: 10,
+  waitingRoomEnabled: false,
+  recordingEnabled: false,
+  participantIds: [],
+};
+
+// ==========================================
+// Status Helpers
+// ==========================================
+const getStatusVariant = (status: string) => {
+  switch (status) {
+    case "ongoing":
+      return "default" as const;
+    case "ringing":
+      return "secondary" as const;
+    case "completed":
+      return "outline" as const;
+    case "missed":
+      return "destructive" as const;
+    case "cancelled":
+      return "outline" as const;
+    default:
+      return "outline" as const;
+  }
+};
+
+const isCallActive = (status: string) => status === "ringing" || status === "ongoing";
+
+// ==========================================
+// Main Component
+// ==========================================
 export default function Calls() {
-  const { data: callsData, isLoading: callsLoading, error: callsError } = useCalls();
+  // ==========================================
+  // Query Hooks
+  // ==========================================
+  const {
+    data: callsData,
+    isLoading: callsLoading,
+    error: callsError,
+  } = useCalls();
   const createCall = useCreateCall();
   const updateCall = useUpdateCall();
   const joinCall = useJoinCall();
@@ -86,79 +137,195 @@ export default function Calls() {
   const deleteCall = useDeleteCall();
   const { toast } = useToast();
 
+  // ==========================================
+  // Socket
+  // ==========================================
+  const { socket, isConnected, on, off } = useSocket({
+    userId: CURRENT_USER_ID(),
+    businessId: localStorage.getItem("businessId") || "",
+  });
+
+  // ==========================================
+  // State
+  // ==========================================
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+
+  // Dialog visibility
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
   const [isJoinDialogOpen, setIsJoinDialogOpen] = useState(false);
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
+
+  // Selected/active call
   const [selectedCall, setSelectedCall] = useState<Call | null>(null);
+  const [callToDelete, setCallToDelete] = useState<Call | null>(null);
+
+  // Password flow
   const [passwordCall, setPasswordCall] = useState<Call | null>(null);
   const [joinPassword, setJoinPassword] = useState("");
   const [joinPasswordError, setJoinPasswordError] = useState("");
+
+  // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
-  const [callForm, setCallForm] = useState<CreateCallInput>({
-    type: "video",
-    isGroupCall: false,
-    maxParticipants: 10,
-    waitingRoomEnabled: false,
-    recordingEnabled: false,
-    participantIds: [],
-  });
+
+  // Create call form
+  const [callForm, setCallForm] = useState<CreateCallInput>({ ...INITIAL_CALL_FORM });
+
+  // Incoming call
+  const [incomingCall, setIncomingCall] = useState<any>(null);
+  const ringtoneRef = useRef<(() => void) | null>(null);
+
+  // ==========================================
+  // Computed Values
+  // ==========================================
+  const calls = (callsData?.calls || []) as Call[];
+
+  // ==========================================
+  // Callbacks & Helpers
+  // ==========================================
+  const isCurrentUserHost = useCallback((call: Call) => {
+    const currentUserId = CURRENT_USER_ID();
+    return call.hostId === currentUserId || call.createdById === currentUserId;
+  }, []);
+
+  const isCurrentUserJoined = useCallback((call: Call) => {
+    const currentUserId = CURRENT_USER_ID();
+    return call.participants?.some(
+      (participant) => participant.userId === currentUserId && participant.status === "joined"
+    ) ?? false;
+  }, []);
+
+  const getParticipantName = useCallback(
+    (userId?: string) => {
+      if (!userId) return "Unknown";
+      return teamMembers.find((m) => m.id === userId)?.name || userId;
+    },
+    [teamMembers]
+  );
+
+  const formatDateTime = (dateStr: string) => {
+    return new Date(dateStr).toLocaleString();
+  };
+
+  const stopRingtone = useCallback(() => {
+    if (ringtoneRef.current) {
+      ringtoneRef.current();
+      ringtoneRef.current = null;
+    }
+  }, []);
+
+  // ==========================================
+  // Data Fetching
+  // ==========================================
+  const fetchTeamMembers = useCallback(async () => {
+    try {
+      const res = await api.get("/team");
+      setTeamMembers(unwrapApiData<TeamMember[]>(res.data, "Failed to fetch team members"));
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: getApiMessage(err, "Failed to fetch team members"),
+      });
+    }
+  }, [toast]);
 
   useEffect(() => {
     fetchTeamMembers();
-  }, []);
+  }, [fetchTeamMembers]);
 
+  // ==========================================
+  // Error Handling
+  // ==========================================
   useEffect(() => {
     if (callsError) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: getApiMessage(callsError, "Failed to get calls"),
+        description: getApiMessage(callsError, "Failed to load calls"),
       });
     }
   }, [callsError, toast]);
 
-  const fetchTeamMembers = async () => {
-    api
-      .get("/team")
-      .then((res) => {
-        setTeamMembers(unwrapApiData<TeamMember[]>(res.data, "Failed to fetch team members"));
-      })
-      .catch((err) => {
-        toast({
-          variant: "destructive",
-          title: "Error",
-          description: getApiMessage(err, "Failed to fetch team members"),
-        });
-      });
-  };
+  // ==========================================
+  // Incoming Call Handling
+  // ==========================================
+  const handleIncomingCall = useCallback((callData: any) => {
+    setIncomingCall(callData);
+    AudioUtils.playRingtone().then((stopFn) => {
+      ringtoneRef.current = stopFn;
+    });
+  }, []);
 
-  const handleCreateCall = async () => {
-    if (callForm.participantIds.length === 0) {
+  const handleAcceptIncomingCall = useCallback(async () => {
+    if (!incomingCall) return;
+    stopRingtone();
+
+    try {
+      const call = await api.get(`/api/calls/${incomingCall.callId}`);
+      const parsedCall = unwrapApiData<Call>(call.data, "Failed to get call");
+      setSelectedCall(parsedCall);
+      setIncomingCall(null);
+
+      // If already joined, open room directly; otherwise prompt join
+      if (isCurrentUserJoined(parsedCall) || isCurrentUserHost(parsedCall)) {
+        setIsJoinDialogOpen(true);
+      } else {
+        handleJoinCall(parsedCall);
+      }
+    } catch (err) {
       toast({
         variant: "destructive",
         title: "Error",
+        description: getApiMessage(err, "Failed to accept incoming call"),
+      });
+    }
+  }, [incomingCall, stopRingtone, isCurrentUserJoined, isCurrentUserHost, toast]);
+
+  const handleRejectIncomingCall = useCallback(() => {
+    stopRingtone();
+    setIncomingCall(null);
+  }, [stopRingtone]);
+
+  useEffect(() => {
+    if (!isConnected || !socket) return;
+
+    on("call:incoming", handleIncomingCall);
+
+    return () => {
+      off("call:incoming", handleIncomingCall);
+      stopRingtone();
+    };
+  }, [isConnected, socket, on, off, handleIncomingCall, stopRingtone]);
+
+  // ==========================================
+  // Call Actions
+  // ==========================================
+  const resetCallForm = useCallback(() => {
+    setCallForm({ ...INITIAL_CALL_FORM });
+  }, []);
+
+  const handleCreateCall = useCallback(async () => {
+    if (callForm.participantIds.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "Validation Error",
         description: "Please select at least one participant",
       });
       return;
     }
+
     setIsProcessing(true);
     try {
-      const call = await createCall.mutateAsync(callForm);
+      const createdCall = await createCall.mutateAsync(callForm);
       setIsCreateDialogOpen(false);
-      setCallForm({
-        type: "video",
-        isGroupCall: false,
-        maxParticipants: 10,
-        waitingRoomEnabled: false,
-        recordingEnabled: false,
-        participantIds: [],
-      });
+      resetCallForm();
       toast({
-        title: "Call created",
-        description: "Your call has been initiated",
+        title: "Call Created",
+        description: "Your call has been initiated successfully",
       });
-      setSelectedCall(call);
+
+      // Open the call room immediately after creation
+      setSelectedCall(createdCall);
       setIsJoinDialogOpen(true);
     } catch (err) {
       toast({
@@ -169,132 +336,134 @@ export default function Calls() {
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [callForm, createCall, resetCallForm, toast]);
 
-  const isCurrentUserHost = (call: Call) => {
-    const currentUserId = getCurrentUserId();
-    return call.hostId === currentUserId || call.createdById === currentUserId;
-  };
-
-  const isCurrentUserJoined = (call: Call) => {
-    const currentUserId = getCurrentUserId();
-    return call.participants.some(
-      (participant) => participant.userId === currentUserId && participant.status === "joined",
-    );
-  };
-
-  const promptForCallPassword = (call: Call, message = "") => {
+  const promptForCallPassword = useCallback((call: Call, message = "") => {
     setPasswordCall(call);
     setJoinPassword("");
     setJoinPasswordError(message);
-  };
+  }, []);
 
-  const handleJoinCall = async (call: Call, password?: string) => {
-    if (call.password && !isCurrentUserHost(call) && !password) {
-      promptForCallPassword(call);
-      return;
-    }
-
-    setIsProcessing(true);
-    try {
-      const joinedCall = await joinCall.mutateAsync({ callId: call.id, password });
-      setSelectedCall(joinedCall);
-      setIsJoinDialogOpen(true);
-      setPasswordCall(null);
-      setJoinPassword("");
-      setJoinPasswordError("");
-      toast({
-        title: "Joined call",
-        description: "You have joined the call",
-      });
-    } catch (err) {
-      const code = (err as any)?.response?.data?.code;
-      if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
-        promptForCallPassword(
-          call,
-          code === "INVALID_PASSWORD" ? "Invalid password. Please try again." : "",
-        );
+  const handleJoinCall = useCallback(
+    async (call: Call, password?: string) => {
+      // Check if password is required
+      if (call.password && !isCurrentUserHost(call) && !password) {
+        promptForCallPassword(call);
         return;
       }
 
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: getApiMessage(err, "Failed to join call"),
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
+      setIsProcessing(true);
+      try {
+        const joinedCall = await joinCall.mutateAsync({
+          callId: call.id,
+          password,
+        });
 
-  const openDetailDialog = (call: Call) => {
-    setSelectedCall(call);
-    setIsDetailDialogOpen(true);
-  };
+        setSelectedCall(joinedCall);
+        setIsJoinDialogOpen(true);
+        setPasswordCall(null);
+        setJoinPassword("");
+        setJoinPasswordError("");
 
-  const handleOpenCallRoom = (call: Call) => {
-    if (!isCurrentUserHost(call) && !isCurrentUserJoined(call)) {
-      handleJoinCall(call);
-      return;
-    }
+        toast({
+          title: "Joined Call",
+          description: "You have joined the call",
+        });
+      } catch (err) {
+        const code = (err as any)?.response?.data?.code;
+        if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
+          promptForCallPassword(
+            call,
+            code === "INVALID_PASSWORD" ? "Invalid password. Please try again." : ""
+          );
+          return;
+        }
 
-    setSelectedCall(call);
-    setIsJoinDialogOpen(true);
-  };
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: getApiMessage(err, "Failed to join call"),
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [joinCall, isCurrentUserHost, promptForCallPassword, toast]
+  );
 
-  const handleLeaveCall = async (call: Call) => {
+  const handleOpenCallRoom = useCallback(
+    (call: Call) => {
+      if (!isCurrentUserHost(call) && !isCurrentUserJoined(call)) {
+        handleJoinCall(call);
+        return;
+      }
+      setSelectedCall(call);
+      setIsJoinDialogOpen(true);
+    },
+    [isCurrentUserHost, isCurrentUserJoined, handleJoinCall]
+  );
+
+  const handleLeaveCall = useCallback(
+    async (call: Call) => {
+      setIsProcessing(true);
+      try {
+        const updatedCall = await leaveCall.mutateAsync(call.id);
+        setSelectedCall(updatedCall);
+        setIsJoinDialogOpen(false);
+        toast({
+          title: "Left Call",
+          description: "You have left the call",
+        });
+      } catch (err) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: getApiMessage(err, "Failed to leave call"),
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [leaveCall, toast]
+  );
+
+  const handleEndCall = useCallback(
+    async (call: Call) => {
+      setIsProcessing(true);
+      try {
+        const updatedCall = await updateCall.mutateAsync({
+          callId: call.id,
+          data: { status: "completed" },
+        });
+        setSelectedCall(updatedCall);
+        setIsJoinDialogOpen(false);
+        toast({
+          title: "Call Ended",
+          description: "The call has been completed",
+        });
+      } catch (err) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: getApiMessage(err, "Failed to end call"),
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [updateCall, toast]
+  );
+
+  const handleDeleteCallConfirm = useCallback(async () => {
+    if (!callToDelete) return;
     setIsProcessing(true);
     try {
-      const updatedCall = await leaveCall.mutateAsync(call.id);
-      setSelectedCall(updatedCall);
-      setIsJoinDialogOpen(false);
+      await deleteCall.mutateAsync(callToDelete.id);
       toast({
-        title: "Left call",
-        description: "You have left the call",
+        title: "Call Deleted",
+        description: "The call has been deleted successfully",
       });
-    } catch (err) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: getApiMessage(err, "Failed to leave call"),
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleEndCall = async (call: Call) => {
-    setIsProcessing(true);
-    try {
-      const updatedCall = await updateCall.mutateAsync({
-        callId: call.id,
-        data: { status: "completed" },
-      });
-      setSelectedCall(updatedCall);
-      setIsJoinDialogOpen(false);
-      toast({
-        title: "Call ended",
-        description: "The call has been completed",
-      });
-    } catch (err) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: getApiMessage(err, "Failed to end call"),
-      });
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const handleDeleteCall = async (call: Call) => {
-    setIsProcessing(true);
-    try {
-      await deleteCall.mutateAsync(call.id);
-      toast({
-        title: "Call deleted",
-        description: "The call has been deleted",
-      });
+      setCallToDelete(null);
     } catch (err) {
       toast({
         variant: "destructive",
@@ -304,72 +473,45 @@ export default function Calls() {
     } finally {
       setIsProcessing(false);
     }
-  };
+  }, [callToDelete, deleteCall, toast]);
 
-  const handleParticipantsAdded = (participantIds: string[]) => {
-    if (!selectedCall) return;
+  // ==========================================
+  // Participant Added Handler (from VideoCallRoom)
+  // ==========================================
+  const handleParticipantsAdded = useCallback(
+    (participantIds: string[]) => {
+      if (!selectedCall) return;
 
-    const existingIds = new Set(selectedCall.participants.map(participant => participant.userId));
-    const now = new Date().toISOString();
-    setSelectedCall({
-      ...selectedCall,
-      updatedAt: now,
-      participants: [
-        ...selectedCall.participants,
-        ...participantIds
-          .filter(userId => !existingIds.has(userId))
-          .map(userId => ({
-            id: `pending_${userId}`,
-            userId,
-            status: 'invited' as const,
-          })),
-      ],
-    });
-  };
+      setSelectedCall((prev) => {
+        if (!prev) return prev;
 
-  const getCurrentUserId = () => {
-    return localStorage.getItem("userId") || "";
-  };
+        const existingIds = new Set(
+          (prev.participants || []).map((p) => p.userId)
+        );
+        const now = new Date().toISOString();
 
-  const getParticipantUserId = (participant: Call['participants'][number]) => {
-    return participant.userId || "";
-  };
+        return {
+          ...prev,
+          updatedAt: now,
+          participants: [
+            ...(prev.participants || []),
+            ...participantIds
+              .filter((userId) => !existingIds.has(userId))
+              .map((userId) => ({
+                id: `pending_${userId}_${Date.now()}`,
+                userId,
+                status: "invited" as const,
+              })),
+          ],
+        };
+      });
+    },
+    [selectedCall]
+  );
 
-  const getParticipantName = (userId?: string) => {
-    if (!userId) return "Unknown";
-    return teamMembers.find((m) => m.id === userId)?.name || userId;
-  };
-
-  const getCallRoomId = (call: Call) => {
-    return call.callCode || "";
-  };
-
-  const getCallCreatedAt = (call: Call) => {
-    return call.createdAt || new Date().toISOString();
-  };
-
-  const formatDateTime = (dateStr: string) => {
-    const date = new Date(dateStr);
-    return date.toLocaleString();
-  };
-
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "ongoing":
-        return "default";
-      case "ringing":
-        return "secondary";
-      case "completed":
-        return "outline";
-      case "missed":
-        return "destructive";
-      case "cancelled":
-        return "outline";
-      default:
-        return "outline";
-    }
-  };
-
+  // ==========================================
+  // Team Member Multi-Select Component
+  // ==========================================
   const TeamMemberMultiSelect = ({
     selected,
     onChange,
@@ -380,6 +522,7 @@ export default function Calls() {
     placeholder?: string;
   }) => {
     const [open, setOpen] = useState(false);
+
     return (
       <Popover open={open} onOpenChange={setOpen}>
         <PopoverTrigger asChild>
@@ -387,7 +530,7 @@ export default function Calls() {
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="w-full justify-between"
+            className="w-full justify-between min-h-[40px] h-auto"
           >
             <div className="flex flex-wrap gap-1">
               {selected.length === 0 ? (
@@ -397,10 +540,10 @@ export default function Calls() {
                   const member = teamMembers.find((d) => d.id === id);
                   return (
                     <Badge key={id} variant="secondary" className="text-xs">
-                      {member?.name}
+                      {member?.name || id}
                       <button
                         type="button"
-                        aria-label={`Remove ${member?.name || 'participant'}`}
+                        aria-label={`Remove ${member?.name || "participant"}`}
                         className="ml-1 ring-offset-background rounded-full outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2"
                         onClick={(e) => {
                           e.stopPropagation();
@@ -417,7 +560,7 @@ export default function Calls() {
             <Check className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-full p-0">
+        <PopoverContent className="w-full p-0" align="start">
           <Command>
             <CommandInput placeholder="Search participants..." />
             <CommandList>
@@ -426,6 +569,7 @@ export default function Calls() {
                 {teamMembers.map((member) => (
                   <CommandItem
                     key={member.id}
+                    value={member.name}
                     onSelect={() => {
                       const newSelected = selected.includes(member.id)
                         ? selected.filter((s) => s !== member.id)
@@ -435,7 +579,9 @@ export default function Calls() {
                   >
                     <Check
                       className={`mr-2 h-4 w-4 ${
-                        selected.includes(member.id) ? "opacity-100" : "opacity-0"
+                        selected.includes(member.id)
+                          ? "opacity-100"
+                          : "opacity-0"
                       }`}
                     />
                     {member.name}
@@ -449,11 +595,133 @@ export default function Calls() {
     );
   };
 
-  const calls = (callsData?.calls || []) as Call[];
+  // ==========================================
+  // Render: Call Card
+  // ==========================================
+  const renderCallCard = (call: Call) => {
+    const isHost = isCurrentUserHost(call);
+    const isJoined = isCurrentUserJoined(call);
+    const active = isCallActive(call.status);
+    const participants = call.participants || [];
 
+    return (
+      <Card key={call.id} className="flex flex-col">
+        <CardHeader>
+          <div className="flex justify-between items-start">
+            <div className="min-w-0 flex-1">
+              <CardTitle className="text-xl flex items-center gap-2">
+                {call.type === "video" ? (
+                  <Video className="h-5 w-5 shrink-0" />
+                ) : (
+                  <Phone className="h-5 w-5 shrink-0" />
+                )}
+                <span className="truncate">
+                  {call.type === "video" ? "Video" : "Audio"} Call
+                </span>
+              </CardTitle>
+              <CardDescription>
+                {participants.length} participant{participants.length !== 1 ? "s" : ""}
+              </CardDescription>
+            </div>
+            <Badge variant={getStatusVariant(call.status)} className="shrink-0">
+              {call.status}
+            </Badge>
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Calendar className="h-4 w-4 shrink-0" />
+            <span className="truncate">{formatDateTime(call.createdAt || new Date().toISOString())}</span>
+          </div>
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <Users className="h-4 w-4 shrink-0" />
+            <span className="truncate">
+              {participants
+                .map((p) => getParticipantName(p.userId))
+                .join(", ")}
+            </span>
+          </div>
+
+          <div className="mt-auto space-y-2">
+            <Button
+              variant="outline"
+              size="sm"
+              className="w-full"
+              onClick={() => {
+                setSelectedCall(call);
+                setIsDetailDialogOpen(true);
+              }}
+            >
+              View Details
+            </Button>
+
+            <div className="flex gap-2">
+              {active && (
+                <>
+                  <Button
+                    size="sm"
+                    className="flex-1"
+                    onClick={() => handleOpenCallRoom(call)}
+                    disabled={isProcessing}
+                  >
+                    {call.type === "video" ? (
+                      <Video className="h-4 w-4 mr-2" />
+                    ) : (
+                      <Phone className="h-4 w-4 mr-2" />
+                    )}
+                    {isJoined || isHost ? "Open Room" : "Join"}
+                  </Button>
+
+                  {isJoined && (
+                    <Button
+                      variant="destructive"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleLeaveCall(call)}
+                      disabled={isProcessing}
+                    >
+                      <Phone className="h-4 w-4 mr-2 rotate-135" />
+                      Leave
+                    </Button>
+                  )}
+
+                  {isHost && (
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="flex-1"
+                      onClick={() => handleEndCall(call)}
+                      disabled={isProcessing}
+                    >
+                      End Call
+                    </Button>
+                  )}
+                </>
+              )}
+
+              <Button
+                variant="destructive"
+                size="sm"
+                onClick={() => setCallToDelete(call)}
+                disabled={isProcessing}
+                title="Delete call"
+              >
+                <Trash2 className="h-4 w-4" />
+              </Button>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  };
+
+  // ==========================================
+  // Render
+  // ==========================================
   return (
     <Layout>
       <div className="space-y-8">
+        {/* Page Header */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
           <div>
             <h1 className="text-3xl md:text-4xl font-bold">Calls</h1>
@@ -461,30 +729,37 @@ export default function Calls() {
               Manage your video and audio calls
             </p>
           </div>
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+
+          {/* Create Call Dialog Trigger */}
+          <Dialog
+            open={isCreateDialogOpen}
+            onOpenChange={setIsCreateDialogOpen}
+          >
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-2" />
                 New Call
               </Button>
             </DialogTrigger>
-            <DialogContent>
-              <DialogHeader>
+            <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+              <DialogHeader className="shrink-0 pr-8">
                 <DialogTitle>Start New Call</DialogTitle>
                 <DialogDescription>
                   Initiate a video or audio call with team members
                 </DialogDescription>
               </DialogHeader>
-              <div className="space-y-4 py-4">
+
+              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
+                {/* Call Type */}
                 <div className="grid gap-2">
-                  <Label htmlFor="type">Call Type</Label>
+                  <Label htmlFor="call-type">Call Type</Label>
                   <Select
                     value={callForm.type}
                     onValueChange={(value) =>
-                      setCallForm({ ...callForm, type: value as any })
+                      setCallForm({ ...callForm, type: value as "audio" | "video" })
                     }
                   >
-                    <SelectTrigger>
+                    <SelectTrigger id="call-type">
                       <SelectValue />
                     </SelectTrigger>
                     <SelectContent>
@@ -503,49 +778,56 @@ export default function Calls() {
                     </SelectContent>
                   </Select>
                 </div>
+
+                {/* Password */}
                 <div className="grid gap-2">
-                  <Label htmlFor="password">Password (Optional)</Label>
+                  <Label htmlFor="call-password">Password (Optional)</Label>
                   <Input
-                    id="password"
+                    id="call-password"
                     type="password"
                     value={callForm.password || ""}
                     onChange={(e) =>
-                      setCallForm({
-                        ...callForm,
-                        password: e.target.value,
-                      })
+                      setCallForm({ ...callForm, password: e.target.value })
                     }
                     placeholder="Enter call password"
                   />
                 </div>
+
+                {/* Feature Toggles */}
                 <div className="grid gap-4">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
+                    <Label
+                      htmlFor="call-waiting-room"
+                      className="cursor-pointer"
+                    >
+                      Waiting Room
+                    </Label>
                     <Switch
-                      id="waitingRoomEnabled"
+                      id="call-waiting-room"
                       checked={callForm.waitingRoomEnabled}
                       onCheckedChange={(checked) =>
-                        setCallForm({
-                          ...callForm,
-                          waitingRoomEnabled: checked,
-                        })
+                        setCallForm({ ...callForm, waitingRoomEnabled: checked })
                       }
                     />
                   </div>
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
+                    <Label
+                      htmlFor="call-recording"
+                      className="cursor-pointer"
+                    >
+                      Recording
+                    </Label>
                     <Switch
-                      id="recordingEnabled"
+                      id="call-recording"
                       checked={callForm.recordingEnabled}
                       onCheckedChange={(checked) =>
-                        setCallForm({
-                          ...callForm,
-                          recordingEnabled: checked,
-                        })
+                        setCallForm({ ...callForm, recordingEnabled: checked })
                       }
                     />
                   </div>
                 </div>
+
+                {/* Participants */}
                 <div className="grid gap-2">
                   <Label>Participants</Label>
                   <TeamMemberMultiSelect
@@ -556,7 +838,8 @@ export default function Calls() {
                   />
                 </div>
               </div>
-              <DialogFooter>
+
+              <DialogFooter className="shrink-0">
                 <Button
                   variant="outline"
                   onClick={() => setIsCreateDialogOpen(false)}
@@ -564,7 +847,10 @@ export default function Calls() {
                 >
                   Cancel
                 </Button>
-                <Button onClick={handleCreateCall} disabled={isProcessing}>
+                <Button
+                  onClick={handleCreateCall}
+                  disabled={isProcessing || callForm.participantIds.length === 0}
+                >
                   {isProcessing ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   ) : callForm.type === "video" ? (
@@ -579,6 +865,7 @@ export default function Calls() {
           </Dialog>
         </div>
 
+        {/* Calls Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {callsLoading ? (
             <Card className="col-span-full">
@@ -588,240 +875,207 @@ export default function Calls() {
             </Card>
           ) : calls.length === 0 ? (
             <Card className="col-span-full">
-              <CardContent className="pt-6 text-center">
+              <CardContent className="pt-6 text-center py-12">
                 <Video className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground">No calls yet</p>
+                <p className="text-muted-foreground text-lg">No calls yet</p>
                 <p className="text-sm text-muted-foreground mt-1">
                   Start your first call to get started
                 </p>
               </CardContent>
             </Card>
           ) : (
-            calls.map((call) => (
-              <Card key={call.id}>
-                <CardHeader>
-                  <div className="flex justify-between items-start">
-                    <div>
-                      <CardTitle className="text-xl flex items-center gap-2">
-                        {call.type === "video" ? (
-                          <Video className="h-5 w-5" />
-                        ) : (
-                          <Phone className="h-5 w-5" />
-                        )}
-                        {call.type === "video" ? "Video" : "Audio"} Call
-                      </CardTitle>
-                      <CardDescription>
-                        {call.participants.length} participants
-                      </CardDescription>
-                    </div>
-                    <Badge variant={getStatusColor(call.status)}>
-                      {call.status}
-                    </Badge>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Calendar className="h-4 w-4" />
-                    {formatDateTime(getCallCreatedAt(call))}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    {call.participants
-                      .map((p) => getParticipantName(getParticipantUserId(p)))
-                      .join(", ")}
-                  </div>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    className="w-full"
-                    onClick={() => openDetailDialog(call)}
-                  >
-                    View Details
-                  </Button>
-                  <div className="flex gap-2">
-                    {call.status === "ringing" || call.status === "ongoing" ? (
-                      <>
-                        <Button
-                          size="sm"
-                          className="flex-1"
-                          onClick={() => handleOpenCallRoom(call)}
-                          disabled={isProcessing}
-                        >
-                          {call.type === "video" ? (
-                            <Video className="h-4 w-4 mr-2" />
-                          ) : (
-                            <Phone className="h-4 w-4 mr-2" />
-                          )}
-                          {isCurrentUserJoined(call) || isCurrentUserHost(call) ? "Open Call Room" : "Join Call"}
-                        </Button>
-                        {isCurrentUserJoined(call) ? (
-                          <Button
-                            variant="destructive"
-                            size="sm"
-                            className="flex-1"
-                            onClick={() => handleLeaveCall(call)}
-                            disabled={isProcessing}
-                          >
-                            <Phone className="h-4 w-4 mr-2 rotate-135" />
-                            Leave
-                          </Button>
-                        ) : null}
-                        {isCurrentUserHost(call) ? (
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            className="flex-1"
-                            onClick={() => handleEndCall(call)}
-                            disabled={isProcessing}
-                          >
-                            End Call
-                          </Button>
-                        ) : null}
-                      </>
-                    ) : null}
-                  </div>
-                </CardContent>
-              </Card>
-            ))
+            calls.map(renderCallCard)
           )}
         </div>
       </div>
 
+      {/* ==========================================
+          Dialog: Call Details
+          ========================================== */}
       {selectedCall && (
-        <Dialog open={isDetailDialogOpen} onOpenChange={setIsDetailDialogOpen}>
-          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-            <DialogHeader>
+        <Dialog
+          open={isDetailDialogOpen}
+          onOpenChange={setIsDetailDialogOpen}
+        >
+          <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+            <DialogHeader className="shrink-0">
               <DialogTitle className="text-2xl">
                 {selectedCall.type === "video" ? "Video" : "Audio"} Call Details
               </DialogTitle>
               <DialogDescription>
-                {selectedCall.participants.length} participants
+                {(selectedCall.participants || []).length} participant
+                {(selectedCall.participants || []).length !== 1 ? "s" : ""}
               </DialogDescription>
             </DialogHeader>
-            <div className="space-y-4 py-4">
-              <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Call Code</div>
-                <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-lg font-mono">
-                    {selectedCall.callCode}
-                  </Badge>
-                  <Button
-                    variant="outline"
-                    size="icon"
-                    onClick={() => {
-                      navigator.clipboard.writeText(selectedCall.callCode);
-                      toast({
-                        title: "Copied!",
-                        description: "Call code copied to clipboard",
-                      });
-                    }}
-                  >
-                    <Copy className="h-4 w-4" />
-                  </Button>
-                </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Status</div>
-                <Badge variant="default" className="capitalize">
-                  {selectedCall.status}
-                </Badge>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4">
+            <ScrollArea className="flex-1">
+              <div className="space-y-4 py-4 pr-4">
+                {/* Call Code */}
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Type</div>
-                  <div className="capitalize">
-                    {selectedCall.type === "video" ? "Video Call" : "Audio Call"}
+                  <div className="text-sm text-muted-foreground">Call Code</div>
+                  <div className="flex items-center gap-2">
+                    <Badge
+                      variant="secondary"
+                      className="text-lg font-mono"
+                    >
+                      {selectedCall.callCode}
+                    </Badge>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className="h-9 w-9"
+                      onClick={() => {
+                        navigator.clipboard.writeText(selectedCall.callCode);
+                        toast({
+                          title: "Copied!",
+                          description: "Call code copied to clipboard",
+                        });
+                      }}
+                    >
+                      <Copy className="h-4 w-4" />
+                    </Button>
                   </div>
                 </div>
+
+                {/* Status */}
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Participants</div>
-                  <div>{selectedCall.participants.length}</div>
+                  <div className="text-sm text-muted-foreground">Status</div>
+                  <Badge variant="default" className="capitalize">
+                    {selectedCall.status}
+                  </Badge>
                 </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Features</div>
-                <div className="flex flex-wrap gap-2">
-                  {selectedCall.waitingRoomEnabled && (
-                    <Badge variant="outline">Waiting Room</Badge>
-                  )}
-                  {selectedCall.recordingEnabled && (
-                    <Badge variant="outline">Recording</Badge>
-                  )}
-                  {selectedCall.isGroupCall && (
-                    <Badge variant="outline">Group Call</Badge>
-                  )}
+                {/* Type & Participants Count */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <div className="text-sm text-muted-foreground">Type</div>
+                    <div className="capitalize">
+                      {selectedCall.type === "video"
+                        ? "Video Call"
+                        : "Audio Call"}
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <div className="text-sm text-muted-foreground">
+                      Participants
+                    </div>
+                    <div>{(selectedCall.participants || []).length}</div>
+                  </div>
                 </div>
-              </div>
 
-              <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Participants</div>
-                <div className="flex flex-wrap gap-2">
-                  {selectedCall.participants.map((participant) => {
-                    const member = teamMembers.find((m) => m.id === participant.userId);
-                    return (
-                      <Badge key={participant.id} variant="outline">
-                        {member?.name || participant.userId}
-                      </Badge>
-                    );
-                  })}
+                {/* Features */}
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">Features</div>
+                  <div className="flex flex-wrap gap-2">
+                    {selectedCall.waitingRoomEnabled && (
+                      <Badge variant="outline">Waiting Room</Badge>
+                    )}
+                    {selectedCall.recordingEnabled && (
+                      <Badge variant="outline">Recording</Badge>
+                    )}
+                    {selectedCall.isGroupCall && (
+                      <Badge variant="outline">Group Call</Badge>
+                    )}
+                    {selectedCall.password && (
+                      <Badge variant="outline">Password Protected</Badge>
+                    )}
+                  </div>
+                </div>
+
+                {/* Participant List */}
+                <div className="space-y-2">
+                  <div className="text-sm text-muted-foreground">
+                    Participants
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    {(selectedCall.participants || []).map((participant) => {
+                      const member = teamMembers.find(
+                        (m) => m.id === participant.userId
+                      );
+                      return (
+                        <div
+                          key={participant.id}
+                          className="flex items-center gap-1.5"
+                        >
+                          <Badge variant="outline">
+                            {member?.name || participant.userId}
+                          </Badge>
+                          <Badge
+                            variant={
+                              participant.status === "joined"
+                                ? "default"
+                                : "secondary"
+                            }
+                            className="text-xs"
+                          >
+                            {participant.status}
+                          </Badge>
+                        </div>
+                      );
+                    })}
+                  </div>
                 </div>
               </div>
-            </div>
-            <DialogFooter className="gap-2">
+            </ScrollArea>
+
+            <DialogFooter className="shrink-0 gap-2">
               <Button
                 variant="outline"
                 onClick={() => setIsDetailDialogOpen(false)}
               >
                 Close
               </Button>
-              {selectedCall.status === "ringing" || selectedCall.status === "ongoing" ? (
-                <Button onClick={() => {
-                  setIsDetailDialogOpen(false);
-                  handleOpenCallRoom(selectedCall);
-                }}>
+              {isCallActive(selectedCall.status) && (
+                <Button
+                  onClick={() => {
+                    setIsDetailDialogOpen(false);
+                    handleOpenCallRoom(selectedCall);
+                  }}
+                >
                   {selectedCall.type === "video" ? (
                     <Video className="h-4 w-4 mr-2" />
                   ) : (
                     <Phone className="h-4 w-4 mr-2" />
                   )}
-                  {isCurrentUserJoined(selectedCall) || isCurrentUserHost(selectedCall) ? "Open Call Room" : "Join Call"}
+                  {isCurrentUserJoined(selectedCall) || isCurrentUserHost(selectedCall)
+                    ? "Open Room"
+                    : "Join Call"}
                 </Button>
-              ) : null}
+              )}
             </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
 
+      {/* ==========================================
+          Dialog: Call Room (VideoCallRoom)
+          ========================================== */}
       {selectedCall && selectedCall.callCode && (
         <Dialog
           open={isJoinDialogOpen}
           onOpenChange={(open) => {
             if (!open && selectedCall) {
+              // When dialog closes, leave the call
               handleLeaveCall(selectedCall);
               return;
             }
             setIsJoinDialogOpen(open);
           }}
         >
-          <DialogContent className="max-w-7xl h-[90vh] flex flex-col overflow-hidden p-0">
-            <DialogHeader className="p-4 shrink-0">
-              <DialogTitle>{selectedCall.type === "video" ? "Video" : "Audio"} Call</DialogTitle>
-              <DialogDescription>Call Room</DialogDescription>
-            </DialogHeader>
-            <div className="min-h-0 flex-1">
+          <DialogContent className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0">
+            <div className="min-h-0 flex-1 h-full">
               <VideoCallRoom
                 roomId={selectedCall.callCode}
                 callId={selectedCall.id}
                 callType={selectedCall.type}
                 onLeave={() => handleLeaveCall(selectedCall)}
-                userName={localStorage.getItem("userName") || "User"}
+                userName={CURRENT_USER_NAME()}
                 isHost={isCurrentUserHost(selectedCall)}
                 waitingRoomEnabled={selectedCall.waitingRoomEnabled}
                 teamMembers={teamMembers}
-                currentParticipantIds={selectedCall.participants.map(participant => participant.userId)}
+                currentParticipantIds={(
+                  selectedCall.participants || []
+                ).map((participant) => participant.userId)}
                 onParticipantsAdded={handleParticipantsAdded}
               />
             </div>
@@ -829,8 +1083,14 @@ export default function Calls() {
         </Dialog>
       )}
 
+      {/* ==========================================
+          Dialog: Password Entry
+          ========================================== */}
       {passwordCall && (
-        <Dialog open={!!passwordCall} onOpenChange={(open) => !open && setPasswordCall(null)}>
+        <Dialog
+          open={!!passwordCall}
+          onOpenChange={(open) => !open && setPasswordCall(null)}
+        >
           <DialogContent>
             <DialogHeader>
               <DialogTitle>Enter Call Password</DialogTitle>
@@ -871,12 +1131,105 @@ export default function Calls() {
                 onClick={() => handleJoinCall(passwordCall, joinPassword)}
                 disabled={isProcessing || !joinPassword.trim()}
               >
-                {isProcessing && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                {isProcessing && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
                 Join Call
               </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>
+      )}
+
+      {/* ==========================================
+          Dialog: Incoming Call
+          ========================================== */}
+      {incomingCall && (
+        <Dialog
+          open={!!incomingCall}
+          onOpenChange={(open) => !open && handleRejectIncomingCall()}
+        >
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader className="text-center">
+              <DialogTitle className="text-2xl">
+                Incoming{" "}
+                {incomingCall.type === "video" ? "Video" : "Audio"} Call
+              </DialogTitle>
+              <DialogDescription className="text-lg">
+                {teamMembers.find((m) => m.id === incomingCall.from)?.name ||
+                  "Someone"}{" "}
+                is calling...
+              </DialogDescription>
+            </DialogHeader>
+
+            <div className="flex justify-center my-8">
+              <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center animate-pulse">
+                {incomingCall.type === "video" ? (
+                  <Video className="w-12 h-12 text-white" />
+                ) : (
+                  <Phone className="w-12 h-12 text-white" />
+                )}
+              </div>
+            </div>
+
+            <DialogFooter className="flex gap-4 justify-center sm:justify-center">
+              <Button
+                variant="destructive"
+                size="lg"
+                className="w-16 h-16 rounded-full flex items-center justify-center"
+                onClick={handleRejectIncomingCall}
+              >
+                <PhoneOff className="w-8 h-8" />
+              </Button>
+              <Button
+                size="lg"
+                className="w-16 h-16 rounded-full flex items-center justify-center bg-green-600 hover:bg-green-700"
+                onClick={handleAcceptIncomingCall}
+              >
+                {incomingCall.type === "video" ? (
+                  <Video className="w-8 h-8" />
+                ) : (
+                  <Phone className="w-8 h-8" />
+                )}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ==========================================
+          Alert: Delete Confirmation
+          ========================================== */}
+      {callToDelete && (
+        <AlertDialog
+          open={!!callToDelete}
+          onOpenChange={(open) => !open && setCallToDelete(null)}
+        >
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Delete Call</AlertDialogTitle>
+              <AlertDialogDescription>
+                Are you sure you want to delete this call? This action cannot
+                be undone.
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel disabled={isProcessing}>
+                Cancel
+              </AlertDialogCancel>
+              <AlertDialogAction
+                onClick={handleDeleteCallConfirm}
+                disabled={isProcessing}
+                className="bg-red-600 hover:bg-red-700"
+              >
+                {isProcessing ? (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                ) : null}
+                Delete
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       )}
     </Layout>
   );

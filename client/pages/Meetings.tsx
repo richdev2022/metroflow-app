@@ -250,7 +250,7 @@ export default function Meetings() {
       startTime: toDateTimeLocalValue(meeting.startTime),
       endTime: toDateTimeLocalValue(meeting.endTime),
       timezone: meeting.timezone,
-      attendeeIds: meeting.attendees.map((a) => a.userId),
+      attendeeIds: meeting.attendees?.map((a) => a.userId) ?? [],
       status: meeting.status,
     });
     setIsEditDialogOpen(true);
@@ -371,7 +371,11 @@ export default function Meetings() {
     );
   }
 
-  const meetings = meetingsData?.meetings || [];
+  // FIX: Normalize null attendees to [] so .length and .map() never throw
+  const meetings = (meetingsData?.meetings || []).map((m: Meeting) => ({
+    ...m,
+    attendees: m.attendees ?? [],
+  }));
 
   return (
     <Layout>
@@ -904,7 +908,7 @@ export default function Meetings() {
               <div className="space-y-2">
                 <div className="text-sm text-muted-foreground">Attendees</div>
                 <div className="flex flex-wrap gap-2">
-                  {selectedMeeting.attendees.map((attendee) => {
+                  {(selectedMeeting.attendees ?? []).map((attendee) => {
                     const member = teamMembers.find((m) => m.id === attendee.userId);
                     return (
                       <Badge key={attendee.id} variant="outline">
@@ -962,7 +966,7 @@ export default function Meetings() {
                 isHost={true}
                 waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
                 teamMembers={teamMembers}
-                currentParticipantIds={selectedMeeting.attendees.map(attendee => attendee.userId)}
+                currentParticipantIds={(selectedMeeting.attendees ?? []).map(attendee => attendee.userId)}
               />
             </div>
           </DialogContent>

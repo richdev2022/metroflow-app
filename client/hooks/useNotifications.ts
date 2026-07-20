@@ -3,6 +3,28 @@ import { api } from '@/lib/api-client';
 import { useSocket } from './useSocket';
 import type { Notification, GetNotificationsResponse, GetNotificationsQuery } from '@shared/api';
 
+// Helper to convert snake_case to camelCase
+function snakeToCamel(str: string): string {
+  return str.replace(/_([a-z])/g, (_, letter) => letter.toUpperCase());
+}
+
+// Convert object keys from snake_case to camelCase
+function convertSnakeToCamel<T>(obj: any): T {
+  if (Array.isArray(obj)) {
+    return obj.map(item => convertSnakeToCamel(item)) as any;
+  }
+  
+  if (obj !== null && typeof obj === 'object') {
+    return Object.keys(obj).reduce((acc, key) => {
+      const camelKey = snakeToCamel(key);
+      acc[camelKey] = convertSnakeToCamel(obj[key]);
+      return acc;
+    }, {} as T);
+  }
+  
+  return obj;
+}
+
 export function useNotifications() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
@@ -22,8 +44,9 @@ export function useNotifications() {
 
       const response = await api.get<GetNotificationsResponse>(`/notifications?${params.toString()}`);
       if (response.data.success) {
-        setNotifications(response.data.data.notifications);
-        setUnreadCount(response.data.data.notifications.filter(n => !n.isRead).length);
+        const convertedNotifications = convertSnakeToCamel<Notification[]>(response.data.data.notifications);
+        setNotifications(convertedNotifications);
+        setUnreadCount(convertedNotifications.filter(n => !n.isRead).length);
       }
     } catch (error) {
       console.error('Failed to fetch notifications:', error);
@@ -58,10 +81,11 @@ export function useNotifications() {
     try {
       const response = await api.post(`/notifications/${notificationId}/action`, { action });
       if (response.data.success) {
+        const convertedNotification = convertSnakeToCamel<Notification>(response.data.data);
         setNotifications(prev => prev.map(n => 
-          n.id === notificationId ? { ...response.data.data } : n
+          n.id === notificationId ? convertedNotification : n
         ));
-        if (!response.data.data.isRead) {
+        if (!convertedNotification.isRead) {
           setUnreadCount(prev => Math.max(0, prev - 1));
         }
       }
@@ -77,8 +101,9 @@ export function useNotifications() {
   useEffect(() => {
     if (!socket) return;
 
-    const handleNewNotification = (notification: Notification) => {
-      setNotifications(prev => [notification, ...prev]);
+    const handleNewNotification = (notification: any) => {
+      const convertedNotification = convertSnakeToCamel<Notification>(notification);
+      setNotifications(prev => [convertedNotification, ...prev]);
       setUnreadCount(prev => prev + 1);
     };
 
