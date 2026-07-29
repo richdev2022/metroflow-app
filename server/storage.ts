@@ -120,12 +120,13 @@ export interface IStorage {
   addMeetingParticipants(meetingId: string, participantIds: string[]): Promise<Meeting | undefined>;
 
   // 10. Chat
-  getConversations(userId: string): Promise<Conversation[]>;
+  getConversations(userId: string): Promise<(Conversation & { unreadCount?: number })[]>;
   getConversation(conversationId: string): Promise<Conversation | undefined>;
   createConversation(userId: string, businessId: string, data: CreateConversationInput): Promise<Conversation>;
   getMessages(conversationId: string, page?: number, limit?: number): Promise<{ messages: Message[], total: number }>;
   sendMessage(userId: string, conversationId: string, data: SendMessageInput): Promise<Message>;
   updateConversationLastRead(conversationId: string, userId: string): Promise<void>;
+  markConversationRead(userId: string, conversationId: string): Promise<void>;
 
   // 11. Calls
   getCalls(businessId: string, page?: number, limit?: number): Promise<{ calls: Call[], total: number }>;
@@ -1423,13 +1424,21 @@ export class MemStorage implements IStorage {
   }
 
   // --- Chat Methods ---
-  async getConversations(userId: string): Promise<Conversation[]> {
-    const allConversations: Conversation[] = [];
+  async getConversations(userId: string): Promise<(Conversation & { unreadCount?: number })[]> {
+    const allConversations: (Conversation & { unreadCount?: number })[] = [];
     for (const conversations of this.conversations.values()) {
       for (const conversation of conversations) {
         const isParticipant = conversation.participants.some(p => p.userId === userId);
         if (isParticipant) {
-          allConversations.push(conversation);
+          const messages = this.messages.get(conversation.id) || [];
+          const lastReadAt = conversation.participants.find(p => p.userId === userId)?.lastReadAt;
+          let unreadCount = 0;
+          if (lastReadAt) {
+            unreadCount = messages.filter(m => m.senderId !== userId && new Date(m.createdAt) > new Date(lastReadAt)).length;
+          } else {
+            unreadCount = messages.filter(m => m.senderId !== userId).length;
+          }
+          allConversations.push({ ...conversation, unreadCount });
         }
       }
     }
@@ -1508,6 +1517,22 @@ export class MemStorage implements IStorage {
     return newMessage;
   }
 
+  async markConversationRead(userId: string, conversationId: string): Promise<void> {
+    const now = new Date().toISOString();
+    for (const [businessId, conversations] of this.conversations.entries()) {
+      const index = conversations.findIndex(c => c.id === conversationId);
+      if (index !== -1) {
+        const conv = conversations[index];
+        const participants = conv.participants.map(p =>
+          p.userId === userId ? { ...p, lastReadAt: now } : p
+        );
+        conversations[index] = { ...conv, participants, updatedAt: now };
+        this.conversations.set(businessId, conversations);
+        break;
+      }
+    }
+  }
+
   // --- Calls Methods ---
   async getCalls(businessId: string, page = 1, limit = 10): Promise<{ calls: Call[], total: number }> {
     const allCalls = this.calls.get(businessId) || [];
@@ -1539,17 +1564,21 @@ export class MemStorage implements IStorage {
     const callCode = Math.random().toString(36).slice(2, 8).toUpperCase();
     const participantIds = ((data as any).participantIds || (data as any).participant_ids || []) as string[];
     const invitedParticipantIds = Array.from(new Set(participantIds.filter(id => id !== userId)));
+    // Plan-based default: 60 minutes for standard plans. Admin can override per business via plan settings.
+    const planDefaultDuration = (data as any).maxMeetingDuration ?? (data as any).max_meeting_duration ?? 60;
     const newCall: Call = {
       id: `call_${Date.now()}_${Math.random().toString(36).slice(2)}`,
       type: data.type,
       status: 'ringing',
       startedAt: now,
+      endedAt: undefined,
       createdById: userId,
       hostId: userId,
       callCode,
       isGroupCall: data.isGroupCall ?? invitedParticipantIds.length > 1,
       password: data.password,
       maxParticipants: data.maxParticipants || 10,
+      maxMeetingDuration: planDefaultDuration ?? null,
       waitingRoomEnabled: data.waitingRoomEnabled || false,
       recordingEnabled: data.recordingEnabled || false,
       createdAt: now,

@@ -746,7 +746,7 @@ export interface Meeting {
   title: string;
   description?: string;
   startTime: string;
-  endTime: string;
+  endTime: string | null;
   timezone: string;
   createdById: string;
   hostId: string;
@@ -756,6 +756,9 @@ export interface Meeting {
   isInstant: boolean;
   password?: string;
   maxParticipants: number;
+  maxMeetingDuration?: number | null;
+  endedAt?: string | null;
+  durationStartedAt?: string | null;
   waitingRoomEnabled: boolean;
   recordingEnabled: boolean;
   screenSharingEnabled: boolean;
@@ -766,6 +769,19 @@ export interface Meeting {
     id: string;
     userId: string;
     status: 'invited' | 'accepted' | 'declined' | 'tentative';
+    userName?: string;
+    isHost?: boolean;
+    joinedAt?: string;
+    leftAt?: string;
+  }>;
+  participants?: Array<{
+    id: string;
+    userId: string;
+    status: 'invited' | 'joined' | 'left';
+    userName?: string;
+    isHost?: boolean;
+    joinedAt?: string;
+    leftAt?: string;
   }>;
 }
 
@@ -803,18 +819,26 @@ export interface UpdateMeetingInput {
 // Chat Types
 export interface Conversation {
   id: string;
+  businessId?: string;
   name?: string;
   type: 'direct' | 'group';
   createdBy: string;
+  createdById?: string;
   createdAt: string;
   updatedAt: string;
   participants: Array<{
     id: string;
     userId: string;
     lastReadAt?: string;
+    lastSeen?: string | null;
+    name?: string | null;
+    email?: string | null;
+    avatarUrl?: string | null;
   }>;
   lastMessage?: string;
+  lastmessage?: string;
   lastMessageAt?: string;
+  lastmessageat?: string;
 }
 
 export interface CreateConversationInput {
@@ -847,6 +871,7 @@ export interface Call {
   status: 'ringing' | 'ongoing' | 'completed' | 'missed' | 'cancelled';
   startedAt?: string;
   endedAt?: string;
+  durationStartedAt?: string | null;
   createdById: string;
   hostId: string;
   coHostId?: string;
@@ -854,6 +879,7 @@ export interface Call {
   isGroupCall: boolean;
   password?: string;
   maxParticipants: number;
+  maxMeetingDuration: number | null;
   waitingRoomEnabled: boolean;
   recordingEnabled: boolean;
   createdAt: string;
@@ -862,6 +888,8 @@ export interface Call {
     id: string;
     userId: string;
     status: 'invited' | 'joined' | 'left';
+    userName?: string;
+    isHost?: boolean;
     joinedAt?: string;
     leftAt?: string;
   }>;

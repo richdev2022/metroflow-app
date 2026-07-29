@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import { formatDistanceToNow } from "date-fns";
 import Layout from "@/components/layout";
 import VideoCallRoom from "@/components/VideoCallRoom";
 import {
@@ -12,6 +13,7 @@ import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
+import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import {
   Dialog,
   DialogContent,
@@ -50,7 +52,7 @@ import {
   Check,
   Trash2,
   Copy,
-  PhoneOff,
+  BellRing,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -60,9 +62,9 @@ import {
   useJoinCall,
   useLeaveCall,
   useDeleteCall,
+  useCall,
 } from "@/lib/meetings-chat-calls";
-import { AudioUtils } from "@/lib/audio-utils";
-import { Call, CreateCallInput, UpdateCallInput, TeamMember } from "@shared/api";
+import { Call, CreateCallInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
 import {
@@ -80,6 +82,7 @@ import {
 } from "@/components/ui/command";
 import { useSocket } from "@/hooks/useSocket";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { useSearchParams, useNavigate } from "react-router-dom";
 
 // ==========================================
 // Constants
@@ -122,6 +125,9 @@ const isCallActive = (status: string) => status === "ringing" || status === "ong
 // Main Component
 // ==========================================
 export default function Calls() {
+  const [searchParams, setSearchParams] = useSearchParams();
+  const { toast } = useToast();
+
   // ==========================================
   // Query Hooks
   // ==========================================
@@ -135,12 +141,19 @@ export default function Calls() {
   const joinCall = useJoinCall();
   const leaveCall = useLeaveCall();
   const deleteCall = useDeleteCall();
-  const { toast } = useToast();
+
+  const urlCallId = searchParams.get("callId") || "";
+  const urlRoomId = searchParams.get("roomId") || "";
+  const urlAutoJoin = searchParams.get("autoJoin") === "1" || searchParams.get("autoJoin") === "true";
+  const urlCallType = (searchParams.get("callType") as "audio" | "video") || undefined;
+  const urlIsHost = searchParams.get("isHost") === "true" || searchParams.get("isHost") === "1";
+
+  const { data: urlCallData } = useCall(urlCallId);
 
   // ==========================================
   // Socket
   // ==========================================
-  const { socket, isConnected, on, off } = useSocket({
+  const { socket, isConnected, on, off, inviteToCall } = useSocket({
     userId: CURRENT_USER_ID(),
     businessId: localStorage.getItem("businessId") || "",
   });
@@ -170,9 +183,8 @@ export default function Calls() {
   // Create call form
   const [callForm, setCallForm] = useState<CreateCallInput>({ ...INITIAL_CALL_FORM });
 
-  // Incoming call
-  const [incomingCall, setIncomingCall] = useState<any>(null);
-  const ringtoneRef = useRef<(() => void) | null>(null);
+  // Track auto-join attempt
+  const autoJoinAttemptedRef = useRef(false);
 
   // ==========================================
   // Computed Values
@@ -184,7 +196,11 @@ export default function Calls() {
   // ==========================================
   const isCurrentUserHost = useCallback((call: Call) => {
     const currentUserId = CURRENT_USER_ID();
-    return call.hostId === currentUserId || call.createdById === currentUserId;
+    return (
+      call.hostId === currentUserId ||
+      call.createdById === currentUserId ||
+      (call as any).coHostId === currentUserId
+    );
   }, []);
 
   const isCurrentUserJoined = useCallback((call: Call) => {
@@ -205,13 +221,6 @@ export default function Calls() {
   const formatDateTime = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
   };
-
-  const stopRingtone = useCallback(() => {
-    if (ringtoneRef.current) {
-      ringtoneRef.current();
-      ringtoneRef.current = null;
-    }
-  }, []);
 
   // ==========================================
   // Data Fetching
@@ -247,55 +256,46 @@ export default function Calls() {
   }, [callsError, toast]);
 
   // ==========================================
-  // Incoming Call Handling
+  // Auto-Join from URL params (e.g. navigating from Chat)
   // ==========================================
-  const handleIncomingCall = useCallback((callData: any) => {
-    setIncomingCall(callData);
-    AudioUtils.playRingtone().then((stopFn) => {
-      ringtoneRef.current = stopFn;
-    });
-  }, []);
-
-  const handleAcceptIncomingCall = useCallback(async () => {
-    if (!incomingCall) return;
-    stopRingtone();
-
-    try {
-      const call = await api.get(`/api/calls/${incomingCall.callId}`);
-      const parsedCall = unwrapApiData<Call>(call.data, "Failed to get call");
-      setSelectedCall(parsedCall);
-      setIncomingCall(null);
-
-      // If already joined, open room directly; otherwise prompt join
-      if (isCurrentUserJoined(parsedCall) || isCurrentUserHost(parsedCall)) {
-        setIsJoinDialogOpen(true);
-      } else {
-        handleJoinCall(parsedCall);
-      }
-    } catch (err) {
-      toast({
-        variant: "destructive",
-        title: "Error",
-        description: getApiMessage(err, "Failed to accept incoming call"),
-      });
-    }
-  }, [incomingCall, stopRingtone, isCurrentUserJoined, isCurrentUserHost, toast]);
-
-  const handleRejectIncomingCall = useCallback(() => {
-    stopRingtone();
-    setIncomingCall(null);
-  }, [stopRingtone]);
-
   useEffect(() => {
-    if (!isConnected || !socket) return;
+    if (!urlAutoJoin || autoJoinAttemptedRef.current) return;
 
-    on("call:incoming", handleIncomingCall);
+    if (urlCallData) {
+      autoJoinAttemptedRef.current = true;
+      setSelectedCall(urlCallData as Call);
+      setIsJoinDialogOpen(true);
+      const curSP = new URLSearchParams(searchParams);
+      curSP.delete("autoJoin");
+      setSearchParams(curSP, { replace: true });
+      return;
+    }
 
-    return () => {
-      off("call:incoming", handleIncomingCall);
-      stopRingtone();
-    };
-  }, [isConnected, socket, on, off, handleIncomingCall, stopRingtone]);
+    if (urlRoomId) {
+      autoJoinAttemptedRef.current = true;
+      const syntheticCall = {
+        id: urlCallId || urlRoomId,
+        callCode: urlRoomId,
+        type: urlCallType || "video",
+        status: "ongoing",
+        hostId: urlIsHost ? CURRENT_USER_ID() : "",
+        createdById: CURRENT_USER_ID(),
+        waitingRoomEnabled: false,
+        recordingEnabled: false,
+        isGroupCall: false,
+        maxParticipants: 10,
+        participants: [],
+        name: "",
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      } as unknown as Call;
+      setSelectedCall(syntheticCall);
+      setIsJoinDialogOpen(true);
+      const curSP = new URLSearchParams(searchParams);
+      curSP.delete("autoJoin");
+      setSearchParams(curSP, { replace: true });
+    }
+  }, [urlAutoJoin, urlCallData, urlRoomId, urlCallId, urlCallType, urlIsHost, searchParams, setSearchParams, toast]);
 
   // ==========================================
   // Call Actions
@@ -507,6 +507,104 @@ export default function Calls() {
       });
     },
     [selectedCall]
+  );
+
+  // ==========================================
+  // Participant Status Change Handler (from VideoCallRoom)
+  // Keeps parent selectedCall.participants in sync so closing+reopening
+  // the room dialog preserves statuses of joined/left/invited users.
+  // ==========================================
+  const handleParticipantStatusChanged = useCallback(
+    (payload: { userId: string; status: "invited" | "joined" | "left" }) => {
+      if (!selectedCall) return;
+      const { userId, status } = payload;
+
+      setSelectedCall((prev) => {
+        if (!prev) return prev;
+        const now = new Date().toISOString();
+        let changed = false;
+        const next = (prev.participants || []).map((p) => {
+          if (p.userId !== userId) return p;
+          if (p.status === status && status !== "joined") return p;
+          changed = true;
+          const patch: Partial<typeof p> = { status };
+          if (status === "joined") {
+            patch.joinedAt = new Date().toISOString();
+            patch.leftAt = undefined;
+          }
+          if (status === "left") {
+            patch.leftAt = new Date().toISOString();
+          }
+          return { ...p, ...patch };
+        });
+        if (!changed) return prev;
+        return { ...prev, participants: next, updatedAt: now };
+      });
+    },
+    [selectedCall]
+  );
+
+  // ==========================================
+  // Dial-Back helper (for Call Details dialog — dial back invited / left users directly)
+  // ==========================================
+  const dialBackFromDetailDialog = useCallback(
+    async (targetParticipant: {
+      userId: string;
+      status: "invited" | "joined" | "left";
+    }) => {
+      if (!selectedCall || !isConnected || !socket) {
+        toast({
+          variant: "destructive",
+          title: "Not connected",
+          description: "Cannot invite right now.",
+        });
+        return;
+      }
+      if (!isCurrentUserHost(selectedCall)) {
+        toast({
+          title: "Host only",
+          description: "Only the call host can re-send invites.",
+        });
+        return;
+      }
+      const memberName =
+        teamMembers.find((m) => m.id === targetParticipant.userId)?.name ||
+        targetParticipant.userId;
+      const verb =
+        targetParticipant.status === "invited"
+          ? "Re-sending invite"
+          : "Calling back";
+      toast({
+        title: `${verb}...`,
+        description: `Ringing ${memberName}...`,
+      });
+      try {
+        inviteToCall(
+          selectedCall.id,
+          targetParticipant.userId,
+          selectedCall.type || "video",
+          { callerName: CURRENT_USER_NAME(), roomId: selectedCall.callCode }
+        );
+      } catch {
+        socket.emit("call:invite", {
+          callId: selectedCall.id,
+          targetUserId: targetParticipant.userId,
+          type: selectedCall.type || "video",
+          callerName: CURRENT_USER_NAME(),
+          roomId: selectedCall.callCode,
+        });
+      }
+      setTimeout(() => {
+        toast({
+          title:
+            targetParticipant.status === "invited"
+              ? "Invite re-sent"
+              : "Call-back sent",
+          description: `${memberName} should see the incoming call ring now.`,
+        });
+      }, 500);
+    },
+    [selectedCall, isConnected, socket, inviteToCall, teamMembers, toast]
   );
 
   // ==========================================
@@ -983,37 +1081,174 @@ export default function Calls() {
                 </div>
 
                 {/* Participant List */}
-                <div className="space-y-2">
+                <div className="space-y-4">
                   <div className="text-sm text-muted-foreground">
                     Participants
                   </div>
-                  <div className="flex flex-wrap gap-2">
-                    {(selectedCall.participants || []).map((participant) => {
-                      const member = teamMembers.find(
-                        (m) => m.id === participant.userId
-                      );
-                      return (
-                        <div
-                          key={participant.id}
-                          className="flex items-center gap-1.5"
-                        >
-                          <Badge variant="outline">
-                            {member?.name || participant.userId}
-                          </Badge>
-                          <Badge
-                            variant={
-                              participant.status === "joined"
-                                ? "default"
-                                : "secondary"
-                            }
-                            className="text-xs"
-                          >
-                            {participant.status}
-                          </Badge>
+                  {(() => {
+                    const ps = selectedCall.participants || [];
+                    const joined = ps.filter((p) => p.status === "joined");
+                    const invited = ps.filter((p) => p.status === "invited");
+                    const left = ps.filter((p) => p.status === "left");
+                    const host = isCurrentUserHost(selectedCall);
+                    const Section = ({
+                      title,
+                      count,
+                      items,
+                      color,
+                      showAction,
+                    }: {
+                      title: string;
+                      count: number;
+                      items: typeof ps;
+                      color?: string;
+                      showAction: boolean;
+                    }) =>
+                      items.length === 0 ? null : (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between px-1">
+                            <h4
+                              className={
+                                "text-[11px] font-semibold uppercase tracking-wider " +
+                                (color || "text-gray-400")
+                              }
+                            >
+                              {title}
+                            </h4>
+                            <Badge variant="outline" className="text-[10px] h-5 px-2">
+                              {count}
+                            </Badge>
+                          </div>
+                          <div className="space-y-1.5">
+                            {items.map((participant) => {
+                              const member = teamMembers.find(
+                                (m) => m.id === participant.userId
+                              );
+                              const name = member?.name || participant.userId;
+                              const isMe =
+                                participant.userId === CURRENT_USER_ID();
+                              const isParticipantHost =
+                                participant.userId === selectedCall.hostId ||
+                                participant.userId === selectedCall.createdById;
+                              const statusBadge =
+                                participant.status === "joined" ? (
+                                  <Badge
+                                    variant="default"
+                                    className="text-[10px] bg-emerald-600 hover:bg-emerald-700"
+                                  >
+                                    In call
+                                  </Badge>
+                                ) : participant.status === "invited" ? (
+                                  <Badge variant="secondary" className="text-[10px]">
+                                    Invited
+                                  </Badge>
+                                ) : (
+                                  <Badge
+                                    variant="outline"
+                                    className="text-[10px] text-muted-foreground"
+                                  >
+                                    Left
+                                    {participant.leftAt
+                                      ? ` · ${formatDistanceToNow(
+                                          new Date(participant.leftAt),
+                                          { addSuffix: true }
+                                        )}`
+                                      : ""}
+                                  </Badge>
+                                );
+                              return (
+                                <div
+                                  key={participant.id}
+                                  className={
+                                    "flex items-center justify-between p-2 rounded-md gap-2 " +
+                                    (participant.status === "left"
+                                      ? "opacity-70 hover:opacity-100 hover:bg-gray-50"
+                                      : "hover:bg-gray-50")
+                                  }
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                    <Avatar className="h-8 w-8 shrink-0">
+                                      <AvatarFallback className="bg-blue-600 text-white text-xs">
+                                        {name
+                                          .split(" ")
+                                          .slice(0, 2)
+                                          .map((s) => s[0])
+                                          .join("")
+                                          .toUpperCase()
+                                          .slice(0, 2)}
+                                      </AvatarFallback>
+                                    </Avatar>
+                                    <div className="min-w-0">
+                                      <p className="text-sm font-medium truncate">
+                                        {name}
+                                        {isMe && (
+                                          <span className="text-gray-400 text-xs ml-1">
+                                            (You)
+                                          </span>
+                                        )}
+                                      </p>
+                                      <div className="flex items-center gap-2 mt-0.5">
+                                        {isParticipantHost && (
+                                          <p className="text-[10px] text-blue-500">Host</p>
+                                        )}
+                                        {statusBadge}
+                                      </div>
+                                    </div>
+                                  </div>
+                                  {showAction && host && !isMe && isCallActive(selectedCall.status) ? (
+                                    <Button
+                                      variant={
+                                        participant.status === "invited"
+                                          ? "outline"
+                                          : "secondary"
+                                      }
+                                      size="sm"
+                                      className="h-7 px-2 text-xs gap-1 shrink-0"
+                                      onClick={() => dialBackFromDetailDialog(participant)}
+                                    >
+                                      {participant.status === "invited" ? (
+                                        <BellRing className="h-3.5 w-3.5" />
+                                      ) : (
+                                        <Phone className="h-3.5 w-3.5" />
+                                      )}
+                                      {participant.status === "invited"
+                                        ? "Remind"
+                                        : "Dial Back"}
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              );
+                            })}
+                          </div>
                         </div>
                       );
-                    })}
-                  </div>
+
+                    return (
+                      <div className="space-y-3">
+                        {Section({
+                          title: "In Call",
+                          count: joined.length,
+                          items: joined,
+                          color: "text-emerald-600",
+                          showAction: false,
+                        })}
+                        {Section({
+                          title: "Invited",
+                          count: invited.length,
+                          items: invited,
+                          color: undefined,
+                          showAction: true,
+                        })}
+                        {Section({
+                          title: "Left",
+                          count: left.length,
+                          items: left,
+                          color: "text-rose-600",
+                          showAction: true,
+                        })}
+                      </div>
+                    );
+                  })()}
                 </div>
               </div>
             </ScrollArea>
@@ -1077,6 +1312,8 @@ export default function Calls() {
                   selectedCall.participants || []
                 ).map((participant) => participant.userId)}
                 onParticipantsAdded={handleParticipantsAdded}
+                onParticipantStatusChange={handleParticipantStatusChanged}
+                initialParticipants={selectedCall.participants || []}
               />
             </div>
           </DialogContent>
@@ -1135,62 +1372,6 @@ export default function Calls() {
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />
                 )}
                 Join Call
-              </Button>
-            </DialogFooter>
-          </DialogContent>
-        </Dialog>
-      )}
-
-      {/* ==========================================
-          Dialog: Incoming Call
-          ========================================== */}
-      {incomingCall && (
-        <Dialog
-          open={!!incomingCall}
-          onOpenChange={(open) => !open && handleRejectIncomingCall()}
-        >
-          <DialogContent className="sm:max-w-md">
-            <DialogHeader className="text-center">
-              <DialogTitle className="text-2xl">
-                Incoming{" "}
-                {incomingCall.type === "video" ? "Video" : "Audio"} Call
-              </DialogTitle>
-              <DialogDescription className="text-lg">
-                {teamMembers.find((m) => m.id === incomingCall.from)?.name ||
-                  "Someone"}{" "}
-                is calling...
-              </DialogDescription>
-            </DialogHeader>
-
-            <div className="flex justify-center my-8">
-              <div className="w-24 h-24 rounded-full bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center animate-pulse">
-                {incomingCall.type === "video" ? (
-                  <Video className="w-12 h-12 text-white" />
-                ) : (
-                  <Phone className="w-12 h-12 text-white" />
-                )}
-              </div>
-            </div>
-
-            <DialogFooter className="flex gap-4 justify-center sm:justify-center">
-              <Button
-                variant="destructive"
-                size="lg"
-                className="w-16 h-16 rounded-full flex items-center justify-center"
-                onClick={handleRejectIncomingCall}
-              >
-                <PhoneOff className="w-8 h-8" />
-              </Button>
-              <Button
-                size="lg"
-                className="w-16 h-16 rounded-full flex items-center justify-center bg-green-600 hover:bg-green-700"
-                onClick={handleAcceptIncomingCall}
-              >
-                {incomingCall.type === "video" ? (
-                  <Video className="w-8 h-8" />
-                ) : (
-                  <Phone className="w-8 h-8" />
-                )}
               </Button>
             </DialogFooter>
           </DialogContent>

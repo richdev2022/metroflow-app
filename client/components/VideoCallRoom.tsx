@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { Device, types } from 'mediasoup-client';
 import { useSocket } from '../hooks/useSocket';
 import { Button } from './ui/button';
@@ -11,6 +11,7 @@ import {
   Mic,
   MicOff,
   Minimize2,
+  Phone,
   PhoneOff,
   Radio,
   ScreenShare,
@@ -25,6 +26,7 @@ import {
   Check,
   AlertCircle,
   Clock,
+  BellRing,
 } from 'lucide-react';
 import type { Recording, TeamMember } from '@shared/api';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -54,6 +56,25 @@ import {
 import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import { Input } from './ui/input';
+import { cn } from '@/lib/utils';
+import { formatDistanceToNow } from 'date-fns';
+
+type ParticipantStatus = 'invited' | 'joined' | 'left';
+
+type DurationState =
+  | { status: 'idle' }
+  | { status: 'waiting'; maxMeetingDurationMinutes: number | null }
+  | { status: 'running'; endsAt: Date; maxMeetingDurationMinutes: number | null };
+
+interface CountdownDisplay {
+  totalMs: number;
+  hours: number;
+  minutes: number;
+  seconds: number;
+  percentUsed: number;
+  isWarning: boolean;
+  isUrgent: boolean;
+}
 
 interface VideoCallRoomProps {
   roomId?: string; // Made optional to allow extraction from URL
@@ -67,6 +88,13 @@ interface VideoCallRoomProps {
   teamMembers?: TeamMember[];
   currentParticipantIds?: string[];
   onParticipantsAdded?: (participantIds: string[]) => void;
+  onParticipantStatusChange?: (payload: { userId: string; status: ParticipantStatus }) => void;
+  initialParticipants?: Array<{
+    userId: string;
+    status: 'invited' | 'joined' | 'left';
+    joinedAt?: string;
+    leftAt?: string;
+  }>;
 }
 
 interface Participant {
@@ -74,6 +102,8 @@ interface Participant {
   name: string;
   isHost: boolean;
   joinedAt: Date;
+  leftAt?: Date;
+  status: ParticipantStatus;
   isLocal?: boolean;
   audioEnabled?: boolean;
   videoEnabled?: boolean;
@@ -117,6 +147,8 @@ export default function VideoCallRoom({
   teamMembers = [],
   currentParticipantIds = [],
   onParticipantsAdded,
+  onParticipantStatusChange,
+  initialParticipants = [],
 }: VideoCallRoomProps) {
   // Get search params from URL for invitation flow
   const [searchParams] = useSearchParams();
@@ -158,21 +190,33 @@ export default function VideoCallRoom({
   const [recordingDuration, setRecordingDuration] = useState(0);
   const [activeRecording, setActiveRecording] = useState<Recording | null>(null);
   
-  // Call duration state
+  // Call duration state (per FRONTEND_CALL_DURATION_GUIDE.md §4/§5 state machine)
+  const [durationState, setDurationState] = useState<DurationState>({ status: 'idle' });
+  const [nowTick, setNowTick] = useState<number>(Date.now());
+  const [showOneMinuteBanner, setShowOneMinuteBanner] = useState(false);
+  const warned5Ref = useRef(false);
+  const warned1Ref = useRef(false);
+  const teardownArmedAtRef = useRef<number | null>(null);
+  // Legacy kept for reference (set from participants-list to mirror durationState)
   const [endsAt, setEndsAt] = useState<Date | null>(null);
   const [maxMeetingDuration, setMaxMeetingDuration] = useState<number | null>(null);
+  // For back-compat we still compute a pretty remaining label
   const [timeRemaining, setTimeRemaining] = useState<string>('');
-  
-  // Countdown interval ref
+
   const countdownIntervalRef = useRef<number | null>(null);
 
   // Room state
   const [isInWaitingRoom, setIsInWaitingRoom] = useState(!isHost && waitingRoomEnabled);
   const [waitingRoomParticipants, setWaitingRoomParticipants] = useState<Array<{ id: string; name: string }>>([]);
+  const [waitingQueue, setWaitingQueue] = useState<Array<{ userId: string; userName?: string; requestedAt?: number }>>([]);
   const [requiresPassword, setRequiresPassword] = useState(false);
   const [enteredPassword, setEnteredPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
   const [connectionError, setConnectionError] = useState('');
+  const [echoWarningShown, setEchoWarningShown] = useState(false);
+  const [waitingForHost, setWaitingForHost] = useState(false);
+  const [showAudioEnableOverlay, setShowAudioEnableOverlay] = useState(false);
+  const [audioAutoplayFailCount, setAudioAutoplayFailCount] = useState(0);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -188,6 +232,8 @@ export default function VideoCallRoom({
   const localScreenStreamRef = useRef<MediaStream | null>(null);
   const remoteVideosRef = useRef<Map<string, HTMLVideoElement>>(new Map());
   const remoteAudiosRef = useRef<Map<string, HTMLAudioElement>>(new Map());
+  const remoteAudioGainNodesRef = useRef<Map<string, GainNode>>(new Map());
+  const remoteAudioSourcesRef = useRef<Map<string, MediaStreamAudioSourceNode>>(new Map());
   const localAudioStreamRef = useRef<MediaStream | null>(null);
   const localMediaStreamRef = useRef<MediaStream | null>(null);
   const lastLocalTalkingRef = useRef(false);
@@ -195,6 +241,7 @@ export default function VideoCallRoom({
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const audioContextRef = useRef<AudioContext | null>(null);
+  const playbackAudioContextRef = useRef<AudioContext | null>(null);
   const analyserRef = useRef<AnalyserNode | null>(null);
   const dataArrayRef = useRef<Uint8Array<ArrayBuffer> | null>(null);
   const animationFrameRef = useRef<number | null>(null);
@@ -208,13 +255,23 @@ export default function VideoCallRoom({
   const isMountedRef = useRef(true);
   const hasFetchedProducers = useRef(false);
   const hasJoinedRef = useRef(false);
+  const hasJoinedRestRef = useRef(false);
+  const dialBackCooldownRef = useRef<Map<string, number>>(new Map());
+  const leaveCallRef = useRef<(() => Promise<void>) | null>(null);
   
-  const { socket, isConnected, joinMeeting, joinCall, leaveMeeting, startScreenShare: emitScreenShareStart, stopScreenShare: emitScreenShareStop, startRecording: emitRecordingStart, stopRecording: emitRecordingStop, sendMeetingChat } = useSocket({
+  const { socket, isConnected, joinMeeting, joinCall, leaveCall: emitSocketLeaveCall, leaveMeeting, startScreenShare: emitScreenShareStart, stopScreenShare: emitScreenShareStop, startRecording: emitRecordingStart, stopRecording: emitRecordingStop, sendMeetingChat, inviteToCall } = useSocket({
     userId: localStorage.getItem('userId') || '',
     businessId: localStorage.getItem('businessId') || '',
   });
 
   const { toast } = useToast();
+
+  // Socket room ID: prefer UUID (callId/meetingId) per FRONTEND_CALL_DURATION_GUIDE.md §8, fallback to URL roomId/callCode
+  const socketRoomId = meetingId || callId || roomId;
+  // Event prefix: 'meeting:' for meetings, 'call:' otherwise
+  const eventPrefix = meetingId ? 'meeting' : 'call';
+  // Room ID key name in socket payloads (some events use meetingId vs roomId)
+  const roomKeyForEnded = meetingId ? 'meetingId' : 'callId';
 
   // Keep refs in sync with state
   useEffect(() => { deviceRef.current = device; }, [device]);
@@ -259,34 +316,187 @@ export default function VideoCallRoom({
     });
   }, [invitationToken, roomId, socket, isConnected]);
 
+  const initialParticipantsRef = useRef(initialParticipants);
+  useEffect(() => {
+    initialParticipantsRef.current = initialParticipants;
+    if (initialParticipants.length === 0) return;
+    setParticipants(prev => {
+      const byId = new Map(prev.map(p => [p.id, p]));
+      initialParticipants.forEach(apiP => {
+        const memberName = teamMembers?.find(m => m.id === apiP.userId)?.name;
+        const name = memberName || apiP.userId;
+        const existing = byId.get(apiP.userId);
+        byId.set(apiP.userId, {
+          id: apiP.userId,
+          name: existing?.name || name,
+          isHost: existing?.isHost || false,
+          joinedAt: existing?.joinedAt || (apiP.joinedAt ? new Date(apiP.joinedAt) : new Date()),
+          leftAt: apiP.leftAt ? new Date(apiP.leftAt) : undefined,
+          status: apiP.status || (existing?.status ?? 'joined'),
+          audioEnabled: existing?.audioEnabled ?? (apiP.status === 'joined' ? undefined : false),
+          videoEnabled: existing?.videoEnabled ?? (apiP.status === 'joined' ? undefined : false),
+          screenSharing: existing?.screenSharing ?? false,
+          isTalking: existing?.isTalking ?? false,
+          isLocal: existing?.isLocal,
+        });
+      });
+      return Array.from(byId.values());
+    });
+  }, [initialParticipants, teamMembers]);
+
+  // --- Duration tick (1Hz) for countdown display (per Guide §5.2) ---
+  useEffect(() => {
+    const id = window.setInterval(() => setNowTick(Date.now()), 1000);
+    return () => window.clearInterval(id);
+  }, []);
+
+  // --- Derived CountdownDisplay (per Guide §5.2 useMemo) ---
+  const countdownDisplay: CountdownDisplay | null = useMemo(() => {
+    if (durationState.status !== 'running') return null;
+    const totalMs = Math.max(0, durationState.endsAt.getTime() - nowTick);
+    const totalSec = Math.floor(totalMs / 1000);
+    const hours = Math.floor(totalSec / 3600);
+    const minutes = Math.floor((totalSec % 3600) / 60);
+    const seconds = totalSec % 60;
+    let percentUsed = 0;
+    if (durationState.maxMeetingDurationMinutes) {
+      const totalAllowedMs = durationState.maxMeetingDurationMinutes * 60 * 1000;
+      const elapsedMs = Math.max(0, totalAllowedMs - totalMs);
+      percentUsed = Math.min(1, Math.max(0, elapsedMs / totalAllowedMs));
+    }
+    const isWarning = totalMs <= 5 * 60_000 && totalMs > 60_000;
+    const isUrgent = totalMs <= 60_000;
+    return { totalMs, hours, minutes, seconds, percentUsed, isWarning, isUrgent };
+  }, [durationState, nowTick]);
+
+  // --- Warning toast/banner triggers (§3.2 countdown-warning + defensive local-timer fallback) ---
+  useEffect(() => {
+    if (!countdownDisplay) return;
+
+    const { totalMs } = countdownDisplay;
+
+    // 5-minute warning
+    if (!warned5Ref.current && totalMs <= 5 * 60_000 && totalMs > 60_000) {
+      warned5Ref.current = true;
+      AudioUtils.ensureInitialized().catch(() => {});
+      AudioUtils.playTone(660, 0.18, 'sine', 0.15);
+      toast({
+        title: '5 minutes remaining',
+        description: 'This call will end automatically when the time limit is reached.',
+        duration: 8000,
+      });
+    }
+
+    // 1-minute warning — show sticky red banner + louder beep
+    if (!warned1Ref.current && totalMs <= 60_000) {
+      warned1Ref.current = true;
+      setShowOneMinuteBanner(true);
+      AudioUtils.ensureInitialized().catch(() => {});
+      // Two short beeps (louder)
+      AudioUtils.playTone(880, 0.22, 'sine', 0.3);
+      setTimeout(() => AudioUtils.playTone(1100, 0.3, 'sine', 0.35), 260);
+      toast({
+        title: '⚠ 1 minute remaining',
+        description: 'Please wrap up — this call will end shortly.',
+        variant: 'destructive',
+        duration: 15000,
+      });
+    }
+
+    // --- Defensive teardown fallback when local timer hits 0 (Guide §6.2) ---
+    if (totalMs <= 0) {
+      const now = Date.now();
+      if (!teardownArmedAtRef.current) {
+        teardownArmedAtRef.current = now;
+      } else if (now - teardownArmedAtRef.current >= 15_000) {
+        // Backend hasn't sent call:ended after 15s past 0 → self-teardown
+        console.warn('[countdown] 0-reached safety teardown (no call:ended received from backend)');
+        toast({
+          title: 'Call Ending',
+          description: 'Maximum duration reached. Disconnecting…',
+          variant: 'destructive',
+          duration: 4000,
+        });
+        leaveCallRef.current?.();
+        return;
+      }
+    } else {
+      // Clock recovered from 0 back to positive (skew / late endsAt update)
+      teardownArmedAtRef.current = null;
+    }
+
+    // Keep legacy pretty-format label updated for any stray consumers
+    const mm = countdownDisplay.minutes.toString().padStart(2, '0');
+    const ss = countdownDisplay.seconds.toString().padStart(2, '0');
+    setTimeRemaining(countdownDisplay.hours > 0
+      ? `${countdownDisplay.hours.toString().padStart(2, '0')}:${mm}:${ss}`
+      : `${mm}:${ss}`);
+  }, [countdownDisplay, toast, onLeave]);
+
   // Listen for participant events
   useEffect(() => {
     if (!socket) return;
     
     const handleParticipantJoined = ({ userId, userName: name, isHost: hostStatus }: any) => {
       if (!isMountedRef.current) return;
-      
+
       setParticipants(prev => {
-        // Don't add if already exists
-        if (prev.some(p => p.id === userId)) return prev;
-        
+        const exists = prev.find(p => p.id === userId);
+        if (exists) {
+          return prev.map(p =>
+            p.id === userId
+              ? {
+                  ...p,
+                  status: 'joined' as const,
+                  leftAt: undefined,
+                  joinedAt: new Date(),
+                  name: exists.name || name || 'Unknown',
+                  isHost: hostStatus || exists.isHost,
+                }
+              : p
+          );
+        }
         return [...prev, {
           id: userId,
           name: name || 'Unknown',
           isHost: hostStatus || false,
-          joinedAt: new Date()
+          joinedAt: new Date(),
+          status: 'joined',
         }];
       });
+      onParticipantStatusChange?.({ userId, status: 'joined' });
     };
-    
-    const handleParticipantLeft = ({ userId }: any) => {
+
+    const handleParticipantLeft = ({ userId, userName: name }: any) => {
       if (!isMountedRef.current) return;
-      setParticipants(prev => prev.filter(p => p.id !== userId));
+      setParticipants(prev => {
+        const exists = prev.some(p => p.id === userId);
+        if (exists) {
+          return prev.map(p =>
+            p.id === userId
+              ? { ...p, status: 'left' as const, leftAt: new Date(), audioEnabled: false, videoEnabled: false, screenSharing: false, isTalking: false }
+              : p
+          );
+        }
+        return [...prev, {
+          id: userId,
+          name: name || 'Unknown',
+          isHost: false,
+          joinedAt: new Date(),
+          leftAt: new Date(),
+          status: 'left',
+          audioEnabled: false,
+          videoEnabled: false,
+          screenSharing: false,
+          isTalking: false,
+        }];
+      });
+      onParticipantStatusChange?.({ userId, status: 'left' });
     };
-    
+
     const handleParticipantsList = (data: any) => {
       if (!isMountedRef.current) return;
-      
+
       const endsAtVal = data.endsAt || data.ends_at;
       if (endsAtVal) {
         setEndsAt(new Date(endsAtVal));
@@ -295,13 +505,139 @@ export default function VideoCallRoom({
       if (maxDurationVal) {
         setMaxMeetingDuration(maxDurationVal);
       }
-      
-      setParticipants((data.participantsList || data.participants_list || []).map((p: any) => ({
-        id: p.userId || p.user_id || p.id,
-        name: p.userName || p.user_name || p.name || 'Unknown',
-        isHost: p.isHost || p.is_host || false,
-        joinedAt: p.joinedAt || p.joined_at ? new Date(p.joinedAt || p.joined_at) : new Date()
-      })));
+
+      // --- Duration state (per FRONTEND_CALL_DURATION_GUIDE.md §3.2, §4 State Machine) ---
+      // Reset warning refs only on running→non-running transitions
+      if (endsAtVal) {
+        // Countdown already started or is running
+        setDurationState({
+          status: 'running',
+          endsAt: new Date(endsAtVal),
+          maxMeetingDurationMinutes: maxDurationVal ?? null,
+        });
+      } else {
+        // Waiting for 2nd participant (guide §4 endsAt==null branch)
+        setDurationState({
+          status: 'waiting',
+          maxMeetingDurationMinutes: maxDurationVal ?? null,
+        });
+      }
+
+      const socketList = (data.participantsList || data.participants_list || []);
+      const socketJoinedIds = new Set(socketList.map((p: any) => p.userId || p.user_id || p.id));
+
+      setParticipants(prev => {
+        const resultMap = new Map<string, Participant>();
+
+        prev.forEach(p => {
+          if ((p.status === 'invited' || p.status === 'left') && !socketJoinedIds.has(p.id)) {
+            resultMap.set(p.id, p);
+          }
+        });
+
+        socketList.forEach((p: any) => {
+          const id = p.userId || p.user_id || p.id;
+          const socketName = p.userName || p.user_name || p.name;
+          const name = socketName || teamMembers?.find(m => m.id === id)?.name || 'Unknown';
+          const prior = resultMap.get(id) || prev.find(pp => pp.id === id);
+          resultMap.set(id, {
+            id,
+            name: prior?.name || name,
+            isHost: p.isHost || p.is_host || prior?.isHost || false,
+            joinedAt: p.joinedAt || p.joined_at ? new Date(p.joinedAt || p.joined_at) : prior?.joinedAt || new Date(),
+            leftAt: undefined,
+            status: 'joined',
+            audioEnabled: p.audioEnabled ?? prior?.audioEnabled,
+            videoEnabled: p.videoEnabled ?? prior?.videoEnabled,
+            screenSharing: p.screenSharing ?? prior?.screenSharing,
+            isTalking: prior?.isTalking,
+          });
+        });
+
+        return Array.from(resultMap.values());
+      });
+    };
+
+    // --- Duration events (FRONTEND_CALL_DURATION_GUIDE.md §3.2 CALLS) ---
+    const handleWaitingForParticipants = (data: any) => {
+      if (!isMountedRef.current) return;
+      const maxDur = data?.maxMeetingDuration ?? data?.max_meeting_duration ?? null;
+      setDurationState(s => (s.status === 'running' ? s : {
+        status: 'waiting',
+        maxMeetingDurationMinutes: s.status === 'waiting' ? s.maxMeetingDurationMinutes : maxDur,
+      }));
+    };
+
+    const handleDurationStarted = (data: any) => {
+      if (!isMountedRef.current) return;
+      const endsAtIso = data.endsAt || data.ends_at;
+      const maxDur = data.maxMeetingDuration || data.max_meeting_duration;
+      if (!endsAtIso) return;
+      // Reset warnings when a NEW countdown starts
+      warned5Ref.current = false;
+      warned1Ref.current = false;
+      teardownArmedAtRef.current = null;
+      setShowOneMinuteBanner(false);
+      const endsAtDate = new Date(endsAtIso);
+      setEndsAt(endsAtDate);
+      if (maxDur) setMaxMeetingDuration(maxDur);
+      setDurationState({
+        status: 'running',
+        endsAt: endsAtDate,
+        maxMeetingDurationMinutes: maxDur ?? null,
+      });
+      toast({
+        title: 'Timer started',
+        description: maxDur
+          ? `Maximum call time: ${maxDur} min. Call will auto-end when the time is up.`
+          : 'Call duration countdown began.',
+        duration: 4000,
+      });
+    };
+
+    const handleDurationActive = (data: any) => {
+      if (!isMountedRef.current) return;
+      const endsAtIso = data.endsAt || data.ends_at;
+      const maxDur = data.maxMeetingDuration || data.max_meeting_duration;
+      if (!endsAtIso) return;
+      const endsAtDate = new Date(endsAtIso);
+      setEndsAt(endsAtDate);
+      if (maxDur) setMaxMeetingDuration(maxDur);
+      setDurationState({
+        status: 'running',
+        endsAt: endsAtDate,
+        maxMeetingDurationMinutes: maxDur ?? null,
+      });
+    };
+
+    const handleCountdownWarning = (data: any) => {
+      if (!isMountedRef.current) return;
+      const mins = data?.remainingMinutes ?? (data?.remainingMs ? Math.floor(data.remainingMs / 60000) : null);
+      if (mins === 5 && !warned5Ref.current) {
+        warned5Ref.current = true;
+        AudioUtils.ensureInitialized().catch(() => {});
+        try { AudioUtils.playTone(660, 0.18, 'sine', 0.15); } catch {}
+        toast({
+          title: '5 minutes remaining',
+          description: data?.message || 'This call will end automatically when the time limit is reached.',
+          duration: 8000,
+        });
+      }
+      if (mins === 1 && !warned1Ref.current) {
+        warned1Ref.current = true;
+        setShowOneMinuteBanner(true);
+        AudioUtils.ensureInitialized().catch(() => {});
+        try {
+          AudioUtils.playTone(880, 0.22, 'sine', 0.3);
+          setTimeout(() => AudioUtils.playTone(1100, 0.3, 'sine', 0.35), 260);
+        } catch {}
+        toast({
+          title: '⚠ 1 minute remaining',
+          description: data?.message || 'Please wrap up — this call will end shortly.',
+          variant: 'destructive',
+          duration: 15000,
+        });
+      }
     };
     
     const handleInvitationJoined = ({ userId, userName: name }: any) => {
@@ -347,108 +683,151 @@ export default function VideoCallRoom({
       });
     };
     
-    socket.on('call:participant-joined', handleParticipantJoined);
-    socket.on('call:participant-left', handleParticipantLeft);
-    socket.on('call:participants-list', handleParticipantsList);
-    socket.on('invitation:joined', handleInvitationJoined);
-    socket.on('call:participant-media-state', handleParticipantMediaState);
-    socket.on('call:ended', () => {
-      // Cleanup countdown
+    const prefix = eventPrefix;
+    const endedEvent = `${prefix}:ended`;
+
+    const handleRoomEnded = (data: any) => {
       if (countdownIntervalRef.current) {
         clearInterval(countdownIntervalRef.current);
         countdownIntervalRef.current = null;
       }
-      // Show toast
+      warned5Ref.current = false;
+      warned1Ref.current = false;
+      teardownArmedAtRef.current = null;
+      setShowOneMinuteBanner(false);
+      setDurationState({ status: 'idle' });
+      const reason: string = data?.reason || 'ended_by_host';
+      const description = reason === 'duration_limit'
+        ? 'Maximum plan duration reached.'
+        : reason === 'ended_by_host'
+          ? 'Call ended by host.'
+          : `Call ended (${reason}).`;
       toast({
         title: "Call Ended",
-        description: "The call has ended due to duration limit.",
-        duration: 3000,
+        description,
+        duration: 4500,
       });
-      // Leave the call
-      leaveCall();
-    });
-    
-    return () => {
-      socket.off('call:participant-joined', handleParticipantJoined);
-      socket.off('call:participant-left', handleParticipantLeft);
-      socket.off('call:participants-list', handleParticipantsList);
-      socket.off('invitation:joined', handleInvitationJoined);
-      socket.off('call:participant-media-state', handleParticipantMediaState);
-      socket.off('call:ended');
+      leaveCallRef.current?.().catch(() => {});
     };
-  }, [socket, toast]);
+
+    socket.on(`${prefix}:participant-joined`, handleParticipantJoined);
+    socket.on(`${prefix}:participant-left`, handleParticipantLeft);
+    socket.on(`${prefix}:participants-list`, handleParticipantsList);
+    socket.on('invitation:joined', handleInvitationJoined);
+    socket.on(`${prefix}:participant-media-state`, handleParticipantMediaState);
+    socket.on(`${prefix}:waiting-for-participants`, handleWaitingForParticipants);
+    socket.on(`${prefix}:duration-started`, handleDurationStarted);
+    socket.on(`${prefix}:duration-active`, handleDurationActive);
+    socket.on(`${prefix}:countdown-warning`, handleCountdownWarning);
+    socket.on(endedEvent, handleRoomEnded);
+
+    return () => {
+      socket.off(`${prefix}:participant-joined`, handleParticipantJoined);
+      socket.off(`${prefix}:participant-left`, handleParticipantLeft);
+      socket.off(`${prefix}:participants-list`, handleParticipantsList);
+      socket.off('invitation:joined', handleInvitationJoined);
+      socket.off(`${prefix}:participant-media-state`, handleParticipantMediaState);
+      socket.off(`${prefix}:waiting-for-participants`, handleWaitingForParticipants);
+      socket.off(`${prefix}:duration-started`, handleDurationStarted);
+      socket.off(`${prefix}:duration-active`, handleDurationActive);
+      socket.off(`${prefix}:countdown-warning`, handleCountdownWarning);
+      socket.off(endedEvent, handleRoomEnded);
+    };
+  }, [socket, eventPrefix, toast, onParticipantStatusChange]);
 
   // Join meeting/call when connected and not in waiting room or password screen
   useEffect(() => {
-    if (!socket || !isConnected || !roomId || isInWaitingRoom || requiresPassword || isVerifyingInvitation || hasJoinedRef.current) return;
-    
+    if (!socket || !isConnected || !socketRoomId || isInWaitingRoom || requiresPassword || isVerifyingInvitation || hasJoinedRef.current) return;
+
     hasJoinedRef.current = true;
-    
-    // Join the room
-    if (meetingId) {
-      joinMeeting(roomId);
-    } else {
-      joinCall(roomId);
+
+    // Non-host with waitingRoomEnabled -> ask host to be admitted
+    if (!isHost && waitingRoomEnabled) {
+      setIsInWaitingRoom(true);
+      setWaitingForHost(true);
+      // Send request to host after a short delay (ensure socket is in room)
+      setTimeout(() => {
+        socket?.emit('waiting-room:request', {
+          roomId: socketRoomId,
+          userId: localStorage.getItem('userId') || '',
+          userName,
+        });
+        socket?.emit('waiting-room:get-queue', { roomId: socketRoomId });
+      }, 400);
     }
-    
-    // Request the current participants list
-      socket.emit('call:get-participants', { roomId }, (response: any) => {
-        if (!isMountedRef.current) return;
-        
-        if (response?.error) {
-          console.error('Error fetching participants:', response.error);
-          return;
-        }
-        
-        const endsAtVal = response?.endsAt || response?.ends_at;
-        if (endsAtVal) {
-          setEndsAt(new Date(endsAtVal));
-        }
-        const maxDurationVal = response?.maxMeetingDuration || response?.max_meeting_duration;
-        if (maxDurationVal) {
-          setMaxMeetingDuration(maxDurationVal);
-        }
-        
-        if (response?.participants || response?.participants_list) {
-          const participantsList = response.participants || response.participants_list;
-          setParticipants(participantsList.map((p: any) => ({
-            id: p.userId || p.user_id || p.id,
-            name: p.userName || p.user_name || p.name || 'Unknown',
-            isHost: p.isHost || p.is_host || false,
-            joinedAt: p.joinedAt || p.joined_at ? new Date(p.joinedAt || p.joined_at) : new Date(),
-            audioEnabled: p.audioEnabled || p.audio_enabled,
-            videoEnabled: p.videoEnabled || p.video_enabled,
-            screenSharing: p.screenSharing || p.screen_sharing,
-          })));
-        }
-      });
-    
-    // Notify others that we've joined
-    socket.emit('call:join', { 
-      roomId, 
-      userId: localStorage.getItem('userId') || '',
+
+    const currentUserId = localStorage.getItem('userId') || '';
+
+    // Shared callback: applies ACK initial state from backend (call:* and meeting:* share the same shape)
+    const applyJoinAck = (response: any) => {
+      if (!isMountedRef.current || !response || response.error) return;
+      const endsAtVal = response?.endsAt || response?.ends_at;
+      if (endsAtVal) setEndsAt(new Date(endsAtVal));
+      const maxDurationVal = response?.maxMeetingDuration || response?.max_meeting_duration;
+      if (maxDurationVal) setMaxMeetingDuration(maxDurationVal);
+      const list = response?.participantsList || response?.participants || response?.participants_list || [];
+      if (list.length > 0) {
+        setParticipants(list.map((p: any) => ({
+          id: p.userId || p.user_id || p.id,
+          name: p.userName || p.user_name || p.name || teamMembers?.find(m => m.id === (p.userId || p.user_id || p.id))?.name || 'Unknown',
+          isHost: p.isHost || p.is_host || false,
+          joinedAt: p.joinedAt || p.joined_at ? new Date(p.joinedAt || p.joined_at) : new Date(),
+          audioEnabled: typeof p.audioEnabled === 'boolean' ? p.audioEnabled : undefined,
+          videoEnabled: typeof p.videoEnabled === 'boolean' ? p.videoEnabled : undefined,
+          screenSharing: p.screenSharing ?? p.screen_sharing ?? false,
+          status: 'joined',
+        })));
+      }
+      // Also immediately set durationState based on the ACK so UI countdown appears without waiting for next broadcast
+      if (endsAtVal) {
+        setDurationState({
+          status: 'running',
+          endsAt: new Date(endsAtVal),
+          maxMeetingDurationMinutes: maxDurationVal ?? null,
+        });
+      } else if (maxDurationVal || response?.maxMeetingDuration !== undefined) {
+        setDurationState({
+          status: 'waiting',
+          maxMeetingDurationMinutes: maxDurationVal ?? null,
+        });
+      }
+    };
+
+    const joinOpts = {
+      userId: currentUserId,
       userName,
       isHost,
       audioEnabled: isAudioEnabled,
       videoEnabled: isVideoEnabled,
-    });
-    
+    };
+
+    // Join the room (single authoritative socket emit with ACK)
+    if (meetingId) {
+      joinMeeting(socketRoomId, joinOpts, applyJoinAck);
+    } else {
+      joinCall(socketRoomId, joinOpts, applyJoinAck);
+    }
+
     // If we came from an invitation, notify others
     if (invitationToken) {
-      socket.emit('invitation:joined', { 
-        roomId, 
-        userId: localStorage.getItem('userId') || '',
-        userName 
+      socket.emit('invitation:joined', {
+        roomId: socketRoomId,
+        userId: currentUserId,
+        userName
       });
     }
 
     return () => {
-      if (socket && isConnected && roomId && meetingId) {
-        leaveMeeting(roomId);
+      if (socket && isConnected) {
+        if (meetingId) {
+          if (socketRoomId) leaveMeeting(socketRoomId, { userId: currentUserId, userName });
+        } else {
+          if (socketRoomId) emitSocketLeaveCall(socketRoomId, { userId: currentUserId, userName });
+        }
       }
       hasJoinedRef.current = false;
     };
-  }, [socket, isConnected, roomId, isInWaitingRoom, requiresPassword, isVerifyingInvitation, meetingId, joinMeeting, joinCall, leaveMeeting, userName, isHost, isAudioEnabled, isVideoEnabled, invitationToken]);
+  }, [socket, isConnected, socketRoomId, isInWaitingRoom, requiresPassword, isVerifyingInvitation, meetingId, joinMeeting, joinCall, emitSocketLeaveCall, leaveMeeting, userName, isHost, isAudioEnabled, isVideoEnabled, invitationToken, teamMembers]);
 
   const getInitials = (name: string) => {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -465,23 +844,65 @@ export default function VideoCallRoom({
   ) => Boolean(producer?.appData?.screenShare || (consumer?.appData as any)?.screenShare);
 
   const emitMediaState = useCallback((nextState: Partial<{ audioEnabled: boolean; videoEnabled: boolean; screenSharing: boolean }>) => {
-    if (!socket || !roomId) return;
-    
+    if (!socket || !socketRoomId) return;
+    const prefix = eventPrefix;
+
     const state = {
-      roomId,
+      roomId: socketRoomId,
       audioEnabled: nextState.audioEnabled ?? isAudioEnabled,
       videoEnabled: nextState.videoEnabled ?? isVideoEnabled,
       screenSharing: nextState.screenSharing ?? isScreenSharing,
     };
-    
-    socket.emit('call:media-state', state);
-    // Also emit to update participant list
-    socket.emit('call:participant-media-state', {
-      roomId,
+
+    socket.emit(`${prefix}:media-state`, state);
+    socket.emit(`${prefix}:participant-media-state`, {
+      roomId: socketRoomId,
       userId: localStorage.getItem('userId') || '',
       ...state,
     });
-  }, [socket, roomId, isAudioEnabled, isVideoEnabled, isScreenSharing]);
+  }, [socket, socketRoomId, eventPrefix, isAudioEnabled, isVideoEnabled, isScreenSharing]);
+
+  const handleDialBack = useCallback(async (targetParticipant: Participant) => {
+    if (!isHost) return;
+    if (!socket || !isConnected || !callId || !socketRoomId) {
+      toast({ variant: 'destructive', title: 'Not connected', description: 'Cannot send invite while offline.' });
+      return;
+    }
+    const now = Date.now();
+    const lastInviteAt = dialBackCooldownRef.current.get(targetParticipant.id) || 0;
+    if (now - lastInviteAt < 10_000) {
+      const secs = Math.ceil((10_000 - (now - lastInviteAt)) / 1000);
+      toast({ title: `Please wait ${secs}s`, description: `Invite for ${targetParticipant.name} was sent recently.` });
+      return;
+    }
+    dialBackCooldownRef.current.set(targetParticipant.id, now);
+
+    const verb = targetParticipant.status === 'invited' ? 'Re-sending invite' : 'Calling back';
+    toast({ title: `${verb}...`, description: `Ringing ${targetParticipant.name}...` });
+
+    try {
+      inviteToCall(callId, targetParticipant.id, callType || 'video', {
+        callerName: userName,
+        roomId: socketRoomId,
+      });
+    } catch (e) {
+      // Fallback: emit directly if helper not reachable
+      socket.emit('call:invite', {
+        callId,
+        targetUserId: targetParticipant.id,
+        type: callType || 'video',
+        callerName: userName,
+        roomId: socketRoomId,
+      });
+    }
+
+    setTimeout(() => {
+      toast({
+        title: targetParticipant.status === 'invited' ? 'Invite re-sent' : 'Call-back sent',
+        description: `${targetParticipant.name} should see the incoming call ring now.`,
+      });
+    }, 500);
+  }, [isHost, socket, isConnected, callId, socketRoomId, callType, inviteToCall, userName, toast]);
 
   const removeProducerFromPeer = useCallback((producerId: string, peerId?: string) => {
     setPeers(prev => {
@@ -532,9 +953,19 @@ export default function VideoCallRoom({
     if (audioEl) {
       audioEl.pause();
       audioEl.srcObject = null;
-      document.body.removeChild(audioEl);
+      if (audioEl.parentNode) document.body.removeChild(audioEl);
       remoteAudiosRef.current.delete(producerId);
     }
+
+    // Clean up Web Audio amplification nodes for this producer
+    try {
+      const gainNode = remoteAudioGainNodesRef.current.get(producerId);
+      if (gainNode) { try { gainNode.disconnect(); } catch {} }
+      remoteAudioGainNodesRef.current.delete(producerId);
+      const srcNode = remoteAudioSourcesRef.current.get(producerId);
+      if (srcNode) { try { srcNode.disconnect(); } catch {} }
+      remoteAudioSourcesRef.current.delete(producerId);
+    } catch {}
   }, []);
 
   const removeProducerFromPeerRef = useRef(removeProducerFromPeer);
@@ -818,6 +1249,9 @@ export default function VideoCallRoom({
     if (!currentRecvTransport || !currentDevice || !socket || !roomId) return;
 
     try {
+      // Unlock audio for autoplay
+      await AudioUtils.ensureInitialized();
+
       socket.emit('mediasoup:consume', {
         transportId: currentRecvTransport.id,
         producerId,
@@ -843,20 +1277,107 @@ export default function VideoCallRoom({
 
         // Handle audio track
         if (kind === 'audio' && consumer.track) {
+          const track = consumer.track;
+          const audioStream = new MediaStream([track]);
+
+          // Ensure audio playback context for volume amplification
+          try {
+            if (!playbackAudioContextRef.current) {
+              playbackAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+            }
+            if (playbackAudioContextRef.current.state === 'suspended') {
+              playbackAudioContextRef.current.resume().catch(() => {});
+            }
+
+            const pbCtx = playbackAudioContextRef.current;
+            const sourceNode = pbCtx.createMediaStreamSource(audioStream);
+            const gainNode = pbCtx.createGain();
+            // Amplify 4x for much louder participant voices
+            gainNode.gain.value = 4.0;
+            sourceNode.connect(gainNode);
+            gainNode.connect(pbCtx.destination);
+
+            remoteAudioSourcesRef.current.set(prodId, sourceNode);
+            remoteAudioGainNodesRef.current.set(prodId, gainNode);
+          } catch (err) {
+            console.warn('Web Audio amplification unavailable, falling back to audio element:', err);
+          }
+
           const audioEl = document.createElement('audio');
-          audioEl.srcObject = new MediaStream([consumer.track]);
+          audioEl.srcObject = audioStream;
           audioEl.autoplay = true;
+          (audioEl as any).playsInline = true;
+          audioEl.muted = false;
+          audioEl.setAttribute('muted', 'false');
+          audioEl.setAttribute('playsinline', '');
+          audioEl.setAttribute('autoplay', '');
+          // Keep element at 100% as a fallback/compatibility layer; Web Audio provides the amplification
+          audioEl.volume = 1;
           document.body.appendChild(audioEl);
           remoteAudiosRef.current.set(prodId, audioEl);
+          
+          // Explicitly play - catch and handle autoplay failures
+          const tryPlay = async () => {
+            try {
+              await audioEl.play();
+              console.log('Remote audio playing for producer:', prodId, '(amplified x4 via Web Audio)');
+            } catch (err: any) {
+              console.warn('Remote audio autoplay blocked for', prodId, err?.message);
+              setAudioAutoplayFailCount(prev => prev + 1);
+              // Schedule retry after any user gesture
+              const retryOnGesture = () => {
+                try {
+                  // Resume audio context & replay
+                  try {
+                    if (playbackAudioContextRef.current?.state === 'suspended') {
+                      playbackAudioContextRef.current.resume().catch(() => {});
+                    }
+                    // Ramp gain up again to ensure loud audio on retry
+                    const g = remoteAudioGainNodesRef.current.get(prodId);
+                    if (g) {
+                      try { g.gain.setValueAtTime(4.0, playbackAudioContextRef.current!.currentTime); } catch {}
+                    }
+                  } catch {}
+                  audioEl.play().then(() => {
+                    try { setShowAudioEnableOverlay(false); } catch {}
+                  }).catch(() => {});
+                } catch {}
+                document.removeEventListener('click', retryOnGesture);
+                document.removeEventListener('keydown', retryOnGesture);
+                document.removeEventListener('touchstart', retryOnGesture);
+              };
+              document.addEventListener('click', retryOnGesture, { once: true });
+              document.addEventListener('keydown', retryOnGesture, { once: true });
+              document.addEventListener('touchstart', retryOnGesture, { once: true });
+              // Show a one-time toast
+              if (connectionError === '') {
+                toast({
+                  title: "Audio blocked by browser",
+                  description: "Tap the 'Enable Audio' button on screen OR click anywhere to hear participants.",
+                  duration: 5000,
+                });
+              }
+            }
+          };
+          tryPlay();
+          
+          AudioUtils.ensureInitialized().catch(err => {
+            console.warn('Failed to initialize audio utils:', err);
+          });
+        }
+
+        // Handle video track
+        if (kind === 'video' && consumer.track && !isScreenShareProducer(undefined, consumer)) {
+          // Video element will be mounted in render via consumers map
         }
 
         consumer.on('trackended', () => {
           console.log('Consumer track ended:', prodId);
           const audioEl = remoteAudiosRef.current.get(prodId);
           if (audioEl) {
-            audioEl.pause();
+            try { audioEl.pause(); } catch {}
             audioEl.srcObject = null;
-            document.body.removeChild(audioEl);
+            if (audioEl.parentNode) document.body.removeChild(audioEl);
             remoteAudiosRef.current.delete(prodId);
           }
           removeProducerFromPeerRef.current(prodId);
@@ -866,9 +1387,9 @@ export default function VideoCallRoom({
           console.log('Consumer transport closed:', prodId);
           const audioEl = remoteAudiosRef.current.get(prodId);
           if (audioEl) {
-            audioEl.pause();
+            try { audioEl.pause(); } catch {}
             audioEl.srcObject = null;
-            document.body.removeChild(audioEl);
+            if (audioEl.parentNode) document.body.removeChild(audioEl);
             remoteAudiosRef.current.delete(prodId);
           }
           removeProducerFromPeerRef.current(prodId);
@@ -879,7 +1400,7 @@ export default function VideoCallRoom({
             setConnectionError(resumeResponse.error);
             return;
           }
-          console.log('Consumer resumed');
+          console.log('Consumer resumed:', id, kind);
         });
 
         setConsumers(prev => {
@@ -897,8 +1418,14 @@ export default function VideoCallRoom({
     if (!sendTransport || !device) return;
 
     try {
+      await AudioUtils.ensureInitialized();
+
       const stream = await navigator.mediaDevices.getUserMedia({
-        audio: true,
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true,
+        },
         video: callType === 'video'
       });
       
@@ -907,7 +1434,12 @@ export default function VideoCallRoom({
 
       if (localVideoRef.current) {
         localVideoRef.current.srcObject = stream;
+        try {
+          await localVideoRef.current.play().catch(() => {});
+        } catch {}
       }
+
+      // LOCAL SIDETONE DISABLED: User must NOT hear their own voice (echo-cancellation handles any natural feedback)
 
       if (!audioContextRef.current) {
         audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
@@ -932,7 +1464,7 @@ export default function VideoCallRoom({
         setIsLocalTalking(talking);
         if (lastLocalTalkingRef.current !== talking) {
           lastLocalTalkingRef.current = talking;
-          socket?.emit('call:audio-level', { roomId, isTalking: talking, userName });
+          socket?.emit(`${eventPrefix}:audio-level`, { roomId, isTalking: talking, userName });
         }
 
         if (!audioEnabledRef.current && average > 40) {
@@ -983,6 +1515,14 @@ export default function VideoCallRoom({
     }
     audioContextRef.current?.close();
     audioContextRef.current = null;
+    playbackAudioContextRef.current?.close();
+    playbackAudioContextRef.current = null;
+
+    // Clean up remote Web Audio gain nodes
+    remoteAudioGainNodesRef.current.forEach((gain) => { try { gain.disconnect(); } catch {} });
+    remoteAudioGainNodesRef.current.clear();
+    remoteAudioSourcesRef.current.forEach((src) => { try { src.disconnect(); } catch {} });
+    remoteAudioSourcesRef.current.clear();
     
     localAudioProducer?.close();
     setLocalAudioProducer(null);
@@ -1097,50 +1637,100 @@ export default function VideoCallRoom({
     emitMediaState({ screenSharing: false });
   };
 
+  const handleEnableAllAudio = async () => {
+    try { await AudioUtils.initAudioContext(); } catch {}
+
+    // Ensure playback audio context is running (for amplified audio)
+    try {
+      if (!playbackAudioContextRef.current) {
+        playbackAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+      }
+      if (playbackAudioContextRef.current.state === 'suspended') {
+        await playbackAudioContextRef.current.resume();
+      }
+    } catch {}
+
+    const promises: Promise<any>[] = [];
+    remoteAudiosRef.current.forEach(audioEl => {
+      try {
+        audioEl.muted = false;
+        audioEl.volume = 1;
+        promises.push(audioEl.play().catch(() => {}));
+      } catch {}
+    });
+
+    try { await Promise.all(promises); } catch {}
+    setShowAudioEnableOverlay(false);
+    setAudioAutoplayFailCount(0);
+    toast({ title: "Audio Enabled", description: "You should now hear all participants loudly.", duration: 2500 });
+  };
+
   const leaveCall = async () => {
     if (isRecording) await stopRecording();
     stopLocalMedia();
-    
+    const prefix = eventPrefix;
+
     // Cleanup countdown interval
     if (countdownIntervalRef.current) {
       clearInterval(countdownIntervalRef.current);
       countdownIntervalRef.current = null;
     }
-    
+
     consumers.forEach(consumer => { try { consumer.close(); } catch (e) { /* ignore */ } });
     sendTransport?.close();
     recvTransport?.close();
-    
+
     // Notify others that we're leaving
-    socket?.emit('call:leave', { 
-      roomId, 
+    socket?.emit(`${prefix}:leave`, {
+      ...(meetingId ? { meetingId: socketRoomId } : { roomId: socketRoomId }),
       userId: localStorage.getItem('userId') || '',
-      userName 
+      userName
     });
-    
-    socket?.emit('call:audio-level', { roomId, isTalking: false, userName });
-    socket?.emit('call:media-state', {
-      roomId,
+
+    socket?.emit(`${prefix}:audio-level`, { roomId: socketRoomId, isTalking: false, userName });
+    socket?.emit(`${prefix}:media-state`, {
+      roomId: socketRoomId,
       audioEnabled: false,
       videoEnabled: false,
       screenSharing: false,
     });
     onLeave();
   };
+  leaveCallRef.current = leaveCall;
 
   const sendChatMessage = () => {
     if (!socket || !chatInput.trim() || !roomId) return;
 
+    const userId = localStorage.getItem('userId') || '';
+    const exactUserName = resolveSenderName(userId, userName);
+
     const message: ChatMessage = {
       id: Date.now().toString(),
-      userId: localStorage.getItem('userId') || '',
-      userName,
+      userId,
+      userName: exactUserName,
       content: chatInput.trim(),
       timestamp: new Date()
     };
 
     setChatMessages(prev => [...prev, message]);
-    sendMeetingChat(roomId, chatInput.trim());
+
+    try {
+      // Pass userName in case sendMeetingChat supports more than 2 args
+      (sendMeetingChat as any)(roomId, chatInput.trim(), exactUserName);
+    } catch {}
+
+    // Fallback: explicitly emit with userName included so server broadcasts it
+    try {
+      socket.emit('meeting-chat:send', {
+        roomId,
+        message: chatInput.trim(),
+        userId,
+        userName: exactUserName,
+        senderName: exactUserName,
+        timestamp: Date.now(),
+      });
+    } catch {}
+
     setChatInput('');
   };
 
@@ -1169,22 +1759,20 @@ export default function VideoCallRoom({
 
   const admitParticipant = (participantId: string) => {
     if (!socket || !roomId) return;
-    socket.emit('waiting-room:admit', { meetingId: roomId, participantId });
-    setWaitingRoomParticipants(prev => prev.filter(p => p.id !== participantId));
+    socket.emit('waiting-room:admit', { roomId, meetingId: roomId, participantId });
+    setWaitingQueue(prev => prev.filter(p => p.userId !== participantId));
   };
 
   const denyParticipant = (participantId: string) => {
     if (!socket || !roomId) return;
-    socket.emit('waiting-room:deny', { meetingId: roomId, participantId });
-    setWaitingRoomParticipants(prev => prev.filter(p => p.id !== participantId));
+    socket.emit('waiting-room:deny', { roomId, meetingId: roomId, participantId });
+    setWaitingQueue(prev => prev.filter(p => p.userId !== participantId));
   };
 
   const admitAll = () => {
     if (!socket || !roomId) return;
-    waitingRoomParticipants.forEach(p => {
-      socket.emit('waiting-room:admit', { meetingId: roomId, participantId: p.id });
-    });
-    setWaitingRoomParticipants([]);
+    socket.emit('waiting-room:admit-all', { roomId, meetingId: roomId });
+    setWaitingQueue([]);
   };
 
   const blobToDataUrl = (blob: Blob) => {
@@ -1426,6 +2014,51 @@ export default function VideoCallRoom({
     };
   }, [endsAt]);
 
+  // Echo warning detection (improved with explicit same-user multi-device detection)
+  useEffect(() => {
+    if (echoWarningShown) return;
+
+    const currentUserId = localStorage.getItem('userId') || '';
+    const sameUserParticipants = participants.filter(p => p.id === currentUserId);
+    const userAgentMatches = Array.from(peers.values()).filter(p => p.id && p.id === currentUserId).length;
+
+    const uidCounts: Record<string, number> = {};
+    for (const p of participants) {
+      uidCounts[p.id] = (uidCounts[p.id] || 0) + 1;
+    }
+    const sameAccountDuplicateIds = Object.entries(uidCounts).filter(([, c]) => c > 1).map(([id]) => id);
+    const hasSameAccountMultiJoin = sameAccountDuplicateIds.length > 0;
+
+    if ((sameUserParticipants.length >= 1 && currentUserId) || userAgentMatches >= 1 || participants.length >= 2 || hasSameAccountMultiJoin) {
+      const uids = new Set(participants.map(p => p.id));
+      const warnTriggered = (uids.size < participants.length + 1) ||
+        (sameUserParticipants.length && !isHost) ||
+        (participants.length > 0 && Array.from(peers.values()).some(p => p.id === currentUserId)) ||
+        hasSameAccountMultiJoin;
+
+      if (warnTriggered) {
+        setEchoWarningShown(true);
+        toast({
+          title: hasSameAccountMultiJoin ? "Same Account On Multiple Devices!" : "Echo Warning",
+          description: hasSameAccountMultiJoin
+            ? "The SAME ACCOUNT joined on MULTIPLE devices! This will cause LOUD echo. Please leave the call on all but one device and use headphones."
+            : "Multiple devices or open speakers detected. To avoid echo: (1) Wear headphones, (2) Mute mic when not speaking, (3) Keep only 1 device per person in this room.",
+          variant: hasSameAccountMultiJoin ? "destructive" : "default",
+          duration: 12000,
+        });
+      } else if (participants.length >= 2) {
+        setEchoWarningShown(true);
+      }
+    }
+  }, [participants.length, peers, participants, echoWarningShown, isHost, toast]);
+
+  // Track remote audio autoplay failures: if we hit 2+ failures, show the giant "Tap to enable audio" overlay
+  useEffect(() => {
+    if (audioAutoplayFailCount >= 2) {
+      setShowAudioEnableOverlay(true);
+    }
+  }, [audioAutoplayFailCount]);
+
   // Recording duration timer
   useEffect(() => {
     if (!isRecording) return;
@@ -1440,25 +2073,93 @@ export default function VideoCallRoom({
     if (!socket) return;
 
     const handlePasswordRequired = () => setRequiresPassword(true);
-    const handleWaitingRoomRequest = ({ participantId, participantName }: any) => {
-      setWaitingRoomParticipants(prev => [...prev, { id: participantId, name: participantName }]);
+
+    const handleWaitingRoomPending = (data: any) => {
+      if (!isHost) return;
+      const uid = data.userId || data.participantId;
+      const uname = data.userName || data.participantName || data.name || uid;
+      setWaitingQueue(prev => {
+        if (prev.find(p => p.userId === uid)) return prev;
+        return [...prev, { userId: uid, userName: uname, requestedAt: Date.now() }];
+      });
+      toast({
+        title: "Waiting Room",
+        description: `${uname} is waiting to join the call`,
+        duration: 5000,
+      });
     };
-    const handleAdmitted = () => setIsInWaitingRoom(false);
+
+    const handleWaitingRoomQueue = (data: any) => {
+      if (data && data.roomId !== socketRoomId) return;
+      setWaitingQueue(data.queue || []);
+    };
+
+    const handleAdmitted = async (data: any) => {
+      if (data && data.roomId !== socketRoomId) return;
+      setIsInWaitingRoom(false);
+      setWaitingForHost(false);
+
+      if (!hasJoinedRestRef.current && (callId || meetingId)) {
+        hasJoinedRestRef.current = true;
+        try {
+          const endpoint = callId
+            ? `/calls/${callId}/join`
+            : `/meetings/${meetingId}/join`;
+          const response = await api.post(endpoint, {});
+          const result = unwrapApiData(response.data, 'Failed to finalize join');
+          if (callId && (result as any)?.endsAt) {
+            setEndsAt(new Date((result as any).endsAt));
+          }
+          if (callId && (result as any)?.maxMeetingDuration !== undefined) {
+            setMaxMeetingDuration((result as any).maxMeetingDuration);
+          }
+        } catch (err) {
+          console.error('[admitted] REST join call failed — room entered but DB status may not be persisted:', err);
+        }
+      }
+    };
+
+    const handleDenied = (data: any) => {
+      if (data && data.roomId !== socketRoomId) return;
+      setWaitingForHost(false);
+      setIsInWaitingRoom(false);
+      toast({
+        title: "Entry Denied",
+        description: "Host has denied your request to join.",
+        variant: "destructive",
+        duration: 6000,
+      });
+      setTimeout(() => onLeave(), 2500);
+    };
 
     socket.on('room:passwordRequired', handlePasswordRequired);
-    socket.on('waiting-room:request', handleWaitingRoomRequest);
+    socket.on('waiting-room:request', handleWaitingRoomPending);
+    socket.on('waiting-room:pending', handleWaitingRoomPending);
+    socket.on('waiting-room:queue', handleWaitingRoomQueue);
     socket.on('waiting-room:admitted', handleAdmitted);
+    socket.on('waiting-room:denied', handleDenied);
+    socket.on('waiting-room:admit', handleAdmitted);
+
+    // Fetch current waiting queue when host arrives
+    if (isHost) {
+      socket.emit('waiting-room:get-queue', { roomId });
+    }
 
     return () => {
       socket.off('room:passwordRequired', handlePasswordRequired);
-      socket.off('waiting-room:request', handleWaitingRoomRequest);
+      socket.off('waiting-room:request', handleWaitingRoomPending);
+      socket.off('waiting-room:pending', handleWaitingRoomPending);
+      socket.off('waiting-room:queue', handleWaitingRoomQueue);
       socket.off('waiting-room:admitted', handleAdmitted);
+      socket.off('waiting-room:denied', handleDenied);
+      socket.off('waiting-room:admit', handleAdmitted);
     };
-  }, [socket]);
+  }, [socket, isHost, roomId, toast, onLeave]);
 
   // Listen for screen share and media state events
   useEffect(() => {
     if (!socket) return;
+    const prefix = eventPrefix;
 
     const handleScreenShareStarted = ({ userId, userName: peerName }: any) => {
       setPeers(prev => {
@@ -1479,11 +2180,11 @@ export default function VideoCallRoom({
           const screenShareProducerIds = peer.producers
             .filter(p => p.appData?.screenShare)
             .map(p => p.producerId);
-          
+
           peer.producers = peer.producers.filter(p => !p.appData?.screenShare);
           peer.screenSharing = false;
           newPeers.set(userId, peer);
-          
+
           screenShareProducerIds.forEach(producerId => {
             setConsumers(consumersPrev => {
               const newConsumers = new Map(consumersPrev);
@@ -1494,7 +2195,7 @@ export default function VideoCallRoom({
               }
               return newConsumers;
             });
-            
+
             const videoEl = remoteVideosRef.current.get(producerId);
             if (videoEl) {
               videoEl.srcObject = null;
@@ -1532,16 +2233,68 @@ export default function VideoCallRoom({
 
     socket.on('screen-share:started', handleScreenShareStarted);
     socket.on('screen-share:stopped', handleScreenShareStopped);
-    socket.on('call:audio-level', handleAudioLevel);
-    socket.on('call:media-state', handleMediaState);
+    socket.on(`${prefix}:audio-level`, handleAudioLevel);
+    socket.on(`${prefix}:media-state`, handleMediaState);
 
     return () => {
       socket.off('screen-share:started', handleScreenShareStarted);
       socket.off('screen-share:stopped', handleScreenShareStopped);
-      socket.off('call:audio-level', handleAudioLevel);
-      socket.off('call:media-state', handleMediaState);
+      socket.off(`${prefix}:audio-level`, handleAudioLevel);
+      socket.off(`${prefix}:media-state`, handleMediaState);
     };
-  }, [socket]);
+  }, [socket, eventPrefix]);
+
+  // ==========================================
+  // Helpers (resolved BEFORE effects that use them)
+  // ==========================================
+  const formatDuration = (seconds: number) => {
+    const hrs = Math.floor(seconds / 3600);
+    const mins = Math.floor((seconds % 3600) / 60);
+    const secs = seconds % 60;
+        if (hrs > 0) {
+      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+  };
+
+  const formatTime = (date: Date) => {
+    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  // ==========================================
+  // Resolve exact sender name using all available data sources
+  // ==========================================
+  const resolveSenderName = useCallback((userId: string, fallback?: string): string => {
+    const currentUserId = localStorage.getItem('userId') || '';
+    if (userId === currentUserId) {
+      return userName;
+    }
+
+    if (fallback && String(fallback).trim() && String(fallback).trim() !== userId) {
+      return String(fallback).trim();
+    }
+
+    const inParticipants = participants.find(p => p.id === userId)?.name;
+    if (inParticipants && String(inParticipants).trim() && String(inParticipants).trim() !== userId) {
+      return inParticipants;
+    }
+
+    const inPeers = peers.get(userId)?.name;
+    if (inPeers && String(inPeers).trim() && String(inPeers).trim() !== userId) {
+      return inPeers;
+    }
+
+    const inTeamMembers = teamMembers.find(m => m.id === userId)?.name;
+    if (inTeamMembers && String(inTeamMembers).trim() && String(inTeamMembers).trim() !== userId) {
+      return inTeamMembers;
+    }
+
+    const byTeamMember = teamMembers.find(m => String(m.id) === String(userId));
+    if (byTeamMember?.name) return byTeamMember.name;
+
+    if (fallback && String(fallback).trim()) return String(fallback);
+    return userId;
+  }, [participants, peers, teamMembers, userName]);
 
   // Listen for recording events
   useEffect(() => {
@@ -1571,16 +2324,18 @@ export default function VideoCallRoom({
   useEffect(() => {
     if (!socket) return;
 
-    const handleIncomingMessage = ({ userId, message, timestamp, userName: senderName }: any) => {
+    const handleIncomingMessage = ({ userId, message, timestamp, userName: senderName, senderName: senderNameAlt }: any) => {
       const currentUserId = localStorage.getItem('userId') || '';
       if (userId === currentUserId) return;
 
+      const exactName = resolveSenderName(userId, senderName || senderNameAlt);
+
       setChatMessages(prev => [...prev, {
-        id: Date.now().toString(),
+        id: Date.now().toString() + Math.random().toString(36).slice(2),
         userId,
-        userName: senderName || userId,
+        userName: exactName,
         content: message,
-        timestamp: new Date(timestamp)
+        timestamp: timestamp ? new Date(timestamp) : new Date()
       }]);
       AudioUtils.playNotification();
     };
@@ -1590,7 +2345,30 @@ export default function VideoCallRoom({
     return () => {
       socket.off('meeting-chat:message', handleIncomingMessage);
     };
-  }, [socket]);
+  }, [socket, resolveSenderName]);
+
+  // Initialize audio context on first user interaction
+  useEffect(() => {
+    const initAudio = () => {
+      AudioUtils.ensureInitialized().catch(err => {
+        console.warn('Failed to initialize audio:', err);
+      });
+      // Remove event listeners after first interaction
+      document.removeEventListener('click', initAudio);
+      document.removeEventListener('keydown', initAudio);
+      document.removeEventListener('touchstart', initAudio);
+    };
+    
+    document.addEventListener('click', initAudio);
+    document.addEventListener('keydown', initAudio);
+    document.addEventListener('touchstart', initAudio);
+    
+    return () => {
+      document.removeEventListener('click', initAudio);
+      document.removeEventListener('keydown', initAudio);
+      document.removeEventListener('touchstart', initAudio);
+    };
+  }, []);
 
   // Start local media when transports are ready
   useEffect(() => {
@@ -1599,77 +2377,162 @@ export default function VideoCallRoom({
     }
   }, [device, sendTransport]);
 
-  const formatDuration = (seconds: number) => {
-    const hrs = Math.floor(seconds / 3600);
-    const mins = Math.floor((seconds % 3600) / 60);
-    const secs = seconds % 60;
-        if (hrs > 0) {
-      return `${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-    }
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
-  };
-
-  const formatTime = (date: Date) => {
-    return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
-  };
-
   // Render participants list
   const renderParticipantsList = () => {
-    // Combine local user with remote participants
-    const allParticipants: Participant[] = [
+    const localUserId = localStorage.getItem('userId') || 'local';
+
+    const mergedParticipants: Participant[] = [
       {
-        id: localStorage.getItem('userId') || 'local',
+        id: localUserId,
         name: userName,
         isHost: isHost,
         joinedAt: new Date(),
         isLocal: true,
+        status: 'joined',
         audioEnabled: isAudioEnabled,
         videoEnabled: isVideoEnabled,
         screenSharing: isScreenSharing,
         isTalking: isLocalTalking,
       },
-      ...participants
+      ...participants.filter(p => p.id !== localUserId),
     ];
-    
-    return (
-      <div className="space-y-2">
-        {allParticipants.map(participant => (
-          <div key={participant.id} className="flex items-center justify-between p-2 rounded-md hover:bg-gray-800">
-            <div className="flex items-center gap-3">
-              <Avatar className={`h-8 w-8 ${participant.isTalking ? talkingRingClass : avatarBaseClass}`}>
-                <AvatarFallback className="bg-blue-600 text-white text-xs">
-                  {getInitials(participant.name)}
-                </AvatarFallback>
-              </Avatar>
-              <div>
-                <p className="text-sm font-medium text-white">
-                  {participant.name}
-                  {participant.isLocal && <span className="text-gray-400 text-xs ml-1">(You)</span>}
-                </p>
-                {participant.isHost && (
-                  <p className="text-xs text-blue-400">Host</p>
+
+    const joined = mergedParticipants.filter(p => p.status === 'joined');
+    const invited = mergedParticipants.filter(p => p.status === 'invited');
+    const left = mergedParticipants.filter(p => p.status === 'left');
+
+    const renderRow = (p: Participant, showDialBack: boolean) => {
+      const leftAgo = p.leftAt ? formatDistanceToNow(p.leftAt, { addSuffix: true }) : '';
+      const now = Date.now();
+      const lastInvite = dialBackCooldownRef.current.get(p.id) || 0;
+      const cooling = now - lastInvite < 10_000;
+      const cooldownSecs = cooling ? Math.ceil((10_000 - (now - lastInvite)) / 1000) : 0;
+
+      const statusBadge = p.status === 'joined' ? (
+        <Badge variant="default" className="text-[10px] bg-emerald-600 hover:bg-emerald-700">
+          In call
+        </Badge>
+      ) : p.status === 'invited' ? (
+        <Badge variant="secondary" className="text-[10px]">
+          Invited
+        </Badge>
+      ) : (
+        <Badge variant="outline" className="text-[10px] text-muted-foreground">
+          Left {leftAgo}
+        </Badge>
+      );
+
+      const rowClass = cn(
+        "flex items-center justify-between p-2 rounded-md gap-2",
+        p.status === 'left' ? "opacity-60 hover:opacity-100 hover:bg-gray-800" : "hover:bg-gray-800"
+      );
+
+      return (
+        <div key={p.id} className={rowClass}>
+          <div className="flex items-center gap-3 min-w-0 flex-1">
+            <Avatar className={cn(
+              "h-8 w-8 shrink-0",
+              p.isTalking && p.status === 'joined' ? talkingRingClass : avatarBaseClass
+            )}>
+              <AvatarFallback className="bg-blue-600 text-white text-xs">
+                {getInitials(p.name)}
+              </AvatarFallback>
+            </Avatar>
+            <div className="min-w-0">
+              <p className={cn(
+                "text-sm font-medium truncate",
+                p.status === 'joined' ? "text-white" : "text-white/80"
+              )}>
+                {p.name}
+                {p.isLocal && <span className="text-gray-400 text-xs ml-1">(You)</span>}
+              </p>
+              <div className="flex items-center gap-2 mt-0.5">
+                {p.isHost && <p className="text-[10px] text-blue-400">Host</p>}
+                {statusBadge}
+              </div>
+              <div className="flex items-center gap-1 mt-1 flex-wrap">
+                {p.audioEnabled !== undefined && p.status === 'joined' && (
+                  <Badge variant={p.audioEnabled ? "default" : "secondary"} className="text-[9px] px-1.5 py-0 h-4">
+                    {p.audioEnabled ? "Mic" : "Muted"}
+                  </Badge>
+                )}
+                {p.videoEnabled !== undefined && callType === 'video' && p.status === 'joined' && (
+                  <Badge variant={p.videoEnabled ? "default" : "secondary"} className="text-[9px] px-1.5 py-0 h-4">
+                    {p.videoEnabled ? "Cam" : "No Cam"}
+                  </Badge>
+                )}
+                {p.screenSharing && p.status === 'joined' && (
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-green-500 text-green-400">
+                    Sharing
+                  </Badge>
                 )}
               </div>
             </div>
-            <div className="flex items-center gap-2">
-              {participant.audioEnabled !== undefined && (
-                <Badge variant={participant.audioEnabled ? "default" : "secondary"} className="text-xs">
-                  {participant.audioEnabled ? "Mic On" : "Mic Off"}
-                </Badge>
-              )}
-              {participant.videoEnabled !== undefined && callType === 'video' && (
-                <Badge variant={participant.videoEnabled ? "default" : "secondary"} className="text-xs">
-                  {participant.videoEnabled ? "Camera On" : "Camera Off"}
-                </Badge>
-              )}
-              {participant.screenSharing && (
-                <Badge variant="outline" className="text-xs border-green-500 text-green-400">
-                  Sharing
-                </Badge>
-              )}
-            </div>
           </div>
-        ))}
+          <div className="shrink-0 flex items-center gap-2">
+            {showDialBack && !p.isLocal && (
+              <Button
+                variant={p.status === 'invited' ? "outline" : "secondary"}
+                size="sm"
+                className="h-7 px-2 text-xs gap-1"
+                onClick={() => handleDialBack(p)}
+                disabled={cooling || !isHost}
+                title={isHost ? (p.status === 'invited' ? 'Re-send invite' : 'Dial back to call') : 'Only host can re-invite'}
+              >
+                {cooling ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : p.status === 'invited' ? (
+                  <BellRing className="h-3.5 w-3.5" />
+                ) : (
+                  <Phone className="h-3.5 w-3.5" />
+                )}
+                {cooling
+                  ? `${cooldownSecs}s`
+                  : p.status === 'invited'
+                    ? 'Remind'
+                    : 'Dial Back'}
+              </Button>
+            )}
+          </div>
+        </div>
+      );
+    };
+
+    const Section = ({ title, count, children, accent }: { title: string; count: number; children: React.ReactNode; accent?: string }) => (
+      <div className="mb-4">
+        <div className="flex items-center justify-between mb-2 px-1">
+          <h4 className={cn("text-[11px] font-semibold uppercase tracking-wider", accent || "text-gray-400")}>
+            {title}
+          </h4>
+          <Badge variant="outline" className="text-[10px] h-5 px-2">{count}</Badge>
+        </div>
+        <div className="space-y-1">
+          {children}
+        </div>
+      </div>
+    );
+
+    return (
+      <div className="space-y-2">
+        <Section title="In Call" count={joined.length} accent="text-emerald-400">
+          {joined.length === 0 ? (
+            <p className="text-xs text-gray-500 px-2 py-3 text-center">Waiting for participants…</p>
+          ) : (
+            joined.map(p => renderRow(p, false))
+          )}
+        </Section>
+
+        {invited.length > 0 && (
+          <Section title="Invited" count={invited.length}>
+            {invited.map(p => renderRow(p, true))}
+          </Section>
+        )}
+
+        {left.length > 0 && (
+          <Section title="Left" count={left.length} accent="text-rose-400">
+            {left.map(p => renderRow(p, true))}
+          </Section>
+        )}
       </div>
     );
   };
@@ -1784,12 +2647,41 @@ export default function VideoCallRoom({
 
   // ========== RENDER: Waiting Room ==========
   if (isInWaitingRoom) {
+    const localIsHostPresent = (() => {
+      if (isHost) return true;
+      return participants.some(p => p.status === 'joined' && p.isHost);
+    })();
+
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
         <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
           <div className="space-y-2">
             <h1 className="text-2xl font-bold text-white">Waiting Room</h1>
-            <p className="text-gray-300">Please wait for the host to admit you</p>
+            {localIsHostPresent ? (
+              <p className="text-gray-300">
+                Please wait — the host has been notified and will admit you shortly.
+              </p>
+            ) : (
+              <p className="text-gray-300">
+                Host has not yet started the meeting. You will be admitted automatically once they arrive.
+              </p>
+            )}
+            {localIsHostPresent ? (
+              <div className="flex items-center justify-center gap-2 pt-2 text-indigo-300 text-sm">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-indigo-400 opacity-75" />
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-indigo-500" />
+                </span>
+                Request sent to host
+              </div>
+            ) : (
+              <div className="flex items-center justify-center gap-2 pt-2 text-amber-300 text-sm">
+                <span className="relative flex h-2 w-2">
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-amber-500" />
+                </span>
+                Waiting for host to join…
+              </div>
+            )}
           </div>
           <div className="bg-gray-700/50 rounded-lg p-4">
             <p className="text-sm text-gray-300 mb-3">Your name:</p>
@@ -1815,6 +2707,9 @@ export default function VideoCallRoom({
       </div>
     );
   }
+
+  // ========== COMPUTED: Host presence check (used for waiting-room UX copy distinction)
+  // (Computed inline in waiting-room render to avoid TDZ issues with early returns.
 
   // ========== COMPUTED: Layout values ==========
   const remoteScreenShares = Array.from(peers.values()).flatMap(peer =>
@@ -1860,6 +2755,52 @@ export default function VideoCallRoom({
             size="sm"
             className="h-auto p-1 text-white hover:bg-red-800"
             onClick={() => setConnectionError('')}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        </div>
+      )}
+
+      {/* Waiting for participants banner (duration state = waiting — Guide §3.2 / §4) */}
+      {durationState.status === 'waiting' && durationState.maxMeetingDurationMinutes !== null && (
+        <div className="shrink-0 z-40 bg-gradient-to-r from-blue-950/95 to-indigo-950/95 backdrop-blur text-blue-50 px-4 py-2 text-sm flex items-center gap-3 border-b border-blue-500/30">
+          <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
+          <Clock className="h-4 w-4 shrink-0 text-blue-300" />
+          <span className="flex-1">
+            <span className="font-semibold text-blue-100">Waiting for more participants.</span>{' '}
+            The {durationState.maxMeetingDurationMinutes}-minute timer will start when 2+ people join the call.
+          </span>
+          <Badge variant="outline" className="text-[11px] border-blue-400/40 text-blue-200 bg-blue-900/40">
+            ⏳ {durationState.maxMeetingDurationMinutes} min cap
+          </Badge>
+        </div>
+      )}
+      {durationState.status === 'waiting' && durationState.maxMeetingDurationMinutes === null && (
+        <div className="shrink-0 z-40 bg-gray-900/95 text-gray-100 px-4 py-2 text-sm flex items-center gap-3 border-b border-gray-700">
+          <div className="h-2 w-2 rounded-full bg-gray-400 animate-pulse shrink-0" />
+          <span className="flex-1">
+            Waiting for more participants to join before call begins.
+          </span>
+        </div>
+      )}
+
+      {/* Sticky 1-minute remaining banner (Guide §7 — sticky red) */}
+      {showOneMinuteBanner && countdownDisplay && (
+        <div className="shrink-0 z-[60] bg-gradient-to-r from-red-900 via-rose-900 to-red-950 text-white px-4 py-3 text-sm flex items-center gap-3 border-b-2 border-red-500/80 shadow-lg shadow-red-950/40 animate-in slide-in-from-top">
+          <AlertCircle className="h-5 w-5 shrink-0 text-red-200 animate-pulse" />
+          <span className="flex-1 font-semibold text-white">
+            ⚠ 1 minute remaining. This call will auto-end shortly — please wrap up.
+          </span>
+          <Badge variant="destructive" className="animate-pulse border-red-300 text-[11px] h-6">
+            <Clock className="h-3 w-3 mr-1" />
+            {timeRemaining || '00:00'}
+          </Badge>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-auto p-1 text-white hover:bg-red-800/70 shrink-0"
+            onClick={() => setShowOneMinuteBanner(false)}
+            title="Dismiss banner"
           >
             <X className="h-4 w-4" />
           </Button>
@@ -2039,8 +2980,99 @@ export default function VideoCallRoom({
               </Button>
             </div>
             <ScrollArea className="flex-1">
-              <div className="p-4">
-                {renderParticipantsList()}
+              <div className="p-4 space-y-4">
+                {/* Echo Warning */}
+                {echoWarningShown && (
+                  <div className="bg-amber-900/40 border border-amber-600/40 rounded-lg p-3 space-y-1">
+                    <div className="flex items-start gap-2">
+                      <AlertCircle className="h-4 w-4 text-amber-400 shrink-0 mt-0.5" />
+                      <div>
+                        <p className="text-xs font-semibold text-amber-300">Echo Risk Detected</p>
+                        <p className="text-[11px] text-amber-200/80 leading-relaxed">
+                          Multiple devices from the same user/location detected. Use headphones or mute your microphone when not speaking to avoid echo feedback loops.
+                        </p>
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Waiting Room Queue (Host Only) */}
+                {isHost && waitingQueue.length > 0 && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <p className="text-xs font-semibold uppercase tracking-wider text-blue-400">Waiting Room ({waitingQueue.length})</p>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="h-7 text-[11px] px-2"
+                        onClick={() => {
+                          socket?.emit('waiting-room:admit-all', { roomId });
+                          setWaitingQueue([]);
+                        }}
+                      >
+                        <Check className="h-3 w-3 mr-1" />Admit All
+                      </Button>
+                    </div>
+                    <div className="space-y-1.5">
+                      {waitingQueue.map(item => (
+                        <div key={item.userId} className="flex items-center justify-between bg-gray-800/60 rounded-lg px-3 py-2 border border-blue-500/20">
+                          <div className="flex items-center gap-2 min-w-0">
+                            <Avatar className="h-7 w-7 shrink-0">
+                              <AvatarFallback className="bg-blue-700 text-white text-[10px]">
+                                {getInitials(item.userName || item.userId)}
+                              </AvatarFallback>
+                            </Avatar>
+                            <div className="min-w-0">
+                              <p className="text-xs text-white truncate">{item.userName || item.userId}</p>
+                              <p className="text-[10px] text-blue-400/80">Waiting to join</p>
+                            </div>
+                          </div>
+                          <div className="flex items-center gap-1 shrink-0">
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="outline"
+                              className="h-7 w-7 rounded-full bg-green-600/20 border-green-600/40 text-green-400 hover:bg-green-600/30"
+                              onClick={() => {
+                                socket?.emit('waiting-room:admit', {
+                                  roomId,
+                                  participantId: item.userId,
+                                });
+                                setWaitingQueue(prev => prev.filter(p => p.userId !== item.userId));
+                              }}
+                              title="Admit"
+                            >
+                              <Check className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              type="button"
+                              size="icon"
+                              variant="outline"
+                              className="h-7 w-7 rounded-full bg-red-600/20 border-red-600/40 text-red-400 hover:bg-red-600/30"
+                              onClick={() => {
+                                socket?.emit('waiting-room:deny', {
+                                  roomId,
+                                  participantId: item.userId,
+                                });
+                                setWaitingQueue(prev => prev.filter(p => p.userId !== item.userId));
+                              }}
+                              title="Deny"
+                            >
+                              <X className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* Active participants */}
+                <div className="space-y-1">
+                  <p className="text-xs font-semibold uppercase tracking-wider text-gray-400">In Call</p>
+                  {renderParticipantsList()}
+                </div>
               </div>
             </ScrollArea>
             {isHost && (
@@ -2142,10 +3174,52 @@ export default function VideoCallRoom({
 
           {/* Center controls */}
           <div className="flex items-center gap-2">
-            {timeRemaining && (
-              <div className="flex items-center gap-2 text-yellow-400">
-                <Clock className="h-4 w-4" />
-                <span className="text-sm font-mono">{timeRemaining}</span>
+            {/* Countdown Badge (per FRONTEND_CALL_DURATION_GUIDE.md §5.3) */}
+            {durationState.status === 'waiting' && (
+              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-950/80 border border-blue-500/40">
+                <Clock className="h-4 w-4 text-blue-300" />
+                <span className="text-xs font-semibold text-blue-200">Waiting · Timer paused</span>
+              </div>
+            )}
+            {countdownDisplay && (
+              <div className={cn(
+                "flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors",
+                countdownDisplay.isUrgent
+                  ? "bg-red-950/90 border-red-500/60 shadow-lg shadow-red-950/50"
+                  : countdownDisplay.isWarning
+                    ? "bg-amber-950/90 border-amber-500/50 shadow-md shadow-amber-950/40"
+                    : "bg-emerald-950/80 border-emerald-500/40"
+              )}>
+                <Clock className={cn(
+                  "h-4 w-4 shrink-0",
+                  countdownDisplay.isUrgent && "text-red-300 animate-pulse",
+                  countdownDisplay.isWarning && !countdownDisplay.isUrgent && "text-amber-300",
+                  !countdownDisplay.isWarning && !countdownDisplay.isUrgent && "text-emerald-300"
+                )} />
+                {/* Progress bar (percent-used bar) */}
+                <div className="w-20 h-1.5 bg-black/40 rounded-full overflow-hidden shrink-0">
+                  <div
+                    className={cn(
+                      "h-full rounded-full transition-all duration-500",
+                      countdownDisplay.isUrgent ? "bg-gradient-to-r from-red-500 to-rose-400"
+                        : countdownDisplay.isWarning ? "bg-gradient-to-r from-amber-500 to-yellow-400"
+                          : "bg-gradient-to-r from-emerald-500 to-teal-400"
+                    )}
+                    style={{ width: `${Math.round(countdownDisplay.percentUsed * 100)}%` }}
+                  />
+                </div>
+                <span className={cn(
+                  "text-sm font-mono font-semibold tabular-nums",
+                  countdownDisplay.isUrgent
+                    ? "text-white animate-pulse"
+                    : countdownDisplay.isWarning
+                      ? "text-amber-100"
+                      : "text-emerald-100"
+                )}>
+                  {countdownDisplay.hours > 0 && `${countdownDisplay.hours.toString().padStart(2, '0')}:`}
+                  {countdownDisplay.minutes.toString().padStart(2, '0')}
+                  :{countdownDisplay.seconds.toString().padStart(2, '0')}
+                </span>
               </div>
             )}
             {isRecording && (
@@ -2200,10 +3274,13 @@ export default function VideoCallRoom({
               title="Participants"
             >
               <Users className="h-5 w-5" />
-              {participants.length > 0 && (
-                <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] font-bold rounded-full h-4 w-4 flex items-center justify-center">
-                  {participants.length}
+              {(participants.length > 0 || waitingQueue.length > 0) && (
+                <span className="absolute -top-1 -right-1 bg-blue-500 text-white text-[10px] font-bold rounded-full min-w-[16px] h-4 px-1 flex items-center justify-center">
+                  {participants.length + (waitingQueue.length > 0 ? ` +${waitingQueue.length}` : '')}
                 </span>
+              )}
+              {waitingQueue.length > 0 && !showParticipants && (
+                <span className="absolute top-0 right-0 h-2.5 w-2.5 rounded-full bg-amber-400 ring-2 ring-zinc-900 animate-pulse" />
               )}
             </Button>
             <Button
@@ -2227,46 +3304,60 @@ export default function VideoCallRoom({
         </div>
       </div>
 
-      {/* Waiting room notifications for host */}
-      {isHost && waitingRoomParticipants.length > 0 && (
-        <div className="absolute top-4 right-4 w-80 bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
-          <div className="p-3 border-b border-gray-700 flex items-center justify-between">
-            <h4 className="text-sm font-medium text-white">Waiting Room ({waitingRoomParticipants.length})</h4>
+      {/* Waiting room notifications for host (floating alert) */}
+      {isHost && waitingQueue.length > 0 && (
+        <div className="absolute top-4 right-4 w-80 bg-gradient-to-br from-blue-950/95 to-gray-900/95 backdrop-blur-xl border border-blue-500/40 rounded-xl shadow-2xl animate-in slide-in-from-top-4 fade-in duration-300">
+          <div className="p-3 border-b border-blue-500/30 flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <span className="relative flex h-2.5 w-2.5">
+                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-blue-400 opacity-75"></span>
+                <span className="relative inline-flex rounded-full h-2.5 w-2.5 bg-blue-500"></span>
+              </span>
+              <h4 className="text-sm font-semibold text-white">Waiting Room ({waitingQueue.length})</h4>
+            </div>
             <Button
               variant="ghost"
               size="sm"
-              className="h-6 px-2 text-xs text-blue-400 hover:text-blue-300"
+              className="h-7 px-2.5 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/30 font-medium"
               onClick={admitAll}
             >
+              <Check className="h-3.5 w-3.5 mr-1" />
               Admit All
             </Button>
           </div>
-          <ScrollArea className="max-h-60">
-            <div className="p-2 space-y-2">
-              {waitingRoomParticipants.map(participant => (
-                <div key={participant.id} className="flex items-center justify-between p-2 bg-gray-800 rounded">
-                  <div className="flex items-center gap-2">
-                    <Avatar className="h-6 w-6">
-                      <AvatarFallback className="bg-blue-600 text-white text-[10px]">
-                        {getInitials(participant.name)}
+          <ScrollArea className="max-h-72">
+            <div className="p-2.5 space-y-2">
+              {waitingQueue.map(participant => (
+                <div key={participant.userId} className="flex items-center justify-between p-2.5 bg-gray-800/70 rounded-lg border border-gray-700/60 hover:bg-gray-800 transition-colors">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Avatar className="h-8 w-8 shrink-0 ring-2 ring-blue-500/20">
+                      <AvatarFallback className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white text-[11px] font-semibold">
+                        {getInitials(participant.userName || participant.userId)}
                       </AvatarFallback>
                     </Avatar>
-                    <span className="text-sm text-white">{participant.name}</span>
+                    <div className="min-w-0">
+                      <span className="text-sm text-white truncate block font-medium">{participant.userName || participant.userId}</span>
+                      <span className="text-[10px] text-blue-300/70">
+                        {participant.requestedAt ? `Waiting ${Math.max(1, Math.floor((Date.now() - participant.requestedAt) / 1000))}s` : 'Requesting to join'}
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex gap-1">
+                  <div className="flex gap-1.5 shrink-0">
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 w-7 p-0 text-green-400 hover:text-green-300 hover:bg-green-900/20"
-                      onClick={() => admitParticipant(participant.id)}
+                      className="h-8 w-8 p-0 text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/40 rounded-full bg-emerald-900/20 border border-emerald-600/30"
+                      onClick={() => admitParticipant(participant.userId)}
+                      title="Admit participant"
                     >
                       <Check className="h-4 w-4" />
                     </Button>
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="h-7 w-7 p-0 text-red-400 hover:text-red-300 hover:bg-red-900/20"
-                      onClick={() => denyParticipant(participant.id)}
+                      className="h-8 w-8 p-0 text-red-400 hover:text-red-300 hover:bg-red-900/40 rounded-full bg-red-900/20 border border-red-600/30"
+                      onClick={() => denyParticipant(participant.userId)}
+                      title="Deny participant"
                     >
                       <X className="h-4 w-4" />
                     </Button>
@@ -2275,6 +3366,42 @@ export default function VideoCallRoom({
               ))}
             </div>
           </ScrollArea>
+        </div>
+      )}
+
+      {/* Tap-to-enable-audio fullscreen overlay (when autoplay is blocked 2+ times) */}
+      {showAudioEnableOverlay && (
+        <div className="absolute inset-0 z-[9999] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 animate-in fade-in duration-300">
+          <div className="max-w-md w-full bg-gradient-to-br from-indigo-950 to-gray-900 border border-indigo-500/40 rounded-2xl p-8 shadow-2xl text-center space-y-6">
+            <div className="mx-auto h-20 w-20 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center ring-4 ring-blue-500/30 shadow-lg shadow-blue-500/30 animate-pulse">
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 5 6 9H2v6h4l5 4V5z"></path>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+                <path d="M19.07 4.93a10 10 0 0 1 0 14.14"></path>
+              </svg>
+            </div>
+            <div className="space-y-2">
+              <h2 className="text-2xl font-bold text-white">Audio Is Blocked</h2>
+              <p className="text-sm text-indigo-200/80 leading-relaxed">
+                Your browser prevented automatic audio playback.<br />
+                Tap the button below <strong>once</strong> to hear all participants.
+              </p>
+            </div>
+            <Button
+              size="lg"
+              onClick={handleEnableAllAudio}
+              className="w-full h-14 rounded-xl bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 text-white font-semibold text-base shadow-xl shadow-blue-600/40 hover:shadow-blue-500/50 hover:scale-[1.02] active:scale-100 transition-all"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" className="h-5 w-5 mr-2" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M11 5 6 9H2v6h4l5 4V5z"></path>
+                <path d="M15.54 8.46a5 5 0 0 1 0 7.07"></path>
+              </svg>
+              🔊 Enable Call Audio
+            </Button>
+            <p className="text-[11px] text-indigo-300/60">
+              This permission is required by browsers to prevent unwanted sounds. You only need to do this once.
+            </p>
+          </div>
         </div>
       )}
 
