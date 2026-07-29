@@ -18,9 +18,49 @@ import {
 const upload = multer({ storage: multer.memoryStorage() });
 
 // Store active users
-const activeUsers = new Map<string, { userId: string; businessId: string; socketId: string }>();
+const activeUsers = new Map<string, { userId: string; businessId: string; socketId: string; userName?: string }>();
 // Store active recordings (roomId -> { id, startTime, userId, businessId, meetingId, callId })
 const activeRecordings = new Map<string, { id: string; startTime: number; userId: string; businessId: string; meetingId?: string; callId?: string }>();
+// Store waiting room participants per room: roomId -> [{ userId, userName, requestedAt }]
+const waitingRoomQueue = new Map<string, Array<{ userId: string; userName?: string; requestedAt: number }>>();
+// Per-user per-conversation unread counts: `${userId}_${conversationId}` -> count
+const unreadCounts = new Map<string, number>();
+
+// --------- Duration & Room Manager (per FRONTEND_CALL_DURATION_GUIDE.md) ---------
+interface SocketRoomParticipant {
+  userId: string;
+  userName?: string;
+  isHost: boolean;
+  audioEnabled: boolean;
+  videoEnabled: boolean;
+  screenSharing: boolean;
+  joinedAt: string;
+}
+interface ManagedRoom {
+  callId: string;               // UUID
+  callCode: string;             // short code for display
+  maxMeetingDuration: number | null; // plan limit in minutes
+  endsAt: string | null;        // ISO when countdown will end (null until 2+ participants)
+  startedAt: string | null;     // ISO when countdown began (just went from 1→2 participants)
+  warned5: boolean;             // 5-min warning emitted
+  warned1: boolean;             // 1-min warning emitted
+  participants: Map<string, SocketRoomParticipant>; // socketId → participant (socket-level joined)
+}
+// roomId (socket room, matches UUID OR callCode) -> ManagedRoom
+const roomManager = new Map<string, ManagedRoom>();
+// Reverse maps: callId (UUID) → roomId, callCode → roomId
+const callIdToRoomId = new Map<string, string>();
+const callCodeToRoomId = new Map<string, string>();
+
+const getRoomByAnyId = (roomIdOrCallIdOrCode: string): ManagedRoom | undefined => {
+  const direct = roomManager.get(roomIdOrCallIdOrCode);
+  if (direct) return direct;
+  const viaCallId = callIdToRoomId.get(roomIdOrCallIdOrCode);
+  if (viaCallId) return roomManager.get(viaCallId);
+  const viaCode = callCodeToRoomId.get(roomIdOrCallIdOrCode);
+  if (viaCode) return roomManager.get(viaCode);
+  return undefined;
+};
 
 export async function registerRoutes(app: Express): Promise<Server> {
   // Middleware to simulate auth (get userId from header or token)
@@ -932,6 +972,19 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Emit real-time event
       const io = (global as any).io;
       if (io) {
+        const conv = await storage.getConversation(req.params.id);
+        if (conv) {
+          const otherParticipants = conv.participants.filter(p => p.userId !== userId);
+          otherParticipants.forEach(p => {
+            const targetUser = activeUsers.get(p.userId);
+            if (targetUser) {
+              io.to(targetUser.socketId).emit('chat:new-message-notification', {
+                conversationId: req.params.id,
+                message,
+              });
+            }
+          });
+        }
         io.to(`conversation-${req.params.id}`).emit('message:created', message);
         io.to(`conversation-${req.params.id}`).emit('chat:message', message);
       }
@@ -939,6 +992,20 @@ export async function registerRoutes(app: Express): Promise<Server> {
       res.json({ success: true, data: message });
     } catch (err) {
       res.status(500).json({ error: "Failed to send message" });
+    }
+  });
+
+  app.post("/api/chat/conversations/:id/read", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      await storage.markConversationRead(userId, req.params.id);
+      const io = (global as any).io;
+      if (io) {
+        io.emit('chat:read-updated', { conversationId: req.params.id, userId });
+      }
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: "Failed to mark as read" });
     }
   });
 
@@ -1283,8 +1350,8 @@ export async function registerRoutes(app: Express): Promise<Server> {
     console.log('New client connected:', socket.id);
 
     // Handle user going online
-    socket.on('user-online', (userId: string, businessId: string) => {
-      activeUsers.set(userId, { userId, businessId, socketId: socket.id });
+    socket.on('user-online', (userId: string, businessId: string, userName?: string) => {
+      activeUsers.set(userId, { userId, businessId, socketId: socket.id, userName });
       
       // Notify all users in the same business that this user is online
       const usersInBusiness = Array.from(activeUsers.values()).filter(u => u.businessId === businessId);
@@ -1296,7 +1363,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
       // Join the business room
       socket.join(businessId);
       
-      console.log(`User ${userId} online in business ${businessId}`);
+      console.log(`User ${userId} (${userName || 'N/A'}) online in business ${businessId}`);
     });
 
     // Handle user keep-alive
@@ -1318,24 +1385,256 @@ export async function registerRoutes(app: Express): Promise<Server> {
     });
 
     // --- Call Events ---
-    socket.on('call:invite', ({ callId, targetUserId, type }) => {
+    socket.on('call:invite', ({ callId, targetUserId, type, callerName, roomId }) => {
       const caller = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+      const callerNameResolved = callerName || caller?.userName || '';
       // Find target user and send invite
       for (const [userId, user] of activeUsers.entries()) {
         if (userId === targetUserId) {
           io.to(user.socketId).emit('call:incoming', {
             callId,
             from: caller?.userId || '',
+            fromName: callerNameResolved,
+            callerName: callerNameResolved,
             type,
             callCode: callId,
+            roomId: roomId || callId,
           });
           break;
         }
       }
     });
 
-    socket.on('call:join', ({ roomId }) => {
+    // --- Duration-aware call:join (per FRONTEND_CALL_DURATION_GUIDE.md §3.1, §3.2, §4, §8) ---
+    socket.on('call:join', async (payload: any, ackCb?: (resp: any) => void) => {
+      const roomIdRaw: string = payload?.roomId || payload || '';
+      const userId: string = payload?.userId || '';
+      const userName: string = payload?.userName || '';
+      const isHost: boolean = Boolean(payload?.isHost);
+      const audioEnabled: boolean = payload?.audioEnabled !== false;
+      const videoEnabled: boolean = payload?.videoEnabled !== false;
+      const roomId = String(roomIdRaw);
+      if (!roomId || !userId) {
+        ackCb?.({ error: 'Missing roomId or userId', participantsList: [], endsAt: null, maxMeetingDuration: null });
+        return;
+      }
       socket.join(roomId);
+
+      // Resolve call from storage by UUID (roomId === UUID) OR by callCode
+      let call = await storage.getCall(roomId);
+      if (!call) {
+        call = await storage.getCallByCode(roomId);
+      }
+      if (!call) {
+        // Call doesn't exist in DB yet — rare but defensively still allow socket room to function with default 60min
+        const existingRoom = getRoomByAnyId(roomId);
+        if (!existingRoom) {
+          const fresh: ManagedRoom = {
+            callId: roomId,
+            callCode: roomId,
+            maxMeetingDuration: 60,
+            endsAt: null,
+            startedAt: null,
+            warned5: false,
+            warned1: false,
+            participants: new Map(),
+          };
+          roomManager.set(roomId, fresh);
+          callIdToRoomId.set(roomId, roomId);
+          callCodeToRoomId.set(roomId, roomId);
+        }
+      } else {
+        // Ensure ManagedRoom exists, keyed by call.id (UUID) for consistency
+        const managedKey = call.id; // UUID room key is the canonical one
+        if (!roomManager.has(managedKey)) {
+          const fresh: ManagedRoom = {
+            callId: call.id,
+            callCode: call.callCode,
+            maxMeetingDuration: (call as any).maxMeetingDuration ?? null,
+            endsAt: (call as any).endsAt ?? null,
+            startedAt: null,
+            warned5: false,
+            warned1: false,
+            participants: new Map(),
+          };
+          roomManager.set(managedKey, fresh);
+          callIdToRoomId.set(call.id, managedKey);
+          callCodeToRoomId.set(call.callCode, managedKey);
+        }
+        // If socket joined by callCode, also join the canonical UUID room so broadcasts work
+        if (roomId === call.callCode && roomId !== call.id) {
+          socket.join(call.id);
+        }
+      }
+
+      const managedKeyFinal = call ? call.id : roomId;
+      const room = roomManager.get(managedKeyFinal)!;
+      if (!room) {
+        ackCb?.({ error: 'Room init failed' });
+        return;
+      }
+
+      // Check if this socket's user is already present via another socket (multi-tab)
+      // → don't double count unique users for the "2+ participants" rule.
+      const prevUniqueJoinerIds = new Set(Array.from(room.participants.values()).map(p => p.userId));
+      const wasAlready = prevUniqueJoinerIds.has(userId);
+
+      // Register (or update) this socket in the room
+      room.participants.set(socket.id, {
+        userId,
+        userName,
+        isHost,
+        audioEnabled,
+        videoEnabled,
+        screenSharing: false,
+        joinedAt: new Date().toISOString(),
+      });
+
+      // Count unique users present (distinct userId across all sockets in room)
+      const uniqueJoinedIds = new Set(Array.from(room.participants.values()).map(p => p.userId));
+      const uniqueCount = uniqueJoinedIds.size;
+
+      const maxMeetingDuration = room.maxMeetingDuration;
+      const justTransitionedFrom1to2 = !wasAlready && uniqueCount === 2 && room.endsAt == null;
+
+      // Transition: countdown START (primary duration trigger per guide §3.2)
+      if (justTransitionedFrom1to2 && maxMeetingDuration) {
+        const startsAtIso = new Date().toISOString();
+        const endsAtIso = new Date(Date.now() + maxMeetingDuration * 60_000).toISOString();
+        room.endsAt = endsAtIso;
+        room.startedAt = startsAtIso;
+        room.warned5 = false;
+        room.warned1 = false;
+        // Persist to DB for REST response consistency
+        if (call) {
+          try { await storage.updateCall(call.id, { status: 'ongoing' }); } catch {}
+        }
+        // Broadcast to everyone (including host who just was joined by 2nd participant)
+        const startedPayload = {
+          endsAt: endsAtIso,
+          startedAt: startsAtIso,
+          maxMeetingDuration: room.maxMeetingDuration,
+          callId: room.callId,
+        };
+        io.to(managedKeyFinal).emit('call:duration-started', startedPayload);
+        // Also emit to callCode joiners if different
+        if (call?.callCode && call.callCode !== managedKeyFinal) {
+          io.to(call.callCode).emit('call:duration-started', startedPayload);
+        }
+      }
+
+      // Build participants-list for socket ack + broadcast update
+      const participantsBroadcastList = Array.from(room.participants.values()).map(p => ({
+        id: p.userId,
+        userId: p.userId,
+        name: p.userName,
+        userName: p.userName,
+        isHost: p.isHost,
+        audioEnabled: p.audioEnabled,
+        videoEnabled: p.videoEnabled,
+        screenSharing: p.screenSharing,
+        joinedAt: p.joinedAt,
+      }));
+
+      // Ack to joining socket with authoritative state
+      const ack = {
+        participantsList: participantsBroadcastList,
+        participants: participantsBroadcastList,
+        endsAt: room.endsAt,
+        maxMeetingDuration: room.maxMeetingDuration,
+        callId: room.callId,
+        callCode: room.callCode,
+      };
+      ackCb?.(ack);
+      socket.emit('call:participants-list', ack);
+
+      // If countdown already running (we are a late joiner): emit duration-active too (guide §3.2)
+      if (room.endsAt != null && !justTransitionedFrom1to2) {
+        socket.emit('call:duration-active', {
+          endsAt: room.endsAt,
+          maxMeetingDuration: room.maxMeetingDuration,
+          remainingMs: Math.max(0, new Date(room.endsAt).getTime() - Date.now()),
+        });
+      }
+
+      // Waiting state (≤1 unique participants, not running)
+      if (uniqueCount <= 1 && room.endsAt == null) {
+        socket.emit('call:waiting-for-participants', {
+          message: 'Waiting for more participants. Timer will start when 2+ people join the call.',
+          maxMeetingDuration: room.maxMeetingDuration,
+        });
+      }
+
+      // Tell others in the room: "a participant joined" and re-send updated participants-list to all
+      if (!wasAlready) {
+        socket.to(managedKeyFinal).emit('call:participant-joined', {
+          userId,
+          userName,
+          isHost,
+        });
+        if (call?.callCode && call.callCode !== managedKeyFinal) {
+          socket.to(call.callCode).emit('call:participant-joined', {
+            userId,
+            userName,
+            isHost,
+          });
+        }
+        // Broadcast updated participants-list so all clients' countdown/waiting state syncs
+        const broadcastAck = {
+          participantsList: participantsBroadcastList,
+          participants: participantsBroadcastList,
+          endsAt: room.endsAt,
+          maxMeetingDuration: room.maxMeetingDuration,
+        };
+        socket.to(managedKeyFinal).emit('call:participants-list', broadcastAck);
+        if (call?.callCode && call.callCode !== managedKeyFinal) {
+          socket.to(call.callCode).emit('call:participants-list', broadcastAck);
+        }
+      }
+    });
+
+    // Explicit leave (vs disconnect) — duration keeps running per guide §9.1
+    socket.on('call:leave', ({ roomId, userId, userName }: any) => {
+      if (!roomId) return;
+      const room = getRoomByAnyId(roomId);
+      socket.leave(roomId);
+      if (room) {
+        room.participants.delete(socket.id);
+        const broadcast = { userId, userName };
+        socket.to(room.callId).emit('call:participant-left', broadcast);
+        if (room.callCode && room.callCode !== room.callId) socket.to(room.callCode).emit('call:participant-left', broadcast);
+        if (room.participants.size === 0) {
+          roomManager.delete(room.callId);
+          callIdToRoomId.delete(room.callId);
+          callCodeToRoomId.delete(room.callCode);
+        }
+      }
+    });
+
+    // call:get-participants — ack with the authoritative list + duration state
+    socket.on('call:get-participants', ({ roomId }: any, ackCb?: (resp: any) => void) => {
+      if (!roomId) { ackCb?.({ participants: [], endsAt: null, maxMeetingDuration: null }); return; }
+      const room = getRoomByAnyId(roomId);
+      if (!room) { ackCb?.({ participants: [], endsAt: null, maxMeetingDuration: null }); return; }
+      const participantsBroadcastList = Array.from(room.participants.values()).map(p => ({
+        id: p.userId,
+        userId: p.userId,
+        name: p.userName,
+        userName: p.userName,
+        isHost: p.isHost,
+        audioEnabled: p.audioEnabled,
+        videoEnabled: p.videoEnabled,
+        screenSharing: p.screenSharing,
+        joinedAt: p.joinedAt,
+      }));
+      ackCb?.({
+        participantsList: participantsBroadcastList,
+        participants: participantsBroadcastList,
+        endsAt: room.endsAt,
+        maxMeetingDuration: room.maxMeetingDuration,
+        callId: room.callId,
+        callCode: room.callCode,
+      });
     });
 
     socket.on('call:accept', ({ callId }) => {
@@ -1346,8 +1645,117 @@ export async function registerRoutes(app: Express): Promise<Server> {
       io.emit('call:rejected', { callId });
     });
 
-    socket.on('call:end', ({ callId }) => {
-      io.emit('call:ended', { callId });
+    // --- Waiting Room Events ---
+    socket.on('waiting-room:request', ({ roomId, userId, userName }) => {
+      const queue = waitingRoomQueue.get(roomId) || [];
+      if (!queue.find(p => p.userId === userId)) {
+        queue.push({ userId, userName, requestedAt: Date.now() });
+        waitingRoomQueue.set(roomId, queue);
+      }
+      const activeUser = Array.from(activeUsers.values()).find(u => u.socketId === socket.id);
+      const businessId = activeUser?.businessId || '';
+      // Notify host(s) in room or business about waiting participant
+      io.to(businessId).emit('waiting-room:pending', {
+        roomId,
+        userId,
+        userName: userName || activeUser?.userName,
+      });
+      // Also emit directly to room for host UI
+      socket.to(roomId).emit('waiting-room:pending', {
+        roomId,
+        userId,
+        userName: userName || activeUser?.userName,
+      });
+      // Send queue to requester
+      const queueList = waitingRoomQueue.get(roomId) || [];
+      socket.emit('waiting-room:queue', { roomId, queue: queueList });
+    });
+
+    socket.on('waiting-room:admit', ({ meetingId, participantId, roomId }) => {
+      const room = roomId || meetingId;
+      const queue = waitingRoomQueue.get(room) || [];
+      const remaining = queue.filter(p => p.userId !== participantId);
+      waitingRoomQueue.set(room, remaining);
+
+      // Find participant socket and emit admitted
+      const target = activeUsers.get(participantId);
+      if (target) {
+        io.to(target.socketId).emit('waiting-room:admitted', { roomId: room });
+      }
+
+      const activeUser = Array.from(activeUsers.values()).find(u => u.socketId === socket.id);
+      socket.to(room).emit('waiting-room:admitted', {
+        roomId: room,
+        userId: participantId,
+        admittedBy: activeUser?.userId,
+      });
+      io.to(socket.id).emit('waiting-room:queue', { roomId: room, queue: remaining });
+    });
+
+    socket.on('waiting-room:deny', ({ meetingId, participantId, roomId }) => {
+      const room = roomId || meetingId;
+      const queue = waitingRoomQueue.get(room) || [];
+      const remaining = queue.filter(p => p.userId !== participantId);
+      waitingRoomQueue.set(room, remaining);
+
+      const target = activeUsers.get(participantId);
+      if (target) {
+        io.to(target.socketId).emit('waiting-room:denied', { roomId: room });
+      }
+      io.to(socket.id).emit('waiting-room:queue', { roomId: room, queue: remaining });
+    });
+
+    socket.on('waiting-room:admit-all', ({ roomId, meetingId }) => {
+      const room = roomId || meetingId;
+      const queue = waitingRoomQueue.get(room) || [];
+      queue.forEach(p => {
+        const target = activeUsers.get(p.userId);
+        if (target) io.to(target.socketId).emit('waiting-room:admitted', { roomId: room });
+      });
+      waitingRoomQueue.set(room, []);
+      io.to(socket.id).emit('waiting-room:queue', { roomId: room, queue: [] });
+    });
+
+    socket.on('waiting-room:get-queue', ({ roomId }) => {
+      const queue = waitingRoomQueue.get(roomId) || [];
+      io.to(socket.id).emit('waiting-room:queue', { roomId, queue });
+    });
+
+    // --- Chat Read Events ---
+    socket.on('chat:mark-read', ({ conversationId, userId }) => {
+      const key = `${userId}_${conversationId}`;
+      unreadCounts.set(key, 0);
+      socket.join(`conversation-${conversationId}`);
+      socket.to(`conversation-${conversationId}`).emit('chat:read-updated', { conversationId, userId, unreadCount: 0 });
+    });
+
+    socket.on('join-conversation', (conversationId: string) => {
+      socket.join(`conversation-${conversationId}`);
+    });
+
+    socket.on('call:end', ({ callId, roomId }: any) => {
+      const room = getRoomByAnyId(roomId || callId);
+      const endedPayload = {
+        callId: (room?.callId || callId),
+        reason: 'ended_by_host',
+      };
+      if (room) {
+        io.to(room.callId).emit('call:ended', endedPayload);
+        if (room.callCode && room.callCode !== room.callId) io.to(room.callCode).emit('call:ended', endedPayload);
+        // Clean up room
+        roomManager.delete(room.callId);
+        callIdToRoomId.delete(room.callId);
+        callCodeToRoomId.delete(room.callCode);
+      } else {
+        io.emit('call:ended', endedPayload);
+      }
+      // Update DB status
+      (async () => {
+        try {
+          if (callId) await storage.updateCall(callId, { status: 'completed' });
+        } catch (e) {
+        }
+      })();
     });
 
     socket.on('call:audio-level', ({ roomId, isTalking, userName }) => {
@@ -1361,12 +1769,41 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
     socket.on('call:media-state', ({ roomId, audioEnabled, videoEnabled, screenSharing }) => {
       const activeUser = Array.from(activeUsers.values()).find(user => user.socketId === socket.id);
+      // Keep roomManager participant records in sync so participants-list broadcasts are accurate
+      const room = getRoomByAnyId(roomId);
+      if (room && room.participants.has(socket.id)) {
+        const prior = room.participants.get(socket.id)!;
+        room.participants.set(socket.id, {
+          ...prior,
+          audioEnabled: audioEnabled ?? prior.audioEnabled,
+          videoEnabled: videoEnabled ?? prior.videoEnabled,
+          screenSharing: screenSharing ?? prior.screenSharing,
+        });
+      }
       socket.to(roomId).emit('call:media-state', {
         userId: activeUser?.userId || socket.id,
         audioEnabled,
         videoEnabled,
         screenSharing,
       });
+    });
+
+    // call:participant-media-state — keep participant-level badges accurate in room manager
+    socket.on('call:participant-media-state', ({ roomId, userId, audioEnabled, videoEnabled, screenSharing, isTalking }: any) => {
+      const room = getRoomByAnyId(roomId);
+      if (room) {
+        for (const [sockId, p] of room.participants.entries()) {
+          if (p.userId === userId) {
+            room.participants.set(sockId, {
+              ...p,
+              audioEnabled: audioEnabled ?? p.audioEnabled,
+              videoEnabled: videoEnabled ?? p.videoEnabled,
+              screenSharing: screenSharing ?? p.screenSharing,
+            });
+          }
+        }
+      }
+      socket.to(roomId).emit('call:participant-media-state', { userId, audioEnabled, videoEnabled, screenSharing, isTalking });
     });
 
     // --- Meeting Events ---
@@ -1526,11 +1963,29 @@ export async function registerRoutes(app: Express): Promise<Server> {
       console.log(`User joined conversation ${conversationId}`);
     });
 
-    // Handle disconnection
+    // Handle disconnection — clean up room participant entries so duration still counts them as gone
     socket.on('disconnect', () => {
       console.log('Client disconnected:', socket.id);
       closePeer(socket.id);
       
+      // Clean up participant entries from all rooms that contained this socket
+      for (const [roomId, room] of roomManager.entries()) {
+        if (room.participants.has(socket.id)) {
+          const leaving = room.participants.get(socket.id)!;
+          room.participants.delete(socket.id);
+          socket.to(roomId).emit('call:participant-left', {
+            userId: leaving.userId,
+            userName: leaving.userName,
+          });
+          // After socket leaves
+          if (room.participants.size === 0) {
+            roomManager.delete(roomId);
+            callIdToRoomId.delete(room.callId);
+            callCodeToRoomId.delete(room.callCode);
+          }
+        }
+      }
+
       // Find and remove user from activeUsers
       for (const [userId, user] of activeUsers.entries()) {
         if (user.socketId === socket.id) {
@@ -1543,6 +1998,59 @@ export async function registerRoutes(app: Express): Promise<Server> {
       }
     });
   });
+
+  // ---------- Duration Enforcement Cron (per FRONTEND_CALL_DURATION_GUIDE.md §3.2, §6, 10-sec tick + 5min/1min warnings + auto-end
+  const durationCronId = setInterval(() => {
+    const now = Date.now();
+    for (const [roomId, room] of roomManager.entries()) {
+      if (!room.endsAt) continue;
+      const endsAtMs = new Date(room.endsAt).getTime();
+      const remainingMs = Math.max(0, endsAtMs - now);
+
+      // 5-minute warning (exactly once per room)
+      if (!room.warned5 && remainingMs <= 5 * 60_000 && remainingMs > 60_000) {
+        room.warned5 = true;
+        io.to(roomId).emit('call:countdown-warning', {
+          callId: room.callId,
+          remainingMs,
+          remainingMinutes: 5,
+          message: '5 minutes remaining. This call will end automatically when the time limit is reached.',
+        });
+      }
+      // 1-minute warning
+      if (!room.warned1 && remainingMs <= 60_000) {
+        room.warned1 = true;
+        io.to(roomId).emit('call:countdown-warning', {
+          callId: room.callId,
+          remainingMs,
+          remainingMinutes: 1,
+          message: '⚠ 1 minute remaining. Please wrap up — this call will end shortly.',
+        });
+      }
+      // Auto-end: remainingMs reached 0 or past, emit call:ended and close everything
+      if (remainingMs <= 0) {
+        console.log(`[duration-cron] ending room ${roomId} (call ${room.callId}) — duration_limit`);
+        io.to(roomId).emit('call:ended', {
+          callId: room.callId,
+          reason: 'duration_limit',
+        });
+        // Update DB status
+        (async () => {
+          try {
+            await storage.updateCall(room.callId, { status: 'completed' });
+          } catch (e) {
+          }
+        })();
+        roomManager.delete(roomId);
+        callIdToRoomId.delete(room.callId);
+        callCodeToRoomId.delete(room.callCode);
+      }
+    }
+  }, 10_000);
+  // Best-effort: keep Node alive only while server is running
+  if ((durationCronId as any).unref) {
+    (durationCronId as any).unref();
+  }
 
   // Helper function to emit events (we'll use this from our route handlers)
   (global as any).io = io;

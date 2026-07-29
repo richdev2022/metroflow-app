@@ -94,6 +94,34 @@ export const useDeleteMeeting = () => {
   });
 };
 
+export const useJoinMeeting = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ meetingId, password }: { meetingId: string; password?: string }) => {
+      const response = await api.post(`/meetings/${meetingId}/join`, { password });
+      return unwrapApiData<Meeting>(response.data, 'Failed to join meeting');
+    },
+    onSuccess: (_, variables) => {
+      queryClient.invalidateQueries({ queryKey: ['meetings'] });
+      queryClient.invalidateQueries({ queryKey: ['meeting', variables.meetingId] });
+    },
+  });
+};
+
+export const useLeaveMeeting = () => {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async (meetingId: string) => {
+      const response = await api.post(`/meetings/${meetingId}/leave`);
+      return unwrapApiData<Meeting>(response.data, 'Failed to leave meeting');
+    },
+    onSuccess: (_, meetingId) => {
+      queryClient.invalidateQueries({ queryKey: ['meetings'] });
+      queryClient.invalidateQueries({ queryKey: ['meeting', meetingId] });
+    },
+  });
+};
+
 // --- Chat ---
 
 export const useConversations = () => {

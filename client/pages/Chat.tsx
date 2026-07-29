@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import Layout from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -37,6 +38,8 @@ import {
   MoreVertical,
   CircleDot,
   Menu,
+  Phone,
+  Video,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -44,6 +47,7 @@ import {
   useCreateConversation,
   useMessages,
   useSendMessage,
+  useCreateCall,
 } from "@/lib/meetings-chat-calls";
 import { Conversation, CreateConversationInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
@@ -81,6 +85,10 @@ type ChatParticipant = Conversation["participants"][number] & {
   name?: string;
   userName?: string;
   user_name?: string;
+  lastSeen?: string | null;
+  last_seen?: string | null;
+  email?: string | null;
+  avatarUrl?: string | null;
 };
 
 type ChatMessage = {
@@ -162,6 +170,64 @@ const getLastMsg = (c: ConversationView) => c.lastMessage || c.last_message || c
 
 const getLastMsgTime = (c: ConversationView) =>
   c.lastMessageAt || c.last_message_at || c.lastmessageat || "";
+
+const getParticipantLastSeen = (p?: ChatParticipant) => p?.lastSeen || p?.last_seen || null;
+
+const formatRelativeTime = (dateStr: string | null | undefined): string | null => {
+  if (!dateStr) return null;
+  const now = new Date().getTime();
+  const then = new Date(dateStr).getTime();
+  if (isNaN(then)) return null;
+
+  const diffSec = Math.max(0, Math.floor((now - then) / 1000));
+  const diffMin = Math.floor(diffSec / 60);
+  const diffHr = Math.floor(diffMin / 60);
+  const diffDay = Math.floor(diffHr / 24);
+  const diffWeek = Math.floor(diffDay / 7);
+  const diffMonth = Math.floor(diffDay / 30);
+  const diffYear = Math.floor(diffDay / 365);
+
+  if (diffYear >= 1) return diffYear === 1 ? "a year ago" : `${diffYear} years ago`;
+  if (diffMonth >= 1) return diffMonth === 1 ? "a month ago" : `${diffMonth} months ago`;
+  if (diffWeek >= 1) return diffWeek === 1 ? "a week ago" : `${diffWeek} weeks ago`;
+  if (diffDay >= 1) return diffDay === 1 ? "yesterday" : `${diffDay} days ago`;
+  if (diffHr >= 1) return diffHr === 1 ? "an hour ago" : `${diffHr} hours ago`;
+  if (diffMin >= 1) return diffMin === 1 ? "a minute ago" : `${diffMin} min ago`;
+  return "just now";
+};
+
+const ONLINE_THRESHOLD_MS = 60_000;
+const isRecentlyOnline = (dateStr: string | null | undefined): boolean => {
+  if (!dateStr) return false;
+  const then = new Date(dateStr).getTime();
+  if (isNaN(then)) return false;
+  return new Date().getTime() - then <= ONLINE_THRESHOLD_MS;
+};
+
+const getParticipantStatusLine = (
+  participant: ChatParticipant | undefined,
+  socketPresence: string | undefined
+): { line: string; isOnlineDot: boolean } => {
+  const presenceStatus = socketPresence;
+  const activeStatuses = ["online", "busy", "in-meeting", "calling", "do-not-disturb"];
+  const isActivePresence = !!presenceStatus && activeStatuses.includes(presenceStatus);
+  const lastSeen = getParticipantLastSeen(participant);
+
+  if (isActivePresence) {
+    return { line: getPresenceLabel(presenceStatus), isOnlineDot: true };
+  }
+
+  if (isRecentlyOnline(lastSeen)) {
+    return { line: "Online", isOnlineDot: true };
+  }
+
+  const relative = formatRelativeTime(lastSeen);
+  if (relative) {
+    return { line: `Last seen ${relative}`, isOnlineDot: false };
+  }
+
+  return { line: "Offline", isOnlineDot: false };
+};
 
 // Helpers for rendering received attachments from others
 const getAttachmentUrl = (m: ChatMessage) => m.attachment_url || m.attachmentUrl || "";
@@ -412,8 +478,12 @@ const ConversationListItem = ({
   const name = getConversationName(members, conversation);
   const lastMsg = getLastMsg(conversation);
   const lastTime = getLastMsgTime(conversation);
-  const presenceUid = getParticipantUserId(getDirectParticipant(conversation));
-  const status = presence[presenceUid];
+  const directParticipant = getDirectParticipant(conversation);
+  const presenceUid = getParticipantUserId(directParticipant);
+  const statusInfo = getParticipantStatusLine(directParticipant, presence[presenceUid]);
+  const dotColor = statusInfo.isOnlineDot
+    ? getPresenceColor(presence[presenceUid])
+    : "bg-gray-400";
 
   const renderName = () => {
     if (!searchQuery.trim()) return name;
@@ -446,7 +516,7 @@ const ConversationListItem = ({
             </AvatarFallback>
           </Avatar>
           {conversation.type === "direct" && (
-            <span className={cn("absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-card", getPresenceColor(status))} />
+            <span className={cn("absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-card", dotColor)} />
           )}
         </div>
         <div className="flex-1 min-w-0">
@@ -553,8 +623,10 @@ export default function Chat() {
   const { data: conversations, isLoading: convLoading, error: convError, refetch: refetchConv } = useConversations();
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
+  const createCall = useCreateCall();
+  const navigate = useNavigate();
   const { toast } = useToast();
-  const { socket, isConnected, joinConversation, on, off } = useSocket({
+  const { socket, isConnected, joinConversation, on, off, inviteToCall } = useSocket({
     userId: CURRENT_USER_ID(),
     businessId: localStorage.getItem("businessId") || "",
   });
@@ -575,8 +647,12 @@ export default function Chat() {
     type: "direct",
     participantIds: [],
   });
+  const [activeCallRingback, setActiveCallRingback] = useState<{ callId: string; stop: () => void } | null>(null);
+  const [startingCall, setStartingCall] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const activeCallRingbackRef = useRef<{ callId: string; stop: () => void } | null>(null);
+  activeCallRingbackRef.current = activeCallRingback;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const isNearBottomRef = useRef(true);
   const pendingMessageIdsRef = useRef<Set<string>>(new Set());
@@ -585,6 +661,29 @@ export default function Chat() {
   // Fetch team members
   useEffect(() => {
     api.get("/team").then((res) => setTeamMembers(unwrapApiData<TeamMember[]>(res.data, ""))).catch(() => {});
+  }, []);
+
+  // Initialize audio context on first user interaction
+  useEffect(() => {
+    const initAudio = () => {
+      AudioUtils.ensureInitialized().catch(err => {
+        console.warn('Failed to initialize audio:', err);
+      });
+      // Remove event listeners after first interaction
+      document.removeEventListener('click', initAudio);
+      document.removeEventListener('keydown', initAudio);
+      document.removeEventListener('touchstart', initAudio);
+    };
+    
+    document.addEventListener('click', initAudio);
+    document.addEventListener('keydown', initAudio);
+    document.addEventListener('touchstart', initAudio);
+    
+    return () => {
+      document.removeEventListener('click', initAudio);
+      document.removeEventListener('keydown', initAudio);
+      document.removeEventListener('touchstart', initAudio);
+    };
   }, []);
 
   // Error toast
@@ -597,12 +696,22 @@ export default function Chat() {
     if (selectedConversation?.id && isConnected) joinConversation(selectedConversation.id);
   }, [selectedConversation?.id, isConnected, joinConversation]);
 
-  // Reset local messages on conversation change
+  // Reset local messages on conversation change + mark as read
   useEffect(() => {
     setLocalMessages([]);
     pendingMessageIdsRef.current.clear();
     setTypingUsers({});
     setMobileShowSidebar(false);
+
+    if (selectedConversation?.id) {
+      const convId = selectedConversation.id;
+      api.post(`/chat/conversations/${convId}/read`).then(() => {
+        refetchConv();
+      }).catch(() => {});
+      if (socket && isConnected) {
+        socket.emit('chat:mark-read', { conversationId: convId, userId: CURRENT_USER_ID() });
+      }
+    }
   }, [selectedConversation?.id]);
 
   // Fetch messages
@@ -738,6 +847,42 @@ export default function Chat() {
     };
   }, [selectedConversation?.id, isConnected, on, off]);
 
+  // Socket: Call lifecycle (stop ringback when answer/reject/end received)
+  useEffect(() => {
+    if (!on || !off) return;
+    const doStop = () => {
+      try { activeCallRingbackRef.current?.stop(); } catch {}
+      try { AudioUtils.stopAllRingtones(); } catch {}
+    };
+    const stopForThisCall = (payload: any) => {
+      const cur = activeCallRingbackRef.current;
+      if (!cur) return;
+      const matchId = payload?.callId || payload?.id || payload;
+      if (!matchId || String(matchId) === String(cur.callId)) {
+        doStop();
+      }
+    };
+    on("call:accepted", stopForThisCall as any);
+    on("call:answered", stopForThisCall as any);
+    on("call:rejected", stopForThisCall as any);
+    on("call:ended", stopForThisCall as any);
+    on("call:timeout", stopForThisCall as any);
+    return () => {
+      off("call:accepted", stopForThisCall as any);
+      off("call:answered", stopForThisCall as any);
+      off("call:rejected", stopForThisCall as any);
+      off("call:ended", stopForThisCall as any);
+      off("call:timeout", stopForThisCall as any);
+    };
+  }, [on, off]);
+
+  useEffect(() => {
+    return () => {
+      try { activeCallRingbackRef.current?.stop(); } catch {}
+      try { AudioUtils.stopAllRingtones(); } catch {}
+    };
+  }, []);
+
   // Emit typing status
   const emitTypingStatus = useCallback(
     (isTyping: boolean) => {
@@ -760,6 +905,87 @@ export default function Chat() {
 
   const handleEmojiSelect = (emoji: string) => {
     setNewMessage((prev) => prev + emoji);
+  };
+
+  // ==========================================
+  // Call Handlers
+  // ==========================================
+  const stopActiveRingback = useCallback(() => {
+    const current = activeCallRingbackRef.current;
+    if (current) {
+      try { current.stop(); } catch {}
+      setActiveCallRingback(null);
+    }
+    AudioUtils.stopAllRingtones();
+  }, []);
+
+  const handleStartCall = async (type: 'audio' | 'video') => {
+    if (!selectedConversation || startingCall) return;
+    const conv = selectedConversation as ConversationView;
+
+    setStartingCall(true);
+    try {
+      const allParticipants = (conv.participants || []) as ChatParticipant[];
+      const currentUid = CURRENT_USER_ID();
+
+      const participantIds = allParticipants
+        .map(p => getParticipantUserId(p))
+        .filter(uid => uid && uid !== currentUid);
+
+      if (participantIds.length === 0) {
+        toast({ variant: 'destructive', title: 'No participants', description: 'This conversation has no other members to call.' });
+        return;
+      }
+
+      const isGroup = conv.type === 'group' || participantIds.length > 1;
+      const convName = getConversationName(teamMembers, conv);
+
+      const createdCall = await createCall.mutateAsync({
+        type,
+        isGroupCall: isGroup,
+        maxParticipants: Math.max(10, participantIds.length + 1),
+        waitingRoomEnabled: isGroup,
+        recordingEnabled: false,
+        participantIds,
+        name: isGroup ? `${convName} Call` : `${type === 'video' ? 'Video' : 'Audio'} Call with ${convName}`,
+      } as any);
+
+      const callId = createdCall.id;
+      const callCode = (createdCall as any)?.callCode || (createdCall as any)?.call_code || callId;
+      const roomId = callCode;
+
+      // Invite each participant via socket + ringback for caller
+      const callerName = CURRENT_USER_NAME();
+      for (const targetId of participantIds) {
+        try {
+          inviteToCall(callId, targetId, type);
+        } catch {}
+        // Fallback emit in case hook uses wrong event
+        socket?.emit('call:invite', {
+          callId, targetUserId: targetId, type, callerName, roomId, callCode, fromName: callerName,
+        });
+      }
+
+      // Host ringback until someone answers
+      try {
+        const rbStop = await AudioUtils.playRingback();
+        setActiveCallRingback({ callId, stop: rbStop });
+      } catch {}
+
+      // Navigate host to call room
+      navigate(
+        `/calls?roomId=${encodeURIComponent(roomId)}&autoJoin=1&isHost=true&callType=${type}&callId=${encodeURIComponent(callId)}&callCode=${encodeURIComponent(callCode)}`
+      );
+    } catch (err: any) {
+      toast({
+        variant: 'destructive',
+        title: 'Failed to start call',
+        description: getApiMessage(err, 'Could not start call. Please try again.'),
+      });
+      stopActiveRingback();
+    } finally {
+      setStartingCall(false);
+    }
   };
 
   // ==========================================
@@ -805,15 +1031,40 @@ export default function Chat() {
     setNewMessage("");
     emitTypingStatus(false);
     scrollToBottom(true);
+    try { AudioUtils.playMessageSent(); } catch {}
 
     try {
-      await sendMessage.mutateAsync({
+      const result = await sendMessage.mutateAsync({
         conversationId: selectedConversation.id,
         data: { content },
       });
 
-      setLocalMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, status: "sent" } : m)));
+      const realId = (result as any)?.id || (result as any)?.messageId || tempId;
+      pendingMessageIdsRef.current.delete(tempId);
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId
+            ? {
+                ...(result as any),
+                id: realId,
+                status: "sent",
+                isOptimistic: false,
+                conversationId: selectedConversation.id,
+                conversation_id: selectedConversation.id,
+                senderId: CURRENT_USER_ID(),
+                sender_id: CURRENT_USER_ID(),
+                senderName: CURRENT_USER_NAME(),
+                sender_name: CURRENT_USER_NAME(),
+                content: (result as any)?.content || content,
+                createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
+                created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
+              }
+            : m
+        )
+      );
+      refetchConv();
     } catch (err) {
+      pendingMessageIdsRef.current.delete(tempId);
       setLocalMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, status: "failed" } : m)));
       toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to send message") });
     }
@@ -955,23 +1206,65 @@ export default function Chat() {
                 {/* Chat Header */}
                 <div className="p-3 sm:p-4 border-b border-border flex items-center justify-between bg-card/50 backdrop-blur-sm shrink-0">
                   <div className="flex items-center gap-3 min-w-0">
-                    <div className="relative shrink-0">
-                      <Avatar className="h-9 w-9">
-                        <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-xs">
-                          {getInitials(getConversationName(teamMembers, selectedConversation as ConversationView))}
-                        </AvatarFallback>
-                      </Avatar>
-                      {selectedConversation.type === "direct" && (
-                        <span className={cn("absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full ring-2 ring-card", getPresenceColor(userPresence[getParticipantUserId(getDirectParticipant(selectedConversation as ConversationView))]))} />
-                      )}
-                    </div>
-                    <div className="min-w-0">
-                      <h3 className="font-semibold text-sm truncate">{getConversationName(teamMembers, selectedConversation as ConversationView)}</h3>
-                      <p className="text-xs text-muted-foreground">
-                        {selectedConversation.type === "direct" ? getPresenceLabel(userPresence[getParticipantUserId(getDirectParticipant(selectedConversation as ConversationView))]) : `${selectedConversation.participants.length} members`}
-                      </p>
-                    </div>
+                    {(() => {
+                      const convView = selectedConversation as ConversationView;
+                      const convName = getConversationName(teamMembers, convView);
+                      const directP = convView.type === "direct" ? getDirectParticipant(convView) : undefined;
+                      const directPid = convView.type === "direct" ? getParticipantUserId(directP) : "";
+                      const statusInfo = directP
+                        ? getParticipantStatusLine(directP, userPresence[directPid])
+                        : null;
+                      const headerDotColor = statusInfo
+                        ? statusInfo.isOnlineDot
+                          ? getPresenceColor(userPresence[directPid])
+                          : "bg-gray-400"
+                        : undefined;
+                      return (
+                        <>
+                          <div className="relative shrink-0">
+                            <Avatar className="h-9 w-9">
+                              <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-xs">
+                                {getInitials(convName)}
+                              </AvatarFallback>
+                            </Avatar>
+                            {convView.type === "direct" && headerDotColor && (
+                              <span className={cn("absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full ring-2 ring-card", headerDotColor)} />
+                            )}
+                          </div>
+                          <div className="min-w-0">
+                            <h3 className="font-semibold text-sm truncate">{convName}</h3>
+                            <p className="text-xs text-muted-foreground">
+                              {convView.type === "direct"
+                                ? statusInfo?.line ?? "Offline"
+                                : `${convView.participants.length} members`}
+                            </p>
+                          </div>
+                        </>
+                      );
+                    })()}
                   </div>
+                <div className="flex items-center gap-1">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 hover:bg-emerald-500/10 hover:text-emerald-500"
+                    title="Start audio call"
+                    disabled={startingCall}
+                    onClick={() => handleStartCall('audio')}
+                  >
+                    <Phone className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0 hover:bg-blue-500/10 hover:text-blue-500"
+                    title="Start video call"
+                    disabled={startingCall}
+                    onClick={() => handleStartCall('video')}
+                  >
+                    <Video className="h-4 w-4" />
+                  </Button>
+                  {startingCall && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-1" />}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
@@ -985,6 +1278,7 @@ export default function Chat() {
                       <DropdownMenuItem className="text-red-600">Mute Conversation</DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>
+                </div>
                 </div>
 
                 {/* Messages */}

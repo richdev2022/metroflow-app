@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic, Phone } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
@@ -9,6 +9,7 @@ import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { useToast } from "@/components/ui/use-toast";
 import { KycModal } from "./KycModal";
 import { AudioUtils } from "@/lib/audio-utils";
+import IncomingCallModal, { IncomingCallData } from "./IncomingCallModal";
 import {
   Sidebar,
   SidebarContent,
@@ -33,18 +34,39 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import { useSocket } from "@/hooks/useSocket";
+import { unwrapApiData } from "@/lib/api-response";
+import { Conversation } from "@shared/api";
+import { cn } from "@/lib/utils";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   console.log("Layout loaded - v2");
   const location = useLocation();
   const navigate = useNavigate();
   const userName = localStorage.getItem("userName") || "User";
+  const userId = localStorage.getItem("userId") || "";
+  const businessId = localStorage.getItem("businessId") || "";
   const { theme, setTheme } = useTheme();
   const { toast } = useToast();
   
   const [showSubscriptionAlert, setShowSubscriptionAlert] = useState(false);
   const [alertType, setAlertType] = useState<'expired' | 'trial_ended'>('expired');
   const [audioContextInitialized, setAudioContextInitialized] = useState(false);
+
+  const [totalUnread, setTotalUnread] = useState(0);
+  const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
+  const incomingCallRef = useRef<IncomingCallData | null>(null);
+  const fetchedUnreadRef = useRef(false);
+
+  useEffect(() => {
+    incomingCallRef.current = incomingCall;
+  }, [incomingCall]);
+
+  const { socket, isConnected, on, off } = useSocket({
+    userId,
+    businessId,
+    userName,
+  });
 
   // Initialize AudioContext on first user interaction
   useEffect(() => {
@@ -63,6 +85,110 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       document.removeEventListener('keydown', initializeAudio);
     };
   }, [audioContextInitialized]);
+
+  const fetchTotalUnread = useCallback(async () => {
+    if (!userId) return;
+    try {
+      const res = await api.get('/chat/conversations');
+      const convs = unwrapApiData<(Conversation & { unreadCount?: number })[]>(res.data, '') || [];
+      const sum = convs.reduce((acc, c) => acc + (c.unreadCount || 0), 0);
+      setTotalUnread(sum);
+    } catch (e) {
+      // silently fail
+    }
+  }, [userId]);
+
+  useEffect(() => {
+    if (userId && !fetchedUnreadRef.current) {
+      fetchedUnreadRef.current = true;
+      fetchTotalUnread();
+      const interval = window.setInterval(fetchTotalUnread, 15000);
+      return () => clearInterval(interval);
+    }
+  }, [userId, fetchTotalUnread]);
+
+  // Listen for new message notifications
+  useEffect(() => {
+    if (!isConnected || !socket) return;
+
+    const handleNewMsgNotif = (data: { conversationId: string; message?: any }) => {
+      const currentSenderId = data?.message?.senderId || data?.message?.sender_id || '';
+      if (currentSenderId && currentSenderId !== userId) {
+        setTotalUnread(prev => prev + 1);
+      }
+    };
+
+    const handleReadUpdated = (data: { conversationId: string; userId: string }) => {
+      if (data.userId === userId) {
+        fetchTotalUnread();
+      }
+    };
+
+    on('chat:new-message-notification', handleNewMsgNotif);
+    on('chat:read-updated', handleReadUpdated);
+    return () => {
+      off('chat:new-message-notification', handleNewMsgNotif);
+      off('chat:read-updated', handleReadUpdated);
+    };
+  }, [isConnected, socket, userId, on, off, fetchTotalUnread]);
+
+  // Listen for incoming calls
+  useEffect(() => {
+    if (!isConnected || !socket) return;
+
+    const handleIncomingCall = (data: any) => {
+      AudioUtils.ensureInitialized().catch(() => {});
+      const callData: IncomingCallData = {
+        callId: data.callId,
+        callCode: data.callCode,
+        from: data.from,
+        fromName: data.fromName || data.callerName,
+        callerName: data.callerName || data.fromName,
+        type: data.type || 'video',
+        roomId: data.roomId || data.callId,
+      };
+      incomingCallRef.current = callData;
+      setIncomingCall(callData);
+    };
+
+    const handleAccepted = (data: any) => {
+      const current = incomingCallRef.current;
+      if (current && data.callId === current.callId) {
+        incomingCallRef.current = null;
+        setIncomingCall(null);
+      }
+      AudioUtils.stopAllRingtones();
+    };
+
+    const handleRejected = (data: any) => {
+      const current = incomingCallRef.current;
+      if (current && data.callId === current.callId) {
+        incomingCallRef.current = null;
+        setIncomingCall(null);
+      }
+      AudioUtils.stopAllRingtones();
+    };
+
+    const handleEnded = (data: any) => {
+      const current = incomingCallRef.current;
+      if (current && data.callId === current.callId) {
+        incomingCallRef.current = null;
+        setIncomingCall(null);
+      }
+      AudioUtils.stopAllRingtones();
+    };
+
+    on('call:incoming', handleIncomingCall);
+    on('call:accepted', handleAccepted);
+    on('call:rejected', handleRejected);
+    on('call:ended', handleEnded);
+    return () => {
+      off('call:incoming', handleIncomingCall);
+      off('call:accepted', handleAccepted);
+      off('call:rejected', handleRejected);
+      off('call:ended', handleEnded);
+    };
+  }, [isConnected, socket, on, off]);
 
   // KYC State
   const [showKycModal, setShowKycModal] = useState(false);
@@ -169,6 +295,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         />
       )}
 
+      <IncomingCallModal
+        call={incomingCall}
+        onClose={() => setIncomingCall(null)}
+      />
+
       <Sidebar collapsible="icon">
         <SidebarHeader>
           <div className="flex items-center gap-2 p-2 group-data-[collapsible=icon]:justify-center">
@@ -228,8 +359,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat">
-                <Link to="/chat">
+                <Link to="/chat" className="relative">
                   <MessageSquare />
+                  {totalUnread > 0 && (
+                    <span
+                      className={cn(
+                        "absolute -top-1.5 -right-2.5 h-5 min-w-[20px] px-1.5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center shadow-md shadow-red-500/30 ring-2 ring-sidebar z-[1]",
+                        totalUnread > 99 && "text-[9px]"
+                      )}
+                    >
+                      {totalUnread > 99 ? "99+" : totalUnread}
+                    </span>
+                  )}
                   <span>Chat</span>
                 </Link>
               </SidebarMenuButton>
@@ -346,7 +487,6 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           <div className="flex items-center gap-2">
             <SidebarTrigger className="-ml-1" />
             <div className="h-4 w-[1px] bg-border mx-2 hidden md:block" />
-            {/* Breadcrumbs or Title could go here */}
           </div>
           <div className="flex items-center gap-2">
             <NotificationBell />

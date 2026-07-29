@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import Layout from "@/components/layout";
 import VideoCallRoom from "@/components/VideoCallRoom";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
@@ -61,6 +61,8 @@ import {
   useCreateMeeting,
   useUpdateMeeting,
   useDeleteMeeting,
+  useJoinMeeting,
+  useLeaveMeeting,
 } from "@/lib/meetings-chat-calls";
 import { Meeting, CreateMeetingInput, UpdateMeetingInput } from "@shared/api";
 import { TeamMember } from "@shared/api";
@@ -89,6 +91,8 @@ export default function Meetings() {
   const createMeeting = useCreateMeeting();
   const updateMeeting = useUpdateMeeting();
   const deleteMeeting = useDeleteMeeting();
+  const joinMeeting = useJoinMeeting();
+  const leaveMeeting = useLeaveMeeting();
   const { toast } = useToast();
 
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
@@ -99,6 +103,9 @@ export default function Meetings() {
   const [isDetailDialogOpen, setIsDetailDialogOpen] = useState(false);
   const [selectedMeeting, setSelectedMeeting] = useState<Meeting | null>(null);
   const [isProcessing, setIsProcessing] = useState(false);
+  const [passwordMeeting, setPasswordMeeting] = useState<Meeting | null>(null);
+  const [joinPassword, setJoinPassword] = useState("");
+  const [joinPasswordError, setJoinPasswordError] = useState("");
 
   const [meetingForm, setMeetingForm] = useState<CreateMeetingInput>({
     title: "",
@@ -261,10 +268,148 @@ export default function Meetings() {
     setIsDetailDialogOpen(true);
   };
 
-  const openMeetingRoom = (meeting: Meeting) => {
-    setSelectedMeeting(meeting);
-    setIsMeetingRoomOpen(true);
-  };
+  const CURRENT_USER_ID = () => localStorage.getItem('userId') || '';
+  const isCurrentUserHost = (meeting: Meeting) =>
+    meeting.hostId === CURRENT_USER_ID() || (meeting as any).coHostId === CURRENT_USER_ID();
+  const isCurrentUserAttendee = (meeting: Meeting) =>
+    (meeting.attendees ?? []).some((a) => a.userId === CURRENT_USER_ID());
+  const isCurrentUserAccepted = (meeting: Meeting) =>
+    (meeting.attendees ?? []).some(
+      (a) => a.userId === CURRENT_USER_ID() && a.status === 'accepted'
+    );
+
+  const promptForMeetingPassword = useCallback(
+    (meeting: Meeting, message = "") => {
+      setPasswordMeeting(meeting);
+      setJoinPassword("");
+      setJoinPasswordError(message);
+    },
+    []
+  );
+
+  const handleJoinMeeting = useCallback(
+    async (meeting: Meeting, password?: string) => {
+      if (meeting.password && !isCurrentUserHost(meeting) && !password) {
+        promptForMeetingPassword(meeting);
+        return;
+      }
+
+      if (
+        meeting.status === 'completed' ||
+        meeting.status === 'cancelled'
+      ) {
+        toast({
+          variant: "destructive",
+          title: "Meeting Unavailable",
+          description:
+            meeting.status === 'completed'
+              ? "This meeting has already ended."
+              : "This meeting has been cancelled.",
+        });
+        return;
+      }
+
+      setIsProcessing(true);
+      try {
+        const joinedMeeting = await joinMeeting.mutateAsync({
+          meetingId: meeting.id,
+          password,
+        });
+
+        setSelectedMeeting(joinedMeeting);
+        setIsMeetingRoomOpen(true);
+        setPasswordMeeting(null);
+        setJoinPassword("");
+        setJoinPasswordError("");
+
+        toast({
+          title: "Joined Meeting",
+          description: "You have joined the meeting",
+        });
+      } catch (err: any) {
+        const code = err?.response?.data?.code;
+        if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
+          promptForMeetingPassword(
+            meeting,
+            code === "INVALID_PASSWORD"
+              ? "Invalid password. Please try again."
+              : ""
+          );
+          return;
+        }
+        if (code === "MAX_PARTICIPANTS_REACHED") {
+          toast({
+            variant: "destructive",
+            title: "Meeting Full",
+            description:
+              "This meeting has reached its maximum participant capacity.",
+          });
+          return;
+        }
+
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: getApiMessage(err, "Failed to join meeting"),
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [joinMeeting, promptForMeetingPassword, toast]
+  );
+
+  const openMeetingRoom = useCallback(
+    (meeting: Meeting) => {
+      if (!isCurrentUserHost(meeting) && !isCurrentUserAccepted(meeting)) {
+        handleJoinMeeting(meeting);
+        return;
+      }
+      if (isCurrentUserHost(meeting)) {
+        handleJoinMeeting(meeting);
+        return;
+      }
+      setSelectedMeeting(meeting);
+      setIsMeetingRoomOpen(true);
+    },
+    [handleJoinMeeting]
+  );
+
+  const handleLeaveMeeting = useCallback(
+    async (meeting: Meeting) => {
+      setIsProcessing(true);
+      try {
+        const updatedMeeting = await leaveMeeting.mutateAsync(meeting.id);
+        setSelectedMeeting(updatedMeeting);
+        setIsMeetingRoomOpen(false);
+        toast({
+          title: "Left Meeting",
+          description: "You have left the meeting",
+        });
+      } catch (err) {
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: getApiMessage(err, "Failed to leave meeting"),
+        });
+      } finally {
+        setIsProcessing(false);
+      }
+    },
+    [leaveMeeting, toast]
+  );
+
+  const transformAttendeesToInitialParticipants = (meeting: Meeting) =>
+    (meeting.attendees ?? []).map((a) => ({
+      userId: a.userId,
+      status: a.status === 'accepted'
+        ? 'joined' as const
+        : (a.status === 'declined' || a.status === 'tentative'
+            ? 'invited' as const
+            : 'invited' as const),
+      isHost: meeting.hostId === a.userId || (meeting as any).coHostId === a.userId,
+      userName: teamMembers.find((m) => m.id === a.userId)?.name,
+    }));
 
   const formatDateTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -951,24 +1096,92 @@ export default function Meetings() {
       )}
 
       {selectedMeeting && (
-        <Dialog open={isMeetingRoomOpen} onOpenChange={setIsMeetingRoomOpen}>
-          <DialogContent className="max-w-7xl h-[calc(100dvh-1rem)] sm:h-[90vh] flex flex-col overflow-hidden p-0">
-            <DialogHeader className="p-4 shrink-0">
-              <DialogTitle>{selectedMeeting.title}</DialogTitle>
-              <DialogDescription>Meeting Room</DialogDescription>
-            </DialogHeader>
-            <div className="min-h-0 flex-1">
+        <Dialog
+          open={isMeetingRoomOpen}
+          onOpenChange={(open) => {
+            if (!open && selectedMeeting) {
+              handleLeaveMeeting(selectedMeeting);
+              return;
+            }
+            setIsMeetingRoomOpen(open);
+          }}
+        >
+          <DialogContent className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0">
+            <div className="min-h-0 flex-1 h-full">
               <VideoCallRoom
                 roomId={selectedMeeting.meetingCode}
                 meetingId={selectedMeeting.id}
-                onLeave={() => setIsMeetingRoomOpen(false)}
+                onLeave={() => handleLeaveMeeting(selectedMeeting)}
                 userName={localStorage.getItem("userName") || "User"}
-                isHost={true}
+                isHost={isCurrentUserHost(selectedMeeting)}
                 waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
                 teamMembers={teamMembers}
-                currentParticipantIds={(selectedMeeting.attendees ?? []).map(attendee => attendee.userId)}
+                currentParticipantIds={(
+                  selectedMeeting.attendees ?? []
+                ).map((attendee) => attendee.userId)}
+                initialParticipants={transformAttendeesToInitialParticipants(
+                  selectedMeeting
+                )}
               />
             </div>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {/* ==========================================
+          Dialog: Password Entry
+          ========================================== */}
+      {passwordMeeting && (
+        <Dialog
+          open={!!passwordMeeting}
+          onOpenChange={(open) => !open && setPasswordMeeting(null)}
+        >
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Enter Meeting Password</DialogTitle>
+              <DialogDescription>
+                This meeting is protected. Enter the password to join.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2 py-2">
+              <Label htmlFor="join-meeting-password">Password</Label>
+              <Input
+                id="join-meeting-password"
+                type="password"
+                value={joinPassword}
+                onChange={(event) => {
+                  setJoinPassword(event.target.value);
+                  setJoinPasswordError("");
+                }}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter" && joinPassword.trim()) {
+                    handleJoinMeeting(passwordMeeting, joinPassword);
+                  }
+                }}
+                autoFocus
+              />
+              {joinPasswordError && (
+                <p className="text-sm text-destructive">{joinPasswordError}</p>
+              )}
+            </div>
+            <DialogFooter>
+              <Button
+                variant="outline"
+                onClick={() => setPasswordMeeting(null)}
+                disabled={isProcessing}
+              >
+                Cancel
+              </Button>
+              <Button
+                onClick={() => handleJoinMeeting(passwordMeeting, joinPassword)}
+                disabled={isProcessing || !joinPassword.trim()}
+              >
+                {isProcessing && (
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
+                )}
+                Join Meeting
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       )}
