@@ -740,6 +740,39 @@ export interface UpdateTaskStatusInput {
 
 // --- Meetings, Chat & Calls Types ---
 
+export type ValidateAccessState =
+  | 'allowed'
+  | 'password_required'
+  | 'waiting_room'
+  | 'not_started'
+  | 'full'
+  | 'ended'
+  | 'completed'
+  | 'cancelled'
+  | 'missed';
+
+export interface ValidateCallResponse {
+  accessState: ValidateAccessState;
+  call?: Call;
+  callLink?: string;
+  hasPassword: boolean;
+  inWaitingRoom?: boolean;
+  isHost?: boolean;
+  message?: string;
+  startsInMs?: number;
+}
+
+export interface ValidateMeetingResponse {
+  accessState: ValidateAccessState;
+  meeting?: Meeting;
+  meetingLink?: string;
+  hasPassword: boolean;
+  inWaitingRoom?: boolean;
+  isHost?: boolean;
+  message?: string;
+  startsInMs?: number;
+}
+
 // Meeting Types
 export interface Meeting {
   id: string;
@@ -753,8 +786,10 @@ export interface Meeting {
   coHostId?: string;
   status: 'scheduled' | 'ongoing' | 'completed' | 'cancelled';
   meetingCode: string;
+  meetingLink?: string;
   isInstant: boolean;
   password?: string;
+  hasPassword?: boolean;
   maxParticipants: number;
   maxMeetingDuration?: number | null;
   endedAt?: string | null;
@@ -765,6 +800,8 @@ export interface Meeting {
   googleEventId?: string;
   createdAt: string;
   updatedAt: string;
+  inWaitingRoom?: boolean;
+  isHost?: boolean;
   attendees: Array<{
     id: string;
     userId: string;
@@ -867,6 +904,7 @@ export interface SendMessageInput {
 // Call Types
 export interface Call {
   id: string;
+  name?: string;
   type: 'audio' | 'video';
   status: 'ringing' | 'ongoing' | 'completed' | 'missed' | 'cancelled';
   startedAt?: string;
@@ -876,14 +914,18 @@ export interface Call {
   hostId: string;
   coHostId?: string;
   callCode: string;
+  callLink?: string;
   isGroupCall: boolean;
   password?: string;
+  hasPassword?: boolean;
   maxParticipants: number;
   maxMeetingDuration: number | null;
   waitingRoomEnabled: boolean;
   recordingEnabled: boolean;
   createdAt: string;
   updatedAt: string;
+  inWaitingRoom?: boolean;
+  isHost?: boolean;
   participants: Array<{
     id: string;
     userId: string;

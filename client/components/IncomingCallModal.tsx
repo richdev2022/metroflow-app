@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
-import { Mic, MicOff, Video, PhoneOff, Loader2 } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Mic, MicOff, Video, PhoneOff, Loader2, Lock, Users } from 'lucide-react';
 import { AudioUtils } from '@/lib/audio-utils';
 import { api } from '@/lib/api-client';
 import { unwrapApiData } from '@/lib/api-response';
@@ -17,6 +18,9 @@ export interface IncomingCallData {
   type: 'audio' | 'video';
   roomId?: string;
   callerName?: string;
+  callLink?: string;
+  hasPassword?: boolean;
+  waitingRoomEnabled?: boolean;
 }
 
 interface IncomingCallModalProps {
@@ -121,8 +125,16 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
     } catch (e) {
       console.warn(e);
     }
-    const roomId = call.roomId || call.callId || call.callCode || '';
     onClose();
+    if (call.callLink) {
+      const linkUrl = new URL(call.callLink, window.location.origin);
+      const callCode = linkUrl.pathname.split('/').pop() || linkUrl.searchParams.get('callCode') || '';
+      if (callCode) {
+        navigate(`/join-call/${encodeURIComponent(callCode)}`);
+        return;
+      }
+    }
+    const roomId = call.roomId || call.callId || call.callCode || '';
     navigate(`/calls?roomId=${encodeURIComponent(roomId)}&autoJoin=1&callType=${call.type}`);
   };
 
@@ -169,7 +181,30 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
           </div>
 
           <h2 className="text-2xl font-bold text-white mb-1">{displayName}</h2>
-          <p className="text-sm text-slate-400 mb-8 animate-pulse">is calling...</p>
+          <p className="text-sm text-slate-400 mb-4 animate-pulse">is calling...</p>
+
+          {(call.hasPassword || call.waitingRoomEnabled) && (
+            <div className="flex flex-wrap items-center justify-center gap-2 mb-6">
+              {call.hasPassword && (
+                <Badge variant="outline" className="bg-yellow-500/10 text-yellow-300 border-yellow-500/30">
+                  <Lock className="h-3 w-3 mr-1" />
+                  Password Protected
+                </Badge>
+              )}
+              {call.waitingRoomEnabled && (
+                <Badge variant="outline" className="bg-emerald-500/10 text-emerald-300 border-emerald-500/30">
+                  <Users className="h-3 w-3 mr-1" />
+                  Waiting Room
+                </Badge>
+              )}
+            </div>
+          )}
+
+          {call.waitingRoomEnabled && (
+            <p className="text-xs text-slate-400 mb-6">
+              You may need to wait for the host to admit you.
+            </p>
+          )}
 
           <div className="flex items-center gap-6 w-full justify-center">
             <Button

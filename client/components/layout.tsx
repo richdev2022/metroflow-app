@@ -146,6 +146,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         callerName: data.callerName || data.fromName,
         type: data.type || 'video',
         roomId: data.roomId || data.callId,
+        callLink: data.callLink,
+        hasPassword: data.hasPassword,
+        waitingRoomEnabled: data.waitingRoomEnabled,
       };
       incomingCallRef.current = callData;
       setIncomingCall(callData);
