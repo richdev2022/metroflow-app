@@ -437,8 +437,24 @@ export default function VideoCallRoom({
   useEffect(() => {
     if (!socket) return;
     
-    const handleParticipantJoined = ({ userId, userName: name, isHost: hostStatus }: any) => {
+    const handleParticipantJoined = ({ userId, userName: name, isHost: hostStatus, status }: any) => {
       if (!isMountedRef.current) return;
+
+      if (status === 'waiting') {
+        if (isHost) {
+          const uname = name || 'Unknown';
+          setWaitingQueue(prev => {
+            if (prev.find(p => p.userId === userId)) return prev;
+            return [...prev, { userId, userName: uname, requestedAt: Date.now() }];
+          });
+          toast({
+            title: "Waiting Room",
+            description: `${uname} is waiting to join the call`,
+            duration: 5000,
+          });
+        }
+        return;
+      }
 
       setParticipants(prev => {
         const exists = prev.find(p => p.id === userId);

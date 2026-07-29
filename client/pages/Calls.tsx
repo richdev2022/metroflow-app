@@ -53,6 +53,7 @@ import {
   Trash2,
   Copy,
   BellRing,
+  Lock,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -716,6 +717,9 @@ export default function Calls() {
                 <span className="truncate">
                   {call.type === "video" ? "Video" : "Audio"} Call
                 </span>
+                {(call.hasPassword || call.password) && (
+                  <Lock className="h-4 w-4 text-muted-foreground shrink-0" aria-label="Password protected" />
+                )}
               </CardTitle>
               <CardDescription>
                 {participants.length} participant{participants.length !== 1 ? "s" : ""}
@@ -1298,6 +1302,7 @@ export default function Calls() {
           }}
         >
           <DialogContent className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0">
+            <DialogTitle className="sr-only">{selectedCall.type === "video" ? "Video" : "Audio"} Call Room</DialogTitle>
             <div className="min-h-0 flex-1 h-full">
               <VideoCallRoom
                 roomId={selectedCall.callCode}

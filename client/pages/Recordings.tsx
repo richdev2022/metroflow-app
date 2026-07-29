@@ -23,8 +23,6 @@ import {
 import {
   Dialog,
   DialogContent,
-  DialogDescription,
-  DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
 import {
@@ -615,6 +613,7 @@ export default function Recordings() {
       {selectedRecording && (
         <Dialog open={isPlayDialogOpen} onOpenChange={(open) => { if (!open) closePlayDialog(); }}>
           <DialogContent className="max-w-5xl p-0 overflow-hidden gap-0">
+            <DialogTitle className="sr-only">Play Recording by {selectedRecording.recordedByName}</DialogTitle>
             <div ref={videoContainerRef} className="relative bg-black aspect-video flex items-center justify-center">
               {videoState.isLoading && !videoState.hasError && (
                 <div className="absolute inset-0 flex items-center justify-center bg-black/80 z-10">
@@ -683,8 +682,8 @@ export default function Recordings() {
             <div className="px-4 py-3 bg-zinc-950 border-t border-zinc-800">
               <div className="flex items-center justify-between">
                 <div>
-                  <DialogTitle className="text-sm font-medium text-white">{selectedRecording.meetingId ? "Meeting" : "Call"} Recording</DialogTitle>
-                  <DialogDescription className="text-xs text-zinc-400 mt-0.5">Recorded by {selectedRecording.recordedByName} on {formatDateTime(selectedRecording.createdAt)}</DialogDescription>
+                  <h3 className="text-sm font-medium text-white">{selectedRecording.meetingId ? "Meeting" : "Call"} Recording</h3>
+                  <p className="text-xs text-zinc-400 mt-0.5">Recorded by {selectedRecording.recordedByName} on {formatDateTime(selectedRecording.createdAt)}</p>
                 </div>
                 <div className="flex items-center gap-3 text-xs text-zinc-400">
                   <span className="flex items-center gap-1"><Clock className="h-3.5 w-3.5" /> {formatDuration(selectedRecording.duration)}</span>

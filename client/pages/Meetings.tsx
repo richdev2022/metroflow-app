@@ -54,6 +54,7 @@ import {
   Copy,
   Check,
   X,
+  Lock,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -720,16 +721,21 @@ export default function Meetings() {
               <Card key={meeting.id}>
                 <CardHeader>
                   <div className="flex justify-between items-start">
-                    <div>
+                    <div className="flex items-start gap-2">
                       <CardTitle className="text-xl">{meeting.title}</CardTitle>
-                      <CardDescription>
-                        {meeting.description}
-                      </CardDescription>
+                      {(meeting.hasPassword || meeting.password) && (
+                        <Lock className="h-4 w-4 mt-1.5 text-muted-foreground shrink-0" aria-label="Password protected" />
+                      )}
                     </div>
                     <Badge variant="outline">
                       {meeting.status}
                     </Badge>
                   </div>
+                  {meeting.description && (
+                    <CardDescription className="mt-2">
+                      {meeting.description}
+                    </CardDescription>
+                  )}
                 </CardHeader>
                 <CardContent className="space-y-4">
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -1107,6 +1113,7 @@ export default function Meetings() {
           }}
         >
           <DialogContent className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0">
+            <DialogTitle className="sr-only">Meeting Room: {selectedMeeting.title}</DialogTitle>
             <div className="min-h-0 flex-1 h-full">
               <VideoCallRoom
                 roomId={selectedMeeting.meetingCode}

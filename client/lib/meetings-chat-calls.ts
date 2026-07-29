@@ -14,7 +14,9 @@ import type {
   UpdateCallInput,
   Recording,
   CreateRecordingInput,
-  UpdateRecordingInput
+  UpdateRecordingInput,
+  ValidateCallResponse,
+  ValidateMeetingResponse,
 } from '@shared/api';
 
 // --- Meetings ---
@@ -49,6 +51,20 @@ export const useMeetingByCode = (code: string) => {
     queryFn: async () => {
       const response = await api.get(`/meetings/code/${code}`);
       return unwrapApiData<Meeting>(response.data, 'Failed to get meeting');
+    },
+    enabled: !!code,
+  });
+};
+
+export const useValidateMeetingCode = (code: string) => {
+  return useQuery({
+    queryKey: ['validate-meeting-code', code],
+    queryFn: async () => {
+      const response = await api.get(`/meetings/validate/${code}`);
+      return unwrapApiData<ValidateMeetingResponse>(
+        response.data,
+        'Failed to validate meeting code'
+      );
     },
     enabled: !!code,
   });
@@ -209,6 +225,20 @@ export const useCallByCode = (code: string) => {
     queryFn: async () => {
       const response = await api.get(`/calls/code/${code}`);
       return unwrapApiData<Call>(response.data, 'Failed to get call');
+    },
+    enabled: !!code,
+  });
+};
+
+export const useValidateCallCode = (code: string) => {
+  return useQuery({
+    queryKey: ['validate-call-code', code],
+    queryFn: async () => {
+      const response = await api.get(`/calls/validate/${code}`);
+      return unwrapApiData<ValidateCallResponse>(
+        response.data,
+        'Failed to validate call code'
+      );
     },
     enabled: !!code,
   });
