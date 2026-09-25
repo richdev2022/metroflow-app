@@ -12,15 +12,39 @@ export default function PaymentCallback() {
   const { toast } = useToast();
   const [status, setStatus] = useState<'verifying' | 'success' | 'failed' | 'warning'>('verifying');
   const [message, setMessage] = useState("Verifying your payment...");
+  const [returnPath, setReturnPath] = useState("/subscription");
 
   useEffect(() => {
     const verifyPayment = async () => {
       const searchParams = new URLSearchParams(location.search);
+      // Wallet funding redirects from the backend carry ?status=...&reference=...&token=...
+      const preStatus = searchParams.get("status");
       const reference = searchParams.get("reference") || searchParams.get("paymentReference"); // Handle both query params
+
+      // A fresh token may accompany the redirect (session can lapse during checkout)
+      const freshToken = searchParams.get("token");
+      if (freshToken) {
+        try { localStorage.setItem("token", freshToken); } catch { /* ignore */ }
+      }
+
+      // Wallet-funding references start with FUND- (see POST /wallet/fund/card)
+      const isWalletFunding = !!reference && reference.startsWith("FUND-");
+      if (isWalletFunding) setReturnPath("/wallet");
 
       if (!reference) {
         setStatus('failed');
         setMessage("No transaction reference found.");
+        return;
+      }
+
+      // The backend verify page already determined the outcome for wallet funding
+      if (isWalletFunding && preStatus && preStatus !== "success") {
+        setStatus(preStatus === 'pending_settlement' ? 'warning' : 'failed');
+        setMessage(
+          preStatus === 'pending_settlement'
+            ? "We received your payment, but crediting your wallet is delayed. It will be retried automatically."
+            : "We could not verify your payment. Please contact support if you have been debited."
+        );
         return;
       }
 
@@ -36,19 +60,23 @@ export default function PaymentCallback() {
              toast({
                title: "Attention Needed",
                description: responseMessage,
-               variant: "default", 
+               variant: "default",
                className: "border-yellow-500"
              });
              // Do not auto-redirect on warning
           } else {
              setStatus('success');
-             setMessage(responseMessage || "Payment successful! Your subscription has been updated.");
+             setMessage(
+               isWalletFunding
+                 ? (responseMessage || "Payment successful! Your wallet has been funded.")
+                 : (responseMessage || "Payment successful! Your subscription has been updated.")
+             );
              toast({
                title: "Success",
-               description: responseMessage || "Subscription updated successfully.",
+               description: isWalletFunding ? "Wallet funded successfully." : (responseMessage || "Subscription updated successfully."),
              });
              // Redirect after a few seconds only on clean success
-             setTimeout(() => navigate("/subscription"), 3000);
+             setTimeout(() => navigate(returnPath), 3000);
           }
         } else {
           setStatus('failed');
@@ -62,7 +90,7 @@ export default function PaymentCallback() {
     };
 
     verifyPayment();
-  }, [location, navigate, toast]);
+  }, [location, navigate, toast, returnPath]);
 
   return (
     <div className="flex items-center justify-center min-h-screen bg-gray-50 p-4">
@@ -86,8 +114,8 @@ export default function PaymentCallback() {
         </CardHeader>
         <CardContent>
           {status !== 'verifying' && (
-            <Button onClick={() => navigate("/subscription")} className="mt-4">
-              Return to Subscription
+            <Button onClick={() => navigate(returnPath)} className="mt-4">
+              {returnPath === "/wallet" ? "Return to Wallet" : "Return to Subscription"}
             </Button>
           )}
         </CardContent>

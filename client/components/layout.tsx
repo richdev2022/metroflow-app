@@ -111,8 +111,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!isConnected || !socket) return;
 
-    const handleNewMsgNotif = (data: { conversationId: string; message?: any }) => {
-      const currentSenderId = data?.message?.senderId || data?.message?.sender_id || '';
+    const handleNewMsgNotif = (data: any) => {
+      // Backend `message:created` payload IS the message object; the mock's
+      // `chat:new-message-notification` wraps it as { conversationId, message }.
+      const msg = data?.message || data || {};
+      const currentSenderId = msg.senderId || msg.sender_id || '';
       if (currentSenderId && currentSenderId !== userId) {
         setTotalUnread(prev => prev + 1);
       }
@@ -125,10 +128,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     };
 
     on('chat:new-message-notification', handleNewMsgNotif);
+    on('message:created', handleNewMsgNotif);
     on('chat:read-updated', handleReadUpdated);
+    on('conversation:read', handleReadUpdated);
     return () => {
       off('chat:new-message-notification', handleNewMsgNotif);
+      off('message:created', handleNewMsgNotif);
       off('chat:read-updated', handleReadUpdated);
+      off('conversation:read', handleReadUpdated);
     };
   }, [isConnected, socket, userId, on, off, fetchTotalUnread]);
 

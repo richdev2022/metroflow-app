@@ -232,6 +232,8 @@ export interface VirtualAccount {
   payment_provider: string;
   virtual_account_number: string;
   bank_code: string;
+  /** Human-readable bank name resolved by the backend (from provider metadata or bank-code lookup) */
+  bank_name?: string | null;
   account_name: string;
   customer_identifier: string;
   beneficiary_account: string;

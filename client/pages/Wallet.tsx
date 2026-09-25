@@ -427,7 +427,7 @@ export default function Wallet() {
       const response = await api.post("/wallet/fund/card", {
         amount: Number(values.amount),
         wallet_id: wallet.id,
-        redirect_url: window.location.origin + "/payment-callback",
+        redirect_url: window.location.origin + "/payment/callback",
       });
       
       if (response.data.payment_url) {
@@ -470,8 +470,9 @@ export default function Wallet() {
     }
   };
 
-  // Helper to get bank name from code
-  const getBankName = (bankCode: string) => {
+  // Helper to get bank name: prefer the backend-resolved bank_name, fall back to code map
+  const getBankName = (bankCode: string, bankName?: string | null) => {
+    if (bankName) return bankName;
     const bankMap: Record<string, string> = {
       "035": "Wema Bank",
       "232": "Sterling Bank",
@@ -567,7 +568,7 @@ export default function Wallet() {
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <span className="text-lg font-mono">{va.virtual_account_number}</span>
-                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
+                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code, va.bank_name)}</span>
                             </div>
                             <p className="text-xs text-muted-foreground">{va.account_name}</p>
 
@@ -678,7 +679,7 @@ export default function Wallet() {
                           <div className="space-y-1">
                             <div className="flex items-center justify-between">
                               <span className="text-lg font-mono">{va.virtual_account_number}</span>
-                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code)}</span>
+                              <span className="text-xs text-muted-foreground">{getBankName(va.bank_code, va.bank_name)}</span>
                             </div>
                             <p className="text-xs text-muted-foreground">{va.account_name}</p>
 
