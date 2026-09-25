@@ -12,8 +12,15 @@ let singletonRefCount = 0;
 let singletonConnectedListeners = new Set<(connected: boolean) => void>();
 let singletonLastCreds: { userId: string; businessId: string } | null = null;
 let singletonKeepAliveInterval: NodeJS.Timeout | null = null;
+// True while the singleton is a guest-authenticated socket (see connectAsGuest)
+let singletonIsGuest = false;
 
 function ensureSingletonSocket(userId: string, businessId: string, userName: string) {
+  // While a guest socket owns the singleton, keep it intact so guest identity
+  // (auth.guestToken) is not replaced by a user-authenticated socket.
+  if (singletonSocket && singletonIsGuest) {
+    return singletonSocket;
+  }
   const credsMatch = singletonLastCreds?.userId === userId && singletonLastCreds?.businessId === businessId;
   if (singletonSocket && credsMatch && singletonSocket.connected) {
     return singletonSocket;
@@ -24,10 +31,13 @@ function ensureSingletonSocket(userId: string, businessId: string, userName: str
   }
   if (!singletonSocket) {
     singletonLastCreds = { userId, businessId };
+    singletonIsGuest = false;
     const socket = io({
       transports: ['polling', 'websocket'],
       path: '/socket.io',
-      withCredentials: true
+      withCredentials: true,
+      // Send the auth token on handshake so the backend can verify identity
+      auth: { token: localStorage.getItem('token') || undefined }
     });
     singletonSocket = socket;
 
@@ -59,15 +69,102 @@ export function getSingletonSocket(): Socket | null {
   return singletonSocket;
 }
 
+/**
+ * Replace the singleton socket with a guest-authenticated one.
+ * Used by public guest join pages (/join/meeting/:code, /join/call/:code).
+ * The backend reads `auth.guestToken` on handshake to verify guest identity.
+ */
+export function connectAsGuest(guestToken: string): Socket {
+  if (singletonKeepAliveInterval) {
+    clearInterval(singletonKeepAliveInterval);
+    singletonKeepAliveInterval = null;
+  }
+  if (singletonSocket) {
+    try { singletonSocket.removeAllListeners(); singletonSocket.disconnect(); } catch {}
+  }
+  singletonRefCount = 0;
+  singletonLastCreds = null;
+
+  const socket = io({
+    transports: ['polling', 'websocket'],
+    path: '/socket.io',
+    withCredentials: true,
+    auth: { guestToken }
+  });
+  singletonSocket = socket;
+  singletonIsGuest = true;
+
+  socket.on('connect', () => {
+    console.log('[Socket] Guest socket connected');
+    singletonConnectedListeners.forEach(fn => fn(true));
+  });
+
+  socket.on('disconnect', () => {
+    console.log('[Socket] Guest socket disconnected');
+    singletonConnectedListeners.forEach(fn => fn(false));
+  });
+
+  return socket;
+}
+
+/**
+ * Tear down the guest socket created by connectAsGuest, so a subsequent
+ * useSocket() call recreates a normal user-authenticated singleton.
+ */
+export function disconnectAsGuest(): void {
+  if (singletonSocket && singletonIsGuest) {
+    try { singletonSocket.removeAllListeners(); singletonSocket.disconnect(); } catch {}
+    singletonSocket = null;
+    singletonIsGuest = false;
+  }
+  if (singletonKeepAliveInterval) {
+    clearInterval(singletonKeepAliveInterval);
+    singletonKeepAliveInterval = null;
+  }
+}
+
+/**
+ * Verify a room password via the `room:verifyPassword` socket event (ack-based).
+ */
+export function verifyRoomPassword(roomId: string, password: string): Promise<{ valid: boolean; roomType?: string }> {
+  return new Promise((resolve) => {
+    const socket = singletonSocket;
+    if (!socket || !roomId || !socket.connected) {
+      resolve({ valid: false });
+      return;
+    }
+    let settled = false;
+    const timeout = setTimeout(() => finish({ valid: false }), 10000);
+    const finish = (result: { valid: boolean; roomType?: string }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    try {
+      socket.emit('room:verifyPassword', { roomId, password }, (response: any) => {
+        finish({
+          valid: Boolean(response?.valid ?? response?.success),
+          roomType: response?.roomType,
+        });
+      });
+    } catch {
+      finish({ valid: false });
+    }
+  });
+}
+
 export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {}) => {
   const [isConnected, setIsConnected] = useState<boolean>(() => singletonSocket?.connected ?? false);
   const localSubscribedRef = useRef(false);
 
   useEffect(() => {
-    if (!userId || !businessId) return;
-    const resolvedUserName = userName || localStorage.getItem('userName') || '';
-
-    ensureSingletonSocket(userId, businessId, resolvedUserName);
+    // Only ensure a user socket when real credentials exist. Guests (empty
+    // creds) still subscribe below so `isConnected` reflects the guest socket.
+    if (userId && businessId) {
+      const resolvedUserName = userName || localStorage.getItem('userName') || '';
+      ensureSingletonSocket(userId, businessId, resolvedUserName);
+    }
     singletonRefCount += 1;
     localSubscribedRef.current = true;
 
@@ -231,6 +328,7 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
     startScreenShare,
     stopScreenShare,
     sendMeetingChat,
+    verifyRoomPassword,
     updateUserPresence,
     on,
     off,
