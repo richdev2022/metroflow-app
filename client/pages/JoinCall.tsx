@@ -1,565 +1,339 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import VideoCallRoom from '@/components/VideoCallRoom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { useToast } from '@/components/ui/use-toast';
 import { api } from '@/lib/api-client';
-import { getApiMessage, unwrapApiData } from '@/lib/api-response';
-import { TeamMember, Call, ValidateAccessState } from '@shared/api';
-import { useJoinCall, useValidateCallCode } from '@/lib/meetings-chat-calls';
+import { unwrapApiData } from '@/lib/api-response';
+import { TeamMember } from '@shared/api';
 import {
-  AlertTriangle,
-  Clock,
+  Video,
+  VideoOff,
+  Mic,
+  MicOff,
   Loader2,
   Lock,
-  Users,
-  CheckCircle2,
   Hourglass,
+  XCircle,
+  Users,
+  Phone,
   PhoneOff,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-const formatStartsIn = (ms: number) => {
-  if (ms <= 0) return 'now';
-  const totalSec = Math.ceil(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-};
+/**
+ * JoinCall — modern pre-join screen for 1:1 / group calls (route: /calls/:callCode)
+ * Rebuilt for the 2026 revamp with a clean green-room experience.
+ */
+
+type AccessState =
+  | 'allowed'
+  | 'password_required'
+  | 'waiting_room'
+  | 'ended'
+  | 'cancelled'
+  | 'completed'
+  | 'missed'
+  | 'full'
+  | null;
+
+interface ValidateResult {
+  id: string;
+  title?: string;
+  status: string;
+  type: 'audio' | 'video';
+  callCode: string;
+  hasPassword: boolean;
+  waitingRoomEnabled: boolean;
+  maxParticipants?: number;
+  isHost: boolean;
+  accessState: AccessState;
+  reasons?: string[];
+}
 
 const JoinCall = () => {
   const { callCode } = useParams<{ callCode: string }>();
   const navigate = useNavigate();
-  const { toast } = useToast();
-  const joinCallMutation = useJoinCall();
 
-  const {
-    data: validateData,
-    isLoading: validateLoading,
-    error: validateError,
-  } = useValidateCallCode(callCode || '');
-
+  const [validate, setValidate] = useState<ValidateResult | null>(null);
+  const [validateState, setValidateState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [validateError, setValidateError] = useState<{ title: string; description: string } | null>(null);
   const [password, setPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
-  const [passwordRequired, setPasswordRequired] = useState(false);
-  const [call, setCall] = useState<Call | null>(null);
+  const [joining, setJoining] = useState(false);
+  const [joined, setJoined] = useState(false);
+  const [camOn, setCamOn] = useState(true);
+  const [micOn, setMicOn] = useState(true);
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [isJoined, setIsJoined] = useState(false);
-  const [errorScreen, setErrorScreen] = useState<{
-    title: string;
-    description: string;
-    canRetry?: boolean;
-  } | null>(null);
-  const [waitingRoomScreen, setWaitingRoomScreen] = useState(false);
-  const [notStartedCountdown, setNotStartedCountdown] = useState<number>(0);
 
-  const CURRENT_USER_ID = () => localStorage.getItem('userId') || '';
-
-  const accessState: ValidateAccessState | null = validateData?.accessState ?? null;
-  const hasPassword = validateData?.hasPassword ?? call?.hasPassword ?? Boolean(call?.password);
-
-  const effectiveCall = call ?? validateData?.call ?? null;
-  const effectiveIsHost =
-    validateData?.isHost ??
-    (effectiveCall
-      ? effectiveCall.hostId === CURRENT_USER_ID() ||
-        (effectiveCall as any)?.coHostId === CURRENT_USER_ID()
-      : false);
-  const effectiveInWaitingRoom = validateData?.inWaitingRoom ?? call?.inWaitingRoom ?? false;
-  const currentParticipantIds =
-    effectiveCall?.participants?.map((p: any) => p.userId) || [];
+  const isAuthed = !!localStorage.getItem('token');
 
   useEffect(() => {
-    if (accessState === 'not_started' && validateData?.startsInMs != null) {
-      setNotStartedCountdown(validateData.startsInMs);
-      const startTs = Date.now();
-      const startVal = validateData.startsInMs;
-      const timer = setInterval(() => {
-        const remaining = startVal - (Date.now() - startTs);
-        if (remaining <= 0) {
-          clearInterval(timer);
-          setNotStartedCountdown(0);
-        } else {
-          setNotStartedCountdown(remaining);
-        }
-      }, 1000);
-      return () => clearInterval(timer);
+    if (!isAuthed) {
+      navigate(`/login?redirect=/calls/${callCode}`);
+      return;
     }
-  }, [accessState, validateData]);
-
-  const doJoinCall = useCallback(
-    async (passwordVal?: string) => {
-      if (!effectiveCall) return;
-
-      setPasswordError('');
-      setPasswordRequired(false);
-      setErrorScreen(null);
-      setWaitingRoomScreen(false);
-
+    (async () => {
+      setValidateState('loading');
       try {
-        const result = await joinCallMutation.mutateAsync({
-          callId: effectiveCall.id,
-          password: passwordVal,
-        });
-        setCall(result);
-
-        if (result.inWaitingRoom) {
-          setWaitingRoomScreen(true);
-          toast({
-            title: 'Waiting Room',
-            description: 'Please wait — the host will admit you shortly.',
-          });
-        } else {
-          setIsJoined(true);
-          toast({ title: 'Joined Call', description: 'Connecting to call room…' });
-        }
+        const res = await api.get(`/calls/validate/${callCode}`);
+        const data = unwrapApiData<ValidateResult>(res);
+        setValidate(data);
+        setValidateState('ready');
       } catch (err: any) {
-        const code = err?.response?.data?.code ?? err?.response?.data?.errorCode;
-        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD') {
-          setPasswordRequired(true);
-          setPasswordError(
-            code === 'INVALID_PASSWORD' ? 'Incorrect password. Please try again.' : ''
-          );
-          return;
-        }
-        if (code === 'MAX_PARTICIPANTS_REACHED') {
-          setErrorScreen({
-            title: 'Call is Full',
-            description:
-              'This call has reached its maximum capacity. Please ask the host to increase the limit or try again later.',
-            canRetry: true,
-          });
-          return;
-        }
-        if (code === 'CALL_COMPLETED' || code === 'CALL_CANCELLED' || code === 'CALL_MISSED') {
-          setErrorScreen({
-            title: 'Call has Ended',
-            description: 'This call is no longer active.',
-          });
-          return;
-        }
-        toast({
-          title: 'Error',
-          description: getApiMessage(err, 'Failed to join call'),
-          variant: 'destructive',
+        const message = err?.response?.data?.error || err?.message || 'Call not found';
+        setValidateState('error');
+        setValidateError({
+          title: message === 'Call not found' ? 'Call not found' : 'Unable to join',
+          description: message,
         });
       }
-    },
-    [effectiveCall, joinCallMutation, toast]
-  );
+    })();
+  }, [callCode, isAuthed, navigate]);
 
+  // team members (participant mapping for the room)
   useEffect(() => {
-    if (!accessState || !validateData) return;
+    if (!isAuthed) return;
+    api
+      .get('/team')
+      .then((res) => {
+        const rows = unwrapApiData<any[]>(res);
+        setTeamMembers(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => undefined);
+  }, [isAuthed]);
 
-    switch (accessState) {
-      case 'allowed':
-        if (effectiveCall && !isJoined && !waitingRoomScreen) {
-          doJoinCall();
-        }
-        break;
-      case 'password_required':
-        setPasswordRequired(true);
-        break;
-      case 'waiting_room':
-        if (effectiveCall && !isJoined && !waitingRoomScreen) {
-          doJoinCall();
-        }
-        break;
-      case 'not_started':
-        break;
-      case 'full':
-        setErrorScreen({
-          title: 'Call is Full',
-          description:
-            'This call has reached its maximum participant capacity. Please try again later.',
-          canRetry: true,
-        });
-        break;
-      case 'ended':
-      case 'completed':
-        setErrorScreen({
-          title: 'Call has Ended',
-          description: 'This call is no longer active.',
-        });
-        break;
-      case 'cancelled':
-        setErrorScreen({
-          title: 'Call Cancelled',
-          description: 'This call has been cancelled by the host.',
-        });
-        break;
-      case 'missed':
-        setErrorScreen({
-          title: 'Call Missed',
-          description: 'You missed this call.',
-        });
-        break;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessState, validateData]);
-
+  // camera preview
   useEffect(() => {
-    const fetchTeamMembers = async () => {
-      try {
-        const response = await api.get('/team');
-        setTeamMembers(
-          unwrapApiData<TeamMember[]>(response.data, 'Failed to fetch team members')
-        );
-      } catch (err) {
-        console.error('Failed to fetch team members:', err);
-      }
+    if (joined || validateState !== 'ready' || validate?.type === 'audio') return;
+    let stream: MediaStream | null = null;
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((s) => {
+        stream = s;
+        setPreviewStream(s);
+      })
+      .catch(() => undefined);
+    return () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      setPreviewStream(null);
     };
-
-    fetchTeamMembers();
-  }, []);
+  }, [joined, validateState, validate?.type]);
 
   useEffect(() => {
-    if (validateError) {
-      const status = (validateError as any)?.response?.status;
-      if (status === 404) {
-        setErrorScreen({
-          title: 'Call Not Found',
-          description: 'The call link you used may be expired or invalid.',
-        });
-      } else {
-        toast({
-          title: 'Error',
-          description: getApiMessage(validateError, 'Failed to validate call link'),
-          variant: 'destructive',
-        });
-        navigate('/dashboard');
-      }
+    if (previewVideoRef.current && previewStream) {
+      previewVideoRef.current.srcObject = previewStream;
+      previewVideoRef.current.play().catch(() => undefined);
     }
-  }, [validateError, navigate, toast]);
+  }, [previewStream]);
 
-  const handlePasswordSubmit = async () => {
-    if (!password.trim()) return;
-    await doJoinCall(password);
+  const displayName = localStorage.getItem('userName') || 'You';
+
+  const canJoin =
+    validateState === 'ready' &&
+    (validate?.accessState === 'allowed' || validate?.accessState === 'waiting_room' || validate?.accessState === 'password_required') &&
+    (validate?.accessState !== 'password_required' || password.length > 0);
+
+  const handleJoin = async () => {
+    if (!canJoin || !validate) return;
+    setJoining(true);
+    try {
+      await api.post(`/calls/${validate.id}/join`, { password: password || undefined });
+      setJoined(true);
+    } catch (err: any) {
+      const message = err?.response?.data?.error || err?.message || 'Failed to join';
+      if (String(message).toLowerCase().includes('password')) {
+        setPasswordError('Incorrect call password');
+      } else {
+        setValidateError({ title: 'Cannot join call', description: message });
+        setValidateState('error');
+      }
+    } finally {
+      setJoining(false);
+    }
   };
 
-  if (validateLoading || (!accessState && !validateError)) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
-        <div className="flex flex-col items-center gap-4 text-white">
-          <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
-          <p className="text-muted-foreground">Loading call…</p>
-        </div>
-      </div>
-    );
-  }
+  const callType = validate?.type || 'video';
+  const audioOnly = callType === 'audio';
 
-  if (errorScreen) {
+  // ---------------------------------------------------------------- joined
+  if (joined && validate) {
     return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-destructive/20 p-3 w-fit">
-              <AlertTriangle className="h-7 w-7 text-destructive" />
-            </div>
-            <CardTitle className="text-xl text-white">{errorScreen.title}</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              {errorScreen.description}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {errorScreen.canRetry && effectiveCall && (
-              <Button
-                className="w-full"
-                onClick={() => {
-                  setErrorScreen(null);
-                  if (accessState === 'password_required') {
-                    setPasswordRequired(true);
-                  } else {
-                    doJoinCall();
-                  }
-                }}
-              >
-                Try Again
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => navigate('/dashboard')}
-            >
-              Return to Dashboard
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (accessState === 'not_started') {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-indigo-500/20 p-3 w-fit">
-              <Hourglass className="h-7 w-7 text-indigo-400" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              {effectiveCall?.type === 'video' ? 'Video' : 'Audio'} Call has not started
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait until the scheduled start time
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="rounded-xl bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-transparent p-5 text-center border border-white/5">
-              <Badge variant="outline" className="mb-3 bg-white/5">
-                <Clock className="h-3 w-3 mr-1" />
-                Starts in
-              </Badge>
-              <div className="text-5xl font-bold tracking-tight text-white tabular-nums">
-                {formatStartsIn(notStartedCountdown)}
-              </div>
-            </div>
-            {effectiveCall && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0}{' '}
-                    participant
-                    {(effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0) === 1
-                      ? ''
-                      : 's'}
-                    &nbsp;waiting
-                  </span>
-                </div>
-                {effectiveCall.maxMeetingDuration && (
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-indigo-400" />
-                    <span>
-                      Max duration: {effectiveCall.maxMeetingDuration} minute
-                      {effectiveCall.maxMeetingDuration === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => doJoinCall()}
-                disabled={joinCallMutation.isPending}
-              >
-                {joinCallMutation.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : null}
-                Join Early
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => navigate('/dashboard')}
-                className="flex-1"
-              >
-                Back Later
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (waitingRoomScreen || (isJoined && effectiveInWaitingRoom)) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-emerald-500/20 p-3 w-fit">
-              <CheckCircle2 className="h-7 w-7 text-emerald-400 animate-pulse" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">Waiting Room</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait — the host has been notified and will admit you shortly.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {effectiveCall && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0}{' '}
-                    participant
-                    {(effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0) === 1
-                      ? ''
-                      : 's'}
-                    &nbsp;in call
-                  </span>
-                </div>
-                {hasPassword && (
-                  <div className="flex items-center gap-2">
-                    <Lock className="h-4 w-4 text-emerald-400" />
-                    <span>Password verified</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Awaiting host approval…</span>
-            </div>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => navigate('/dashboard')}
-            >
-              <PhoneOff className="h-4 w-4 mr-2" />
-              Leave Waiting Room
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (passwordRequired) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-indigo-500/20 p-3 w-fit">
-              <Lock className="h-7 w-7 text-indigo-400" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              {effectiveCall?.type === 'video' ? 'Video' : 'Audio'} Call
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              This call requires a password to join
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {effectiveCall && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0}{' '}
-                    participant
-                    {(effectiveCall.participants?.filter((p) => p.status === 'joined')
-                      ?.length ?? 0) === 1
-                      ? ''
-                      : 's'}
-                    &nbsp;in call
-                  </span>
-                </div>
-                {effectiveCall.maxMeetingDuration && (
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-indigo-400" />
-                    <span>
-                      Max duration: {effectiveCall.maxMeetingDuration} minute
-                      {effectiveCall.maxMeetingDuration === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="join-call-password" className="text-white">
-                Password
-              </Label>
-              <Input
-                id="join-call-password"
-                type="password"
-                placeholder="Enter call password"
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setPasswordError('');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && password.trim()) handlePasswordSubmit();
-                }}
-                autoFocus
-              />
-              {passwordError && (
-                <p className="text-sm text-destructive">{passwordError}</p>
-              )}
-            </div>
-            <Button
-              onClick={handlePasswordSubmit}
-              className="w-full"
-              disabled={joinCallMutation.isPending || !password.trim()}
-            >
-              {joinCallMutation.isPending && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Join Call
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => navigate('/dashboard')}
-              className="w-full"
-              disabled={joinCallMutation.isPending}
-            >
-              Cancel
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (isJoined && effectiveCall) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
+      <div className="h-screen w-full bg-[#111221]">
         <VideoCallRoom
-          roomId={effectiveCall.callCode}
-          callId={effectiveCall.id}
-          callType={effectiveCall.type}
-          onLeave={() => navigate('/dashboard')}
-          userName={localStorage.getItem('userName') || 'User'}
-          isHost={effectiveIsHost}
-          waitingRoomEnabled={effectiveCall.waitingRoomEnabled}
+          roomId={validate.callCode}
+          callId={validate.id}
+          callType={callType}
+          onLeave={() => navigate('/calls')}
+          userName={displayName}
+          isHost={validate.isHost}
+          waitingRoomEnabled={validate.waitingRoomEnabled}
           teamMembers={teamMembers}
-          currentParticipantIds={currentParticipantIds}
-          initialParticipants={effectiveCall.participants?.map((p: any) => ({
-            userId: p.userId,
-            status: p.status,
-            joinedAt: p.joinedAt,
-            leftAt: p.leftAt,
-            isHost:
-              Boolean(p.isHost) ||
-              effectiveCall.hostId === p.userId ||
-              (effectiveCall as any).coHostId === p.userId,
-            userName:
-              teamMembers.find((m) => m.id === p.userId)?.name || p.userName,
-          }))}
         />
       </div>
     );
   }
 
+  // ---------------------------------------------------------------- error
+  if (validateState === 'error' && validateError) {
+    return (
+      <CallShell>
+        <div className="flex flex-col items-center text-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-rose-500/15">
+            <XCircle className="h-8 w-8 text-rose-400" />
+          </div>
+          <h1 className="text-xl font-semibold text-white">{validateError.title}</h1>
+          <p className="mt-2 max-w-sm text-sm text-white/55">{validateError.description}</p>
+          <Button onClick={() => navigate('/calls')} className="mt-6 rounded-full bg-indigo-500 text-white hover:bg-indigo-600">
+            Back to calls
+          </Button>
+        </div>
+      </CallShell>
+    );
+  }
+
+  // ---------------------------------------------------------------- blocked
+  if (validateState === 'ready' && validate) {
+    const s = validate.accessState;
+    if (s === 'cancelled' || s === 'ended' || s === 'completed' || s === 'missed') {
+      return (
+        <CallShell>
+          <Blocked icon={<XCircle className="h-8 w-8 text-rose-400" />} title="This call has ended" description="Start a new call from the Calls page." />
+        </CallShell>
+      );
+    }
+    if (s === 'full') {
+      return (
+        <CallShell>
+          <Blocked icon={<Users className="h-8 w-8 text-amber-400" />} title="Call is full" description={`This call reached its maximum of ${validate.maxParticipants} participants.`} />
+        </CallShell>
+      );
+    }
+  }
+
+  const access = validate?.accessState;
+  const showPasswordStep = access === 'password_required';
+
   return (
-    <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
-      <div className="flex flex-col items-center gap-4 text-white">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
-        <p className="text-muted-foreground">Preparing to join…</p>
+    <CallShell>
+      <div className="w-full max-w-md">
+        {validateState === 'loading' ? (
+          <div className="flex flex-col items-center py-16 text-center">
+            <Loader2 className="mb-4 h-8 w-8 animate-spin text-indigo-400" />
+            <p className="text-sm text-white/55">Checking call…</p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-6 text-center">
+              <h1 className="text-2xl font-semibold tracking-tight text-white">
+                {audioOnly ? 'Audio call' : 'Video call'}
+              </h1>
+              <p className="mt-1 font-mono text-sm tracking-widest text-indigo-300">{validate?.callCode}</p>
+            </div>
+
+            {/* preview */}
+            <div className="relative mx-auto mb-5 aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-[#1f2033] shadow-2xl">
+              {!audioOnly && camOn && previewStream ? (
+                <video ref={previewVideoRef} autoPlay playsInline muted className="h-full w-full scale-x-[-1] object-cover" />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xl font-semibold text-white">
+                    {displayName.slice(0, 2).toUpperCase()}
+                  </div>
+                </div>
+              )}
+              {!audioOnly && (
+                <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-2">
+                  <button
+                    onClick={() => setMicOn((m) => !m)}
+                    className={cn(
+                      'flex h-11 w-11 items-center justify-center rounded-full backdrop-blur transition',
+                      micOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-500 text-white hover:bg-rose-600',
+                    )}
+                  >
+                    {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+                  </button>
+                  <button
+                    onClick={() => setCamOn((c) => !c)}
+                    className={cn(
+                      'flex h-11 w-11 items-center justify-center rounded-full backdrop-blur transition',
+                      camOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-500 text-white hover:bg-rose-600',
+                    )}
+                  >
+                    {camOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {showPasswordStep && (
+              <div className="mb-4">
+                <label className="mb-1.5 block text-xs font-medium text-white/60">Call password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setPasswordError('');
+                    }}
+                    placeholder="Enter password"
+                    className="h-12 rounded-xl border-white/10 bg-white/5 pl-10 text-white placeholder:text-white/30"
+                    onKeyDown={(e) => e.key === 'Enter' && void handleJoin()}
+                  />
+                </div>
+                {passwordError && <p className="mt-1.5 text-xs text-rose-400">{passwordError}</p>}
+              </div>
+            )}
+
+            {access === 'waiting_room' && (
+              <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3">
+                <Hourglass className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                <p className="text-xs leading-relaxed text-amber-100/90">The host will let you in shortly.</p>
+              </div>
+            )}
+
+            <Button
+              onClick={() => void handleJoin()}
+              disabled={!canJoin || joining}
+              className="w-full rounded-full bg-emerald-500 py-3.5 text-base font-semibold text-white shadow-lg shadow-emerald-500/25 hover:bg-emerald-600 disabled:opacity-40"
+            >
+              {joining ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Joining…
+                </>
+              ) : (
+                <>
+                  <Phone className="mr-2 h-4 w-4" /> Join call
+                </>
+              )}
+            </Button>
+          </>
+        )}
       </div>
-    </div>
+    </CallShell>
   );
 };
+
+function CallShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen w-full items-center justify-center bg-gradient-to-b from-[#111221] via-[#141527] to-[#0d0e1a] p-6">
+      {children}
+    </div>
+  );
+}
+
+function Blocked({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white/5">{icon}</div>
+      <h1 className="text-xl font-semibold text-white">{title}</h1>
+      <p className="mt-2 max-w-sm text-sm text-white/55">{description}</p>
+    </div>
+  );
+}
 
 export default JoinCall;

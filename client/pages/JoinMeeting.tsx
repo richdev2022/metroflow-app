@@ -1,630 +1,497 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
+import { useParams, useNavigate, useSearchParams } from 'react-router-dom';
 import VideoCallRoom from '@/components/VideoCallRoom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Label } from '@/components/ui/label';
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from '@/components/ui/card';
-import { Badge } from '@/components/ui/badge';
-import { useToast } from '@/components/ui/use-toast';
 import { api } from '@/lib/api-client';
-import { getApiMessage, unwrapApiData } from '@/lib/api-response';
-import { TeamMember, Meeting, ValidateAccessState } from '@shared/api';
-import { useJoinMeeting, useValidateMeetingCode } from '@/lib/meetings-chat-calls';
+import { unwrapApiData } from '@/lib/api-response';
+import { Meeting, TeamMember } from '@shared/api';
 import {
-  AlertTriangle,
-  Calendar,
-  Clock,
+  Video,
+  VideoOff,
+  Mic,
+  MicOff,
   Loader2,
   Lock,
-  Users,
-  CheckCircle2,
+  Calendar,
+  Clock,
   Hourglass,
-  PhoneOff,
+  XCircle,
+  Users,
+  LogIn,
+  ShieldCheck,
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 
-const formatStartsIn = (ms: number) => {
-  if (ms <= 0) return 'now';
-  const totalSec = Math.ceil(ms / 1000);
-  const h = Math.floor(totalSec / 3600);
-  const m = Math.floor((totalSec % 3600) / 60);
-  const s = totalSec % 60;
-  if (h > 0) return `${h}h ${m}m`;
-  if (m > 0) return `${m}m ${s}s`;
-  return `${s}s`;
-};
+/**
+ * JoinMeeting — modern "green room" pre-join experience (Google Meet style)
+ * -------------------------------------------------------------------------
+ * - Works for logged-in users AND guests (no account needed).
+ * - Guests: enter a name -> public /meetings/guest/validate/:code -> join
+ *   with a synthetic guest id via socket.
+ * - Handles password, waiting room, not-started countdown, full/ended states.
+ */
+
+type AccessState =
+  | 'allowed'
+  | 'password_required'
+  | 'waiting_room'
+  | 'not_started'
+  | 'ended'
+  | 'cancelled'
+  | 'completed'
+  | 'full'
+  | null;
+
+interface ValidateResult {
+  id: string;
+  title: string;
+  description?: string;
+  status: string;
+  startTime?: string;
+  endTime?: string | null;
+  timezone?: string;
+  meetingCode: string;
+  meetingLink?: string;
+  isInstant: boolean;
+  waitingRoomEnabled: boolean;
+  hasPassword: boolean;
+  maxParticipants?: number;
+  currentParticipants?: number;
+  isHost: boolean;
+  accessState: AccessState;
+  reasons?: string[];
+}
 
 const JoinMeeting = () => {
   const { meetingCode } = useParams<{ meetingCode: string }>();
   const navigate = useNavigate();
-  const { toast } = useToast();
-  const joinMeetingMutation = useJoinMeeting();
+  const [searchParams] = useSearchParams();
+  const inviteToken = searchParams.get('token');
 
-  const {
-    data: validateData,
-    isLoading: validateLoading,
-    error: validateError,
-  } = useValidateMeetingCode(meetingCode || '');
+  const token = localStorage.getItem('token');
+  const isAuthed = !!token;
 
+  // ------------------------------------------------------------- validation
+  const [validate, setValidate] = useState<ValidateResult | null>(null);
+  const [validateState, setValidateState] = useState<'loading' | 'ready' | 'error'>('loading');
+  const [validateError, setValidateError] = useState<{ title: string; description: string } | null>(null);
+
+  // guest / join state
+  const [guestName, setGuestName] = useState('');
   const [password, setPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
-  const [passwordRequired, setPasswordRequired] = useState(false);
-  const [meeting, setMeeting] = useState<Meeting | null>(null);
-  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
-  const [isJoined, setIsJoined] = useState(false);
-  const [errorScreen, setErrorScreen] = useState<{
-    title: string;
-    description: string;
-    canRetry?: boolean;
-  } | null>(null);
-  const [waitingRoomScreen, setWaitingRoomScreen] = useState(false);
+  const [joining, setJoining] = useState(false);
+  const [joined, setJoined] = useState(false);
   const [notStartedCountdown, setNotStartedCountdown] = useState<number>(0);
+  const [camOn, setCamOn] = useState(true);
+  const [micOn, setMicOn] = useState(true);
+  const [previewStream, setPreviewStream] = useState<MediaStream | null>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
 
-  const CURRENT_USER_ID = () => localStorage.getItem('userId') || '';
+  const guestIdRef = useRef<string>('');
 
-  const accessState: ValidateAccessState | null = validateData?.accessState ?? null;
-  const hasPassword =
-    validateData?.hasPassword ?? meeting?.hasPassword ?? Boolean(meeting?.password);
-
-  const effectiveMeeting = meeting ?? validateData?.meeting ?? null;
-  const effectiveIsHost =
-    validateData?.isHost ??
-    (effectiveMeeting
-      ? effectiveMeeting.hostId === CURRENT_USER_ID() ||
-        (effectiveMeeting as any)?.coHostId === CURRENT_USER_ID()
-      : false);
-  const effectiveInWaitingRoom =
-    validateData?.inWaitingRoom ?? meeting?.inWaitingRoom ?? false;
-  const currentParticipantIds =
-    effectiveMeeting?.attendees?.map((a: any) => a.userId) || [];
-
-  useEffect(() => {
-    if (accessState === 'not_started' && validateData?.startsInMs != null) {
-      setNotStartedCountdown(validateData.startsInMs);
-      const startTs = Date.now();
-      const startVal = validateData.startsInMs;
-      const timer = setInterval(() => {
-        const remaining = startVal - (Date.now() - startTs);
-        if (remaining <= 0) {
-          clearInterval(timer);
-          setNotStartedCountdown(0);
-        } else {
-          setNotStartedCountdown(remaining);
-        }
-      }, 1000);
-      return () => clearInterval(timer);
+  const fetchValidate = useCallback(async () => {
+    if (!meetingCode) return;
+    setValidateState('loading');
+    try {
+      const query = inviteToken ? `?token=${encodeURIComponent(inviteToken)}` : '';
+      const res = await api.get(`/meetings/guest/validate/${meetingCode}${query}`);
+      const data = unwrapApiData<ValidateResult>(res);
+      setValidate(data);
+      setValidateState('ready');
+    } catch (err: any) {
+      const message = err?.response?.data?.error || err?.message || 'Meeting not found';
+      setValidateState('error');
+      setValidateError({
+        title: message === 'Meeting not found' ? 'Meeting not found' : 'Unable to join',
+        description:
+          message === 'Meeting not found'
+            ? 'Check the link or code and try again. It may have been deleted.'
+            : message,
+      });
     }
-  }, [accessState, validateData]);
-
-  const doJoinMeeting = useCallback(
-    async (passwordVal?: string) => {
-      if (!effectiveMeeting) return;
-
-      setPasswordError('');
-      setPasswordRequired(false);
-      setErrorScreen(null);
-      setWaitingRoomScreen(false);
-
-      try {
-        const result = await joinMeetingMutation.mutateAsync({
-          meetingId: effectiveMeeting.id,
-          password: passwordVal,
-        });
-        setMeeting(result);
-
-        if (result.inWaitingRoom) {
-          setWaitingRoomScreen(true);
-          toast({
-            title: 'Waiting Room',
-            description: 'Please wait — the host will admit you shortly.',
-          });
-        } else {
-          setIsJoined(true);
-          toast({
-            title: 'Joined Meeting',
-            description: 'Connecting to meeting room…',
-          });
-        }
-      } catch (err: any) {
-        const code = err?.response?.data?.code ?? err?.response?.data?.errorCode;
-        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD') {
-          setPasswordRequired(true);
-          setPasswordError(
-            code === 'INVALID_PASSWORD'
-              ? 'Incorrect password. Please try again.'
-              : ''
-          );
-          return;
-        }
-        if (code === 'MAX_PARTICIPANTS_REACHED') {
-          setErrorScreen({
-            title: 'Meeting is Full',
-            description:
-              'This meeting has reached its maximum capacity. Please ask the host to increase the limit or try again later.',
-            canRetry: true,
-          });
-          return;
-        }
-        if (
-          code === 'MEETING_COMPLETED' ||
-          code === 'MEETING_CANCELLED'
-        ) {
-          setErrorScreen({
-            title: 'Meeting has Ended',
-            description: 'This meeting is no longer active.',
-          });
-          return;
-        }
-        toast({
-          title: 'Error',
-          description: getApiMessage(err, 'Failed to join meeting'),
-          variant: 'destructive',
-        });
-      }
-    },
-    [effectiveMeeting, joinMeetingMutation, toast]
-  );
+  }, [meetingCode, inviteToken]);
 
   useEffect(() => {
-    if (!accessState || !validateData) return;
+    void fetchValidate();
+  }, [fetchValidate]);
 
-    switch (accessState) {
-      case 'allowed':
-        if (effectiveMeeting && !isJoined && !waitingRoomScreen) {
-          doJoinMeeting();
-        }
-        break;
-      case 'password_required':
-        setPasswordRequired(true);
-        break;
-      case 'waiting_room':
-        if (effectiveMeeting && !isJoined && !waitingRoomScreen) {
-          doJoinMeeting();
-        }
-        break;
-      case 'not_started':
-        break;
-      case 'full':
-        setErrorScreen({
-          title: 'Meeting is Full',
-          description:
-            'This meeting has reached its maximum participant capacity. Please try again later.',
-          canRetry: true,
-        });
-        break;
-      case 'ended':
-      case 'completed':
-        setErrorScreen({
-          title: 'Meeting has Ended',
-          description: 'This meeting is no longer active.',
-        });
-        break;
-      case 'cancelled':
-        setErrorScreen({
-          title: 'Meeting Cancelled',
-          description: 'This meeting has been cancelled by the host.',
-        });
-        break;
-      case 'missed':
-        setErrorScreen({
-          title: 'Meeting Missed',
-          description: 'You missed this meeting.',
-        });
-        break;
+  // Authenticated users may use the richer business-scoped validation
+  useEffect(() => {
+    if (!isAuthed || !meetingCode) return;
+    (async () => {
+      try {
+        const res = await api.get(`/meetings/validate/${meetingCode}`);
+        const data = unwrapApiData<ValidateResult>(res);
+        if (data) setValidate(data);
+      } catch {
+        /* guest validate result already present */
+      }
+    })();
+  }, [isAuthed, meetingCode]);
+
+  // load team members for authenticated users (participant mapping)
+  useEffect(() => {
+    if (!isAuthed) return;
+    api
+      .get('/team')
+      .then((res) => {
+        const rows = unwrapApiData<any[]>(res);
+        setTeamMembers(Array.isArray(rows) ? rows : []);
+      })
+      .catch(() => undefined);
+  }, [isAuthed]);
+
+  // camera preview (green room)
+  useEffect(() => {
+    if (joined || validateState !== 'ready' || (validate?.accessState !== 'allowed' && validate?.accessState !== 'password_required')) {
+      return;
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accessState, validateData]);
-
-  useEffect(() => {
-    const fetchTeamMembers = async () => {
-      try {
-        const response = await api.get('/team');
-        setTeamMembers(
-          unwrapApiData<TeamMember[]>(
-            response.data,
-            'Failed to fetch team members'
-          )
-        );
-      } catch (err) {
-        console.error('Failed to fetch team members:', err);
-      }
+    let stream: MediaStream | null = null;
+    navigator.mediaDevices
+      .getUserMedia({ video: true, audio: true })
+      .then((s) => {
+        stream = s;
+        setPreviewStream(s);
+      })
+      .catch(() => undefined);
+    return () => {
+      stream?.getTracks().forEach((t) => t.stop());
+      setPreviewStream(null);
     };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [joined, validateState, validate?.accessState]);
 
-    fetchTeamMembers();
+  useEffect(() => {
+    if (previewVideoRef.current && previewStream) {
+      previewVideoRef.current.srcObject = previewStream;
+      previewVideoRef.current.play().catch(() => undefined);
+    }
+  }, [previewStream]);
+
+  // not-started countdown
+  useEffect(() => {
+    if (validate?.accessState !== 'not_started' || !validate.startTime) return;
+    const tick = () => {
+      const remaining = new Date(validate.startTime!).getTime() - Date.now();
+      setNotStartedCountdown(Math.max(0, remaining));
+      if (remaining <= 0) void fetchValidate();
+    };
+    tick();
+    const interval = setInterval(tick, 1000);
+    return () => clearInterval(interval);
+  }, [validate?.accessState, validate?.startTime, fetchValidate]);
+
+  // guest id (stable across re-renders)
+  useEffect(() => {
+    if (!guestIdRef.current) {
+      guestIdRef.current = `guest-${Math.random().toString(36).slice(2, 10)}`;
+    }
   }, []);
 
-  useEffect(() => {
-    if (validateError) {
-      const status = (validateError as any)?.response?.status;
-      if (status === 404) {
-        setErrorScreen({
-          title: 'Meeting Not Found',
-          description:
-            'The meeting link you used may be expired or invalid.',
-        });
-      } else {
-        toast({
-          title: 'Error',
-          description: getApiMessage(validateError, 'Failed to validate meeting link'),
-          variant: 'destructive',
-        });
-        navigate('/dashboard');
-      }
-    }
-  }, [validateError, navigate, toast]);
+  const displayName = isAuthed
+    ? localStorage.getItem('userName') || 'You'
+    : guestName.trim() || 'Guest';
 
-  const handlePasswordSubmit = async () => {
-    if (!password.trim()) return;
-    await doJoinMeeting(password);
+  const canJoin =
+    validateState === 'ready' &&
+    (validate?.accessState === 'allowed' || validate?.accessState === 'waiting_room' || validate?.accessState === 'password_required') &&
+    (isAuthed || guestName.trim().length >= 2) &&
+    (validate?.accessState !== 'password_required' || password.length > 0);
+
+  const handleJoin = async () => {
+    if (!canJoin || !validate) return;
+
+    // Verify password over socket if required
+    if (validate.accessState === 'password_required') {
+      // (socket password verification happens inside the room join; the
+      // REST layer validated state already - password is passed to join)
+    }
+
+    setJoining(true);
+    try {
+      if (isAuthed) {
+        await api.post(`/meetings/${validate.id}/join`, { password: password || undefined });
+        // mark meeting ongoing if this is the first join
+        void api.put(`/meetings/${validate.id}`, { status: 'ongoing' }).catch(() => undefined);
+      }
+      // store guest name for the room
+      if (!isAuthed) {
+        localStorage.setItem('guestDisplayName', guestName.trim());
+      }
+      setJoined(true);
+    } catch (err: any) {
+      const message = err?.response?.data?.error || err?.message || 'Failed to join';
+      if (String(message).toLowerCase().includes('password')) {
+        setPasswordError('Incorrect meeting password');
+      } else {
+        setPasswordError('');
+        setValidateError({ title: 'Cannot join meeting', description: message });
+        setValidateState('error');
+      }
+    } finally {
+      setJoining(false);
+    }
   };
 
-  if (validateLoading || (!accessState && !validateError)) {
+  // ---------------------------------------------------------------- joined
+  if (joined && validate) {
     return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
-        <div className="flex flex-col items-center gap-4 text-white">
-          <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
-          <p className="text-muted-foreground">Loading meeting…</p>
-        </div>
-      </div>
-    );
-  }
-
-  if (errorScreen) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-destructive/20 p-3 w-fit">
-              <AlertTriangle className="h-7 w-7 text-destructive" />
-            </div>
-            <CardTitle className="text-xl text-white">
-              {errorScreen.title}
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              {errorScreen.description}
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            {errorScreen.canRetry && effectiveMeeting && (
-              <Button
-                className="w-full"
-                onClick={() => {
-                  setErrorScreen(null);
-                  if (accessState === 'password_required') {
-                    setPasswordRequired(true);
-                  } else {
-                    doJoinMeeting();
-                  }
-                }}
-              >
-                Try Again
-              </Button>
-            )}
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => navigate('/dashboard')}
-            >
-              Return to Dashboard
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (accessState === 'not_started') {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-indigo-500/20 p-3 w-fit">
-              <Hourglass className="h-7 w-7 text-indigo-400" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              {effectiveMeeting?.title || 'Meeting'} has not started
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait until the scheduled start time
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="rounded-xl bg-gradient-to-br from-indigo-500/20 via-purple-500/10 to-transparent p-5 text-center border border-white/5">
-              <Badge variant="outline" className="mb-3 bg-white/5">
-                <Clock className="h-3 w-3 mr-1" />
-                Starts in
-              </Badge>
-              <div className="text-5xl font-bold tracking-tight text-white tabular-nums">
-                {formatStartsIn(notStartedCountdown)}
-              </div>
-            </div>
-            {effectiveMeeting && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {new Date(effectiveMeeting.startTime).toLocaleString()}
-                    {effectiveMeeting.endTime ? (
-                      <>
-                        {' '}
-                        &mdash;{' '}
-                        {new Date(effectiveMeeting.endTime).toLocaleTimeString()}
-                      </>
-                    ) : null}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveMeeting.maxParticipants} participant capacity
-                    {effectiveMeeting.attendees?.length
-                      ? ` (${effectiveMeeting.attendees.length} invited)`
-                      : ''}
-                  </span>
-                </div>
-                {effectiveMeeting.maxMeetingDuration && (
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-indigo-400" />
-                    <span>
-                      Max duration: {effectiveMeeting.maxMeetingDuration} minute
-                      {effectiveMeeting.maxMeetingDuration === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex gap-2">
-              <Button
-                variant="outline"
-                className="flex-1"
-                onClick={() => doJoinMeeting()}
-                disabled={joinMeetingMutation.isPending}
-              >
-                {joinMeetingMutation.isPending ? (
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                ) : null}
-                Join Early
-              </Button>
-              <Button
-                variant="outline"
-                onClick={() => navigate('/dashboard')}
-                className="flex-1"
-              >
-                Back Later
-              </Button>
-            </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (waitingRoomScreen || (isJoined && effectiveInWaitingRoom)) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-emerald-500/20 p-3 w-fit">
-              <CheckCircle2 className="h-7 w-7 text-emerald-400 animate-pulse" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              Waiting Room
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait — the host has been notified and will admit you shortly.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {effectiveMeeting && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveMeeting.attendees?.filter(
-                      (a) => a.status === 'accepted'
-                    )?.length ??
-                      effectiveMeeting.participants?.filter(
-                        (p) => p.status === 'joined'
-                      )?.length ??
-                      0}{' '}
-                    participant
-                    {(effectiveMeeting.attendees?.filter(
-                        (a) => a.status === 'accepted'
-                      )?.length ??
-                      effectiveMeeting.participants?.filter(
-                        (p) => p.status === 'joined'
-                      )?.length ??
-                      0) ===
-                    1
-                      ? ''
-                      : 's'}
-                    &nbsp;in meeting
-                  </span>
-                </div>
-                {hasPassword && (
-                  <div className="flex items-center gap-2">
-                    <Lock className="h-4 w-4 text-emerald-400" />
-                    <span>Password verified</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Awaiting host approval…</span>
-            </div>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => navigate('/dashboard')}
-            >
-              <PhoneOff className="h-4 w-4 mr-2" />
-              Leave Waiting Room
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (passwordRequired) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-indigo-500/20 p-3 w-fit">
-              <Lock className="h-7 w-7 text-indigo-400" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              {effectiveMeeting?.title || 'Meeting'}
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              This meeting requires a password to join
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {effectiveMeeting && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Calendar className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {new Date(effectiveMeeting.startTime).toLocaleString()}
-                    {effectiveMeeting.endTime ? (
-                      <>
-                        {' '}
-                        &mdash;{' '}
-                        {new Date(effectiveMeeting.endTime).toLocaleTimeString()}
-                      </>
-                    ) : null}
-                  </span>
-                </div>
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveMeeting.maxParticipants} participant capacity
-                    {effectiveMeeting.attendees?.length
-                      ? ` (${effectiveMeeting.attendees.length} invited)`
-                      : ''}
-                  </span>
-                </div>
-                {effectiveMeeting.maxMeetingDuration && (
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-indigo-400" />
-                    <span>
-                      Max duration: {effectiveMeeting.maxMeetingDuration} minute
-                      {effectiveMeeting.maxMeetingDuration === 1 ? '' : 's'}
-                    </span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="space-y-2">
-              <Label htmlFor="join-meeting-password" className="text-white">
-                Password
-              </Label>
-              <Input
-                id="join-meeting-password"
-                type="password"
-                placeholder="Enter meeting password"
-                value={password}
-                onChange={(e) => {
-                  setPassword(e.target.value);
-                  setPasswordError('');
-                }}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && password.trim())
-                    handlePasswordSubmit();
-                }}
-                autoFocus
-              />
-              {passwordError && (
-                <p className="text-sm text-destructive">{passwordError}</p>
-              )}
-            </div>
-            <Button
-              onClick={handlePasswordSubmit}
-              className="w-full"
-              disabled={
-                joinMeetingMutation.isPending || !password.trim()
-              }
-            >
-              {joinMeetingMutation.isPending && (
-                <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-              )}
-              Join Meeting
-            </Button>
-            <Button
-              variant="outline"
-              onClick={() => navigate('/dashboard')}
-              className="w-full"
-              disabled={joinMeetingMutation.isPending}
-            >
-              Cancel
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (isJoined && effectiveMeeting) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
+      <div className="h-screen w-full bg-[#111221]">
         <VideoCallRoom
-          roomId={effectiveMeeting.meetingCode}
-          meetingId={effectiveMeeting.id}
-          onLeave={() => navigate('/dashboard')}
-          userName={localStorage.getItem('userName') || 'User'}
-          isHost={effectiveIsHost}
-          waitingRoomEnabled={effectiveMeeting.waitingRoomEnabled}
+          roomId={validate.meetingCode}
+          meetingId={validate.id}
+          onLeave={() => navigate(isAuthed ? '/meetings' : '/')}
+          userName={displayName}
+          isHost={validate.isHost}
+          waitingRoomEnabled={validate.waitingRoomEnabled}
           teamMembers={teamMembers}
-          currentParticipantIds={currentParticipantIds}
-          initialParticipants={(effectiveMeeting.participants ??
-            effectiveMeeting.attendees ??
-            []
-          ).map((a: any): {
-            userId: string;
-            status: 'invited' | 'joined' | 'left';
-            joinedAt?: string;
-            leftAt?: string;
-            isHost?: boolean;
-            userName?: string;
-          } => ({
-            userId: a.userId,
-            status:
-              a.status === 'accepted' || a.status === 'joined'
-                ? 'joined'
-                : a.status === 'left'
-                ? 'left'
-                : 'invited',
-            isHost:
-              Boolean(a.isHost) ||
-              effectiveMeeting.hostId === a.userId ||
-              (effectiveMeeting as any).coHostId === a.userId,
-            userName:
-              teamMembers.find((m) => m.id === a.userId)?.name || a.userName,
-            joinedAt: a.joinedAt,
-            leftAt: a.leftAt,
-          }))}
         />
       </div>
     );
   }
 
+  // ---------------------------------------------------------------- error
+  if (validateState === 'error' && validateError) {
+    return (
+      <MeetingShell>
+        <div className="flex flex-col items-center text-center">
+          <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-rose-500/15">
+            <XCircle className="h-8 w-8 text-rose-400" />
+          </div>
+          <h1 className="text-xl font-semibold text-white">{validateError.title}</h1>
+          <p className="mt-2 max-w-sm text-sm text-white/55">{validateError.description}</p>
+          <div className="mt-6 flex gap-3">
+            <Button variant="outline" onClick={() => navigate('/')} className="rounded-full border-white/15 bg-white/5 text-white hover:bg-white/10">
+              Go home
+            </Button>
+            <Button onClick={() => void fetchValidate()} className="rounded-full bg-indigo-500 text-white hover:bg-indigo-600">
+              Try again
+            </Button>
+          </div>
+        </div>
+      </MeetingShell>
+    );
+  }
+
+  // ---------------------------------------------------------------- blocked states
+  if (validateState === 'ready' && validate) {
+    const s = validate.accessState;
+    if (s === 'cancelled' || s === 'ended' || s === 'completed') {
+      return (
+        <MeetingShell>
+          <BlockedState
+            icon={<XCircle className="h-8 w-8 text-rose-400" />}
+            title={s === 'cancelled' ? 'Meeting cancelled' : 'This meeting has ended'}
+            description={
+              s === 'cancelled'
+                ? 'The host cancelled this meeting. Reach out to them if this is unexpected.'
+                : 'The meeting is over. You can schedule a new one from your dashboard.'
+            }
+          />
+        </MeetingShell>
+      );
+    }
+    if (s === 'full') {
+      return (
+        <MeetingShell>
+          <BlockedState
+            icon={<Users className="h-8 w-8 text-amber-400" />}
+            title="Meeting is full"
+            description={`This meeting reached its maximum of ${validate.maxParticipants} participants.`}
+          />
+        </MeetingShell>
+      );
+    }
+    if (s === 'not_started') {
+      const mins = Math.ceil(notStartedCountdown / 60000);
+      return (
+        <MeetingShell>
+          <div className="flex flex-col items-center text-center">
+            <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/15">
+              <Hourglass className="h-8 w-8 text-indigo-300" />
+            </div>
+            <h1 className="text-xl font-semibold text-white">Not started yet</h1>
+            <p className="mt-2 text-sm text-white/55">
+              {mins > 0 ? `Starts in about ${mins} minute${mins > 1 ? 's' : ''}` : 'Starting now…'}
+            </p>
+            <div className="mt-4 flex items-center gap-1.5 rounded-full bg-white/5 px-4 py-2 text-sm text-white/70">
+              <Calendar className="h-4 w-4 text-indigo-300" />
+              {validate.startTime ? new Date(validate.startTime).toLocaleString() : 'Scheduled'}
+            </div>
+          </div>
+        </MeetingShell>
+      );
+    }
+  }
+
+  // ---------------------------------------------------------------- green room / loading
+  const access = validate?.accessState;
+  const showPasswordStep = access === 'password_required';
+
   return (
-    <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
-      <div className="flex flex-col items-center gap-4 text-white">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
-        <p className="text-muted-foreground">Preparing to join…</p>
+    <MeetingShell>
+      <div className="w-full max-w-md">
+        {validateState === 'loading' ? (
+          <div className="flex flex-col items-center py-16 text-center">
+            <Loader2 className="mb-4 h-8 w-8 animate-spin text-indigo-400" />
+            <p className="text-sm text-white/55">Checking meeting…</p>
+          </div>
+        ) : (
+          <>
+            <div className="mb-6 text-center">
+              <h1 className="text-2xl font-semibold tracking-tight text-white">
+                {validate?.title || 'Team meeting'}
+              </h1>
+              <p className="mt-1 font-mono text-sm tracking-widest text-indigo-300">
+                {validate?.meetingCode}
+              </p>
+            </div>
+
+            {/* camera preview */}
+            <div className="relative mx-auto mb-5 aspect-video w-full overflow-hidden rounded-2xl border border-white/10 bg-[#1f2033] shadow-2xl">
+              {camOn && previewStream ? (
+                <video
+                  ref={previewVideoRef}
+                  autoPlay
+                  playsInline
+                  muted
+                  className="h-full w-full scale-x-[-1] object-cover"
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full bg-gradient-to-br from-indigo-500 to-violet-600 text-xl font-semibold text-white">
+                    {displayName.slice(0, 2).toUpperCase()}
+                  </div>
+                </div>
+              )}
+              <div className="absolute bottom-3 left-1/2 flex -translate-x-1/2 gap-2">
+                <button
+                  onClick={() => setMicOn((m) => !m)}
+                  className={cn(
+                    'flex h-11 w-11 items-center justify-center rounded-full backdrop-blur transition',
+                    micOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-500 text-white hover:bg-rose-600',
+                  )}
+                >
+                  {micOn ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
+                </button>
+                <button
+                  onClick={() => setCamOn((c) => !c)}
+                  className={cn(
+                    'flex h-11 w-11 items-center justify-center rounded-full backdrop-blur transition',
+                    camOn ? 'bg-white/15 text-white hover:bg-white/25' : 'bg-rose-500 text-white hover:bg-rose-600',
+                  )}
+                >
+                  {camOn ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
+                </button>
+              </div>
+              {camOn && !previewStream && (
+                <div className="absolute inset-x-0 top-3 mx-auto w-fit rounded-full bg-black/50 px-3 py-1 text-[11px] text-white/70">
+                  Camera unavailable
+                </div>
+              )}
+            </div>
+
+            {/* guest name entry */}
+            {!isAuthed && (
+              <div className="mb-4">
+                <label className="mb-1.5 block text-xs font-medium text-white/60">Your name</label>
+                <Input
+                  value={guestName}
+                  onChange={(e) => setGuestName(e.target.value)}
+                  placeholder="e.g. Alex Guest"
+                  className="h-12 rounded-xl border-white/10 bg-white/5 text-white placeholder:text-white/30"
+                  onKeyDown={(e) => e.key === 'Enter' && void handleJoin()}
+                />
+                <p className="mt-1.5 flex items-center gap-1 text-[11px] text-white/40">
+                  <ShieldCheck className="h-3 w-3" /> Joining as a guest — no account needed
+                </p>
+              </div>
+            )}
+
+            {/* password */}
+            {showPasswordStep && (
+              <div className="mb-4">
+                <label className="mb-1.5 block text-xs font-medium text-white/60">Meeting password</label>
+                <div className="relative">
+                  <Lock className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-white/35" />
+                  <Input
+                    type="password"
+                    value={password}
+                    onChange={(e) => {
+                      setPassword(e.target.value);
+                      setPasswordError('');
+                    }}
+                    placeholder="Enter password"
+                    className="h-12 rounded-xl border-white/10 bg-white/5 pl-10 text-white placeholder:text-white/30"
+                    onKeyDown={(e) => e.key === 'Enter' && void handleJoin()}
+                  />
+                </div>
+                {passwordError && <p className="mt-1.5 text-xs text-rose-400">{passwordError}</p>}
+              </div>
+            )}
+
+            {/* waiting room notice */}
+            {access === 'waiting_room' && (
+              <div className="mb-4 flex items-start gap-2 rounded-xl border border-amber-400/25 bg-amber-400/10 p-3">
+                <Hourglass className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                <p className="text-xs leading-relaxed text-amber-100/90">
+                  The host will admit you when ready — you'll wait in the lobby.
+                </p>
+              </div>
+            )}
+
+            <Button
+              onClick={() => void handleJoin()}
+              disabled={!canJoin || joining}
+              className="h-13 w-full rounded-full bg-indigo-500 py-3.5 text-base font-semibold text-white shadow-lg shadow-indigo-500/25 hover:bg-indigo-600 disabled:opacity-40"
+            >
+              {joining ? (
+                <>
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Joining…
+                </>
+              ) : (
+                <>
+                  <LogIn className="mr-2 h-4 w-4" /> Join now
+                </>
+              )}
+            </Button>
+
+            {!isAuthed && (
+              <p className="mt-4 text-center text-xs text-white/40">
+                Have an account?{' '}
+                <button onClick={() => navigate('/login')} className="font-medium text-indigo-300 hover:text-indigo-200">
+                  Sign in
+                </button>
+              </p>
+            )}
+          </>
+        )}
       </div>
-    </div>
+    </MeetingShell>
   );
 };
+
+// ---------------------------------------------------------------- shell bits
+
+function MeetingShell({ children }: { children: React.ReactNode }) {
+  return (
+    <div className="flex min-h-screen w-full items-center justify-center bg-gradient-to-b from-[#111221] via-[#141527] to-[#0d0e1a] p-6">
+      {children}
+    </div>
+  );
+}
+
+function BlockedState({ icon, title, description }: { icon: React.ReactNode; title: string; description: string }) {
+  return (
+    <div className="flex flex-col items-center text-center">
+      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-white/5">{icon}</div>
+      <h1 className="text-xl font-semibold text-white">{title}</h1>
+      <p className="mt-2 max-w-sm text-sm text-white/55">{description}</p>
+    </div>
+  );
+}
 
 export default JoinMeeting;

@@ -12,7 +12,6 @@ if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
 }
 
 api.interceptors.request.use((config) => {
-  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config);
   const token = localStorage.getItem("token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;

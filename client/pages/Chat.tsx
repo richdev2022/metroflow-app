@@ -24,6 +24,7 @@ import {
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Send,
   Plus,
@@ -343,13 +344,12 @@ const EmojiPicker = ({ onSelect }: { onSelect: (emoji: string) => void }) => {
 };
 
 const TypingIndicator = () => (
-  <div className="flex items-center gap-1 px-4 py-2">
-    <div className="flex gap-1">
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce [animation-delay:-0.3s]" />
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce [animation-delay:-0.15s]" />
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" />
+  <div className="flex justify-start">
+    <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-sm bg-muted px-4 py-3 shadow-sm">
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.3s]" />
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/50 animate-bounce [animation-delay:-0.15s]" />
+      <span className="h-2 w-2 rounded-full bg-muted-foreground/50 animate-bounce" />
     </div>
-    <span className="text-xs text-muted-foreground ml-2">typing...</span>
   </div>
 );
 
@@ -389,19 +389,13 @@ const MessageBubble = ({
         className={cn(
           "max-w-[80%] sm:max-w-[65%] rounded-2xl px-4 py-2.5 transition-all overflow-hidden",
           isOwn
-            ? cn(
-                "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg",
-                isGrouped ? "rounded-tr-md" : "rounded-tr-2xl"
-              )
-            : cn(
-                "bg-card text-foreground border border-border shadow-sm",
-                isGrouped ? "rounded-tl-md" : "rounded-tl-2xl"
-              ),
-          isFailed && "border-red-500/50 bg-red-50 dark:bg-red-950/30"
+            ? "bg-indigo-500 text-white shadow-md shadow-indigo-500/20 rounded-br-sm"
+            : "bg-muted text-foreground rounded-bl-sm",
+          isFailed && "border border-red-500/50 bg-red-50 dark:bg-red-950/30"
         )}
       >
         {showSender && !isOwn && (
-          <p className="text-xs font-semibold mb-1 text-blue-500 dark:text-blue-400">{senderName}</p>
+          <p className="text-xs font-semibold mb-1 text-indigo-600 dark:text-indigo-400">{senderName}</p>
         )}
 
         {isImage && (
@@ -417,7 +411,7 @@ const MessageBubble = ({
         )}
 
         {isFile && (
-          <div className="mb-2 flex items-center gap-2 p-2 rounded-lg bg-black/10 dark:bg-white/10">
+          <div className="mb-2 flex items-center gap-2 p-2 rounded-lg bg-black/5 dark:bg-white/10">
             <CircleDot className="h-4 w-4 shrink-0 opacity-70" />
             <div className="min-w-0 flex-1">
               <p className="text-xs font-medium truncate opacity-90">
@@ -504,14 +498,15 @@ const ConversationListItem = ({
     <button
       onClick={onClick}
       className={cn(
-        "w-full p-3 text-left hover:bg-muted/80 transition-all duration-150 border-l-4 border-transparent",
-        isSelected && "bg-gradient-to-r from-blue-500/10 to-purple-500/10 border-l-blue-500"
+        "w-full rounded-xl p-3 text-left transition-colors duration-150 hover:bg-accent/50",
+        isSelected &&
+          "bg-indigo-500/10 ring-1 ring-inset ring-indigo-500/25 hover:bg-indigo-500/15"
       )}
     >
       <div className="flex items-center gap-3">
         <div className="relative shrink-0">
           <Avatar className="h-11 w-11">
-            <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-sm">
+            <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-violet-600 text-white font-semibold text-sm">
               {getInitials(name)}
             </AvatarFallback>
           </Avatar>
@@ -527,7 +522,7 @@ const ConversationListItem = ({
           <div className="flex justify-between items-center gap-2 mt-0.5">
             <p className="text-xs text-muted-foreground truncate">{lastMsg || "No messages yet"}</p>
             {(conversation.unreadCount ?? 0) > 0 && (
-              <span className="shrink-0 h-5 min-w-[20px] px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
+              <span className="shrink-0 h-5 min-w-[20px] px-1.5 rounded-full bg-indigo-500 text-white text-[10px] font-bold flex items-center justify-center shadow-sm">
                 {conversation.unreadCount}
               </span>
             )}
@@ -553,15 +548,24 @@ const TeamMemberMultiSelect = ({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <Button variant="outline" role="combobox" aria-expanded={open} className="w-full justify-between min-h-[42px] h-auto">
+        <Button
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between min-h-[42px] h-auto border-white/10 bg-white/5 text-white hover:bg-white/10 hover:text-white"
+        >
           <div className="flex flex-wrap gap-1">
             {selected.length === 0 ? (
-              <span className="text-muted-foreground">{placeholder}</span>
+              <span className="text-white/40">{placeholder}</span>
             ) : (
               selected.map((id) => {
                 const member = members.find((d) => d.id === id);
                 return (
-                  <Badge key={id} variant="secondary" className="text-xs">
+                  <Badge
+                    key={id}
+                    variant="secondary"
+                    className="border-white/15 bg-white/10 text-white text-xs"
+                  >
                     {member?.name || id}
                     <button
                       type="button"
@@ -581,11 +585,17 @@ const TeamMemberMultiSelect = ({
           <Check className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full p-0 bg-popover border-border" align="start">
-        <Command className="bg-transparent">
-          <CommandInput placeholder="Search team members..." className="text-popover-foreground" />
-          <CommandList className="bg-popover">
-            <CommandEmpty className="py-2 px-2 text-muted-foreground">No team members found.</CommandEmpty>
+      <PopoverContent
+        className="w-full p-0 border-white/10 bg-[#181926] text-white"
+        align="start"
+      >
+        <Command className="bg-transparent text-white">
+          <CommandInput
+            placeholder="Search team members..."
+            className="text-white placeholder:text-white/35"
+          />
+          <CommandList className="bg-transparent">
+            <CommandEmpty className="py-2 px-2 text-white/50">No team members found.</CommandEmpty>
             <CommandGroup>
               {members.map((member) => {
                 const isSelected = selected.includes(member.id);
@@ -596,13 +606,13 @@ const TeamMemberMultiSelect = ({
                     onSelect={() => {
                       onChange(isSelected ? selected.filter((s) => s !== member.id) : [...selected, member.id]);
                     }}
-                    className="flex items-center gap-2 py-2 cursor-pointer text-popover-foreground data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground"
+                    className="flex items-center gap-2 py-2 cursor-pointer text-white data-[selected=true]:bg-indigo-500/25 data-[selected=true]:text-white focus:bg-indigo-500/25 focus:text-white"
                   >
-                    <div className={cn("h-4 w-4 rounded border flex items-center justify-center transition-colors", isSelected ? "bg-primary border-primary" : "border-muted-foreground/50")}>
-                      {isSelected && <Check className="h-3 w-3 text-primary-foreground" />}
+                    <div className={cn("h-4 w-4 rounded border flex items-center justify-center transition-colors", isSelected ? "bg-indigo-500 border-indigo-500" : "border-white/30")}>
+                      {isSelected && <Check className="h-3 w-3 text-white" />}
                     </div>
                     <Avatar className="h-5 w-5">
-                      <AvatarFallback className="text-[10px] bg-muted text-muted-foreground">{getInitials(member.name)}</AvatarFallback>
+                      <AvatarFallback className="text-[10px] bg-white/10 text-white/80">{getInitials(member.name)}</AvatarFallback>
                     </Avatar>
                     <span className="text-sm flex-1 truncate">{member.name}</span>
                   </CommandItem>
@@ -1104,47 +1114,63 @@ export default function Chat() {
               </Button>
             )}
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Chat</h1>
+              <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-indigo-600 to-violet-600 bg-clip-text text-transparent">Chat</h1>
               <p className="text-muted-foreground text-sm mt-0.5">Communicate with your team</p>
             </div>
           </div>
 
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
-              <Button className="rounded-xl" onClick={() => setMobileShowSidebar(false)}>
+              <Button className="rounded-xl bg-indigo-500 text-white hover:bg-indigo-600 shadow-lg shadow-indigo-500/20" onClick={() => setMobileShowSidebar(false)}>
                 <Plus className="h-4 w-4 mr-2" />New Chat
               </Button>
             </DialogTrigger>
-            <DialogContent className="sm:max-w-lg">
+            <DialogContent className="sm:max-w-lg rounded-2xl border-white/10 bg-gradient-to-br from-[#111221] via-[#141527] to-[#0d0e1a] text-white shadow-2xl">
               <DialogHeader>
-                <DialogTitle>New Conversation</DialogTitle>
-                <DialogDescription>Start a chat with team members</DialogDescription>
+                <DialogTitle className="text-white">New Conversation</DialogTitle>
+                <DialogDescription className="text-white/60">Start a chat with team members</DialogDescription>
               </DialogHeader>
               <div className="space-y-4 py-4">
                 <div className="grid gap-2">
-                  <Label>Type</Label>
+                  <Label className="text-white/70">Type</Label>
                   <Select value={conversationForm.type} onValueChange={(v) => setConversationForm({ ...conversationForm, type: v as any })}>
-                    <SelectTrigger><SelectValue /></SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="direct">Direct Message</SelectItem>
-                      <SelectItem value="group">Group Chat</SelectItem>
+                    <SelectTrigger className="border-white/10 bg-white/5 text-white"><SelectValue /></SelectTrigger>
+                    <SelectContent className="border-white/10 bg-[#181926] text-white">
+                      <SelectItem className="focus:bg-indigo-500/25 focus:text-white data-[state=checked]:text-indigo-300" value="direct">Direct Message</SelectItem>
+                      <SelectItem className="focus:bg-indigo-500/25 focus:text-white data-[state=checked]:text-indigo-300" value="group">Group Chat</SelectItem>
                     </SelectContent>
                   </Select>
                 </div>
                 {conversationForm.type === "group" && (
                   <div className="grid gap-2">
-                    <Label>Name</Label>
-                    <Input value={conversationForm.name} onChange={(e) => setConversationForm({ ...conversationForm, name: e.target.value })} placeholder="Group name" />
+                    <Label className="text-white/70">Name</Label>
+                    <Input
+                      className="border-white/10 bg-white/5 text-white placeholder:text-white/35 focus-visible:border-indigo-500/60 focus-visible:ring-indigo-500/40"
+                      value={conversationForm.name}
+                      onChange={(e) => setConversationForm({ ...conversationForm, name: e.target.value })}
+                      placeholder="Group name"
+                    />
                   </div>
                 )}
                 <div className="grid gap-2">
-                  <Label>Participants</Label>
+                  <Label className="text-white/70">Participants</Label>
                   <TeamMemberMultiSelect selected={conversationForm.participantIds} onChange={(ids) => setConversationForm({ ...conversationForm, participantIds: ids })} members={teamMembers} />
                 </div>
               </div>
               <DialogFooter>
-                <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} disabled={isProcessing}>Cancel</Button>
-                <Button onClick={handleCreateConversation} disabled={isProcessing || conversationForm.participantIds.length === 0}>
+                <Button
+                  variant="outline"
+                  className="border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white"
+                  onClick={() => setIsCreateDialogOpen(false)}
+                  disabled={isProcessing}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  className="bg-indigo-500 text-white hover:bg-indigo-600"
+                  onClick={handleCreateConversation}
+                  disabled={isProcessing || conversationForm.participantIds.length === 0}
+                >
                   {isProcessing && <Loader2 className="h-4 w-4 animate-spin mr-2" />}Create
                 </Button>
               </DialogFooter>
@@ -1175,9 +1201,19 @@ export default function Chat() {
 
             <ScrollArea className="flex-1">
               {convLoading ? (
-                <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin" /></div>
+                <div className="space-y-1 p-2">
+                  {Array.from({ length: 6 }).map((_, i) => (
+                    <div key={i} className="flex items-center gap-3 rounded-xl p-3">
+                      <Skeleton className="h-11 w-11 shrink-0 rounded-full" />
+                      <div className="flex-1 space-y-2">
+                        <Skeleton className="h-3.5 w-2/3" />
+                        <Skeleton className="h-3 w-1/2" />
+                      </div>
+                    </div>
+                  ))}
+                </div>
               ) : sortedConversations.length > 0 ? (
-                <div className="divide-y divide-border/50">
+                <div className="space-y-1 p-2">
                   {sortedConversations.map((conv) => (
                     <ConversationListItem
                       key={conv.id}
@@ -1192,8 +1228,13 @@ export default function Chat() {
                 </div>
               ) : (
                 <div className="flex flex-col items-center justify-center p-8 text-center">
-                  <MessageSquare className="h-10 w-10 text-muted-foreground mb-3" />
+                  <div className="mb-3 flex h-12 w-12 items-center justify-center rounded-full bg-indigo-500/10">
+                    <MessageSquare className="h-6 w-6 text-indigo-500" />
+                  </div>
                   <p className="text-sm text-muted-foreground">{searchQuery ? "No matching conversations" : "No conversations yet"}</p>
+                  {!searchQuery && (
+                    <p className="mt-1 text-xs text-muted-foreground/70">Start one with the “New Chat” button</p>
+                  )}
                 </div>
               )}
             </ScrollArea>
@@ -1223,7 +1264,7 @@ export default function Chat() {
                         <>
                           <div className="relative shrink-0">
                             <Avatar className="h-9 w-9">
-                              <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-xs">
+                              <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-violet-600 text-white font-semibold text-xs">
                                 {getInitials(convName)}
                               </AvatarFallback>
                             </Avatar>
@@ -1257,7 +1298,7 @@ export default function Chat() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 hover:bg-blue-500/10 hover:text-blue-500"
+                    className="h-8 w-8 shrink-0 hover:bg-indigo-500/10 hover:text-indigo-500"
                     title="Start video call"
                     disabled={startingCall}
                     onClick={() => handleStartCall('video')}
@@ -1285,8 +1326,10 @@ export default function Chat() {
                 <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-1 bg-gradient-to-b from-background to-muted/30">
                   {groupedMessages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-center">
-                      <MessageSquare className="h-14 w-14 text-muted-foreground/30 mb-4" />
-                      <p className="text-muted-foreground">No messages yet</p>
+                      <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/10">
+                        <MessageSquare className="h-8 w-8 text-indigo-500" />
+                      </div>
+                      <p className="font-medium">No messages yet</p>
                       <p className="text-sm text-muted-foreground/70 mt-1">Send the first message to start</p>
                     </div>
                   ) : (
@@ -1327,14 +1370,14 @@ export default function Chat() {
                             handleSendMessage();
                           }
                         }}
-                        className="flex-1 min-h-[40px] max-h-[120px] resize-none bg-muted/50 border-border rounded-xl py-2.5 px-4 text-sm focus-visible:ring-1 focus-visible:ring-blue-500 pr-12"
+                        className="flex-1 min-h-[40px] max-h-[120px] resize-none bg-muted/50 border-border rounded-xl py-2.5 px-4 text-sm focus-visible:ring-1 focus-visible:ring-indigo-500 pr-12"
                         rows={1}
                       />
                       <Button
                         onClick={handleSendMessage}
                         disabled={!hasInputContent}
                         size="icon"
-                        className="absolute right-1.5 bottom-1.5 h-8 w-8 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-30"
+                        className="absolute right-1.5 bottom-1.5 h-8 w-8 rounded-lg bg-indigo-500 hover:bg-indigo-600 text-white disabled:opacity-30 shadow-md shadow-indigo-500/20"
                         title="Send message"
                       >
                         <Send className="h-3.5 w-3.5" />
@@ -1344,15 +1387,15 @@ export default function Chat() {
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center bg-gradient-to-br from-blue-500/5 to-purple-500/5 p-8">
+              <div className="flex-1 flex flex-col items-center justify-center bg-gradient-to-br from-indigo-500/5 to-violet-500/5 p-8">
                 {mobileShowSidebar ? null : (
                   <>
-                    <div className="h-20 w-20 rounded-2xl bg-gradient-to-br from-blue-500/10 to-purple-500/10 flex items-center justify-center mb-4">
-                      <MessageSquare className="h-10 w-10 text-muted-foreground/50" />
+                    <div className="h-20 w-20 rounded-2xl bg-gradient-to-br from-indigo-500/10 to-violet-500/10 flex items-center justify-center mb-4">
+                      <MessageSquare className="h-10 w-10 text-indigo-500/70" />
                     </div>
-                    <h3 className="text-lg font-semibold text-muted-foreground">Select a conversation</h3>
-                    <p className="text-sm text-muted-foreground/70 mt-1 text-center">Choose a conversation or start a new one</p>
-                    <Button variant="outline" className="mt-6 sm:hidden" onClick={() => setMobileShowSidebar(true)}>
+                    <h3 className="text-lg font-semibold">Select a conversation</h3>
+                    <p className="text-sm text-muted-foreground/70 mt-1 text-center">Choose a conversation from the list or start a new one</p>
+                    <Button variant="outline" className="mt-6 sm:hidden border-indigo-200 text-indigo-600 hover:bg-indigo-50 hover:text-indigo-700" onClick={() => setMobileShowSidebar(true)}>
                       <Menu className="h-4 w-4 mr-2" />Show Conversations
                     </Button>
                   </>

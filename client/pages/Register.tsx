@@ -11,6 +11,7 @@ import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { AuthResponse } from "@shared/api";
 import { IndustryCombobox } from "@/components/industry-combobox";
 import { useCountdown } from "@/hooks/useCountdown";
+import { useGoogleAuth, type GoogleAuthSuccessResult } from "@/hooks/useGoogleAuth";
 
 type Step = "business" | "otp";
 
@@ -20,6 +21,7 @@ export default function Register() {
   const [step, setStep] = useState<Step>("business");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   // Business Data State
@@ -37,6 +39,32 @@ export default function Register() {
   const [otpData, setOtpData] = useState({
     email: "",
     otpCode: "",
+  });
+
+  const handleGoogleSuccess = (result: GoogleAuthSuccessResult) => {
+    if (result.requiresPasswordSetup) {
+      // Existing SSO-only Google account signing up through this page.
+      setSuccessMessage("Signed in! Redirecting...");
+      setTimeout(() => navigate("/settings?setupPassword=1"), 1500);
+      return;
+    }
+    // New Google accounts get a trial automatically - go straight to the dashboard.
+    setSuccessMessage(
+      result.isNewUser ? "Account created! Redirecting..." : "Signed in! Redirecting...",
+    );
+    setTimeout(() => navigate("/dashboard"), 1500);
+  };
+
+  const handleGoogleError = (message: string) => {
+    setGoogleError(message);
+  };
+
+  const google = useGoogleAuth({
+    onSuccess: handleGoogleSuccess,
+    onError: handleGoogleError,
+    theme: "outline",
+    text: "signup_with",
+    shape: "pill",
   });
 
   const handleRegisterBusiness = async () => {
@@ -326,6 +354,28 @@ export default function Register() {
                 >
                   Create Account
                 </Button>
+              </div>
+
+              <div className="relative py-1" aria-hidden="true">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center">
+                  <span className="bg-card px-3 text-xs uppercase tracking-wide text-muted-foreground">
+                    or
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div
+                  ref={google.containerRef}
+                  className="w-full min-h-[44px] flex justify-center"
+                  aria-label="Sign up with Google"
+                />
+                {googleError && (
+                  <p className="text-xs text-center text-muted-foreground">{googleError}</p>
+                )}
               </div>
 
                <p className="text-sm text-center text-muted-foreground">

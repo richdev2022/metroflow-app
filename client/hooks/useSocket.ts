@@ -24,10 +24,18 @@ function ensureSingletonSocket(userId: string, businessId: string, userName: str
   }
   if (!singletonSocket) {
     singletonLastCreds = { userId, businessId };
+    // Pass the session token in handshake auth so the server can verify the
+    // user's identity server-side. Guests connect without a token.
+    const sessionToken = typeof localStorage !== 'undefined' ? localStorage.getItem('token') : null;
     const socket = io({
       transports: ['polling', 'websocket'],
       path: '/socket.io',
-      withCredentials: true
+      withCredentials: true,
+      auth: sessionToken ? { token: sessionToken } : {},
+      reconnection: true,
+      reconnectionAttempts: Infinity,
+      reconnectionDelay: 1000,
+      reconnectionDelayMax: 5000,
     });
     singletonSocket = socket;
 
