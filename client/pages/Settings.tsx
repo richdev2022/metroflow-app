@@ -1,15 +1,34 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { BusinessProfile, OtpPreferenceResponse, FeeConfig, OtpEnabledResponse } from "@shared/api";
+import {
+  BusinessProfile,
+  MeResponse,
+  OtpPreferenceResponse,
+  FeeConfig,
+  OtpEnabledResponse,
+} from "@shared/api";
 import { assertApiSuccess, getApiMessage, pickResponseField } from "@/lib/api-response";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
+import { Badge } from "@/components/ui/badge";
+import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard, ShieldCheck, Lock } from "lucide-react";
+import {
+  Loader2,
+  Building,
+  Phone,
+  Settings as SettingsIcon,
+  CreditCard,
+  ShieldCheck,
+  Lock,
+  Info,
+} from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -43,9 +62,53 @@ export default function Settings() {
   const [pinLoading, setPinLoading] = useState(false);
   const [updatePinOtpSent, setUpdatePinOtpSent] = useState(false);
 
+  // Sign-in & Security States
+  const securitySectionRef = useRef<HTMLDivElement | null>(null);
+  const [me, setMe] = useState<MeResponse | null>(null);
+  const [meLoading, setMeLoading] = useState(true);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmNewPassword, setConfirmNewPassword] = useState("");
+  const [securityLoading, setSecurityLoading] = useState(false);
+  const [showSetupBanner, setShowSetupBanner] = useState(false);
+
   useEffect(() => {
     fetchData();
   }, []);
+
+  const fetchMe = useCallback(async () => {
+    try {
+      setMeLoading(true);
+      const response = await api.get<{ success: boolean; data?: MeResponse }>("/auth/me");
+      const data = assertApiSuccess(response.data, "Failed to fetch account info");
+      setMe(data.data ?? null);
+    } catch {
+      // Non-fatal: the card shows a retry affordance.
+      setMe(null);
+    } finally {
+      setMeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchMe();
+  }, [fetchMe]);
+
+  // Support /settings?setupPassword=1 (post-Google-SignIn password setup prompt)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("setupPassword") === "1") {
+      setShowSetupBanner(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!showSetupBanner || loading || meLoading) return;
+    const timer = setTimeout(() => {
+      securitySectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }, 200);
+    return () => clearTimeout(timer);
+  }, [showSetupBanner, loading, meLoading]);
 
   const fetchData = async () => {
     try {
@@ -94,6 +157,87 @@ export default function Settings() {
       toast({ title: "Success", description: data.message || "Profile updated successfully" });
     } catch (error) {
       toast({ title: "Error", description: getApiMessage(error, "Failed to update profile"), variant: "destructive" });
+    }
+  };
+
+  const handleCreatePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!newPassword || newPassword.length < 8) {
+      toast({ title: "Error", description: "Password must be at least 8 characters", variant: "destructive" });
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      toast({ title: "Error", description: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+    try {
+      setSecurityLoading(true);
+      const response = await api.post<{ success: boolean; message?: string; code?: string }>(
+        "/auth/set-password",
+        { password: newPassword },
+      );
+      toast({
+        title: "Success",
+        description:
+          response.data.message ||
+          "Password created. You can now sign in with your email and password or with Google.",
+      });
+      setShowSetupBanner(false);
+      setNewPassword("");
+      setConfirmNewPassword("");
+      fetchMe();
+    } catch (error: any) {
+      if (error?.response?.data?.code === "PASSWORD_ALREADY_SET") {
+        toast({ title: "Info", description: "A password is already set for this account." });
+        fetchMe();
+      } else {
+        toast({ title: "Error", description: getApiMessage(error, "Failed to set password"), variant: "destructive" });
+      }
+    } finally {
+      setSecurityLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentPassword) {
+      toast({ title: "Error", description: "Current password is required", variant: "destructive" });
+      return;
+    }
+    if (!newPassword || newPassword.length < 8) {
+      toast({ title: "Error", description: "New password must be at least 8 characters", variant: "destructive" });
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      toast({ title: "Error", description: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+    try {
+      setSecurityLoading(true);
+      const response = await api.post<{ success: boolean; message?: string; code?: string }>(
+        "/auth/change-password",
+        { currentPassword, newPassword },
+      );
+      toast({
+        title: "Success",
+        description: response.data.message || "Password updated successfully",
+      });
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmNewPassword("");
+      fetchMe();
+    } catch (error: any) {
+      if (error?.response?.data?.code === "NO_PASSWORD_SET") {
+        toast({
+          title: "Info",
+          description: "No password is set on this account yet. Create one below.",
+        });
+        fetchMe();
+      } else {
+        toast({ title: "Error", description: getApiMessage(error, "Failed to change password"), variant: "destructive" });
+      }
+    } finally {
+      setSecurityLoading(false);
     }
   };
 
@@ -226,6 +370,132 @@ export default function Settings() {
         <div>
           <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
           <p className="text-muted-foreground">Manage your business profile and preferences.</p>
+        </div>
+
+        {/* Sign-in & Security */}
+        <div ref={securitySectionRef} className="scroll-mt-6">
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2">
+                <Lock className="h-5 w-5" />
+                Sign-in &amp; Security
+              </CardTitle>
+              <CardDescription>Manage how you sign in to your account.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {meLoading ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading sign-in settings...
+                </div>
+              ) : !me ? (
+                <div className="flex items-center justify-between gap-4">
+                  <p className="text-sm text-muted-foreground">Unable to load your sign-in settings.</p>
+                  <Button variant="outline" size="sm" onClick={fetchMe}>
+                    Retry
+                  </Button>
+                </div>
+              ) : (
+                <div className="space-y-4">
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Avatar className="h-12 w-12">
+                      {me.avatarUrl ? (
+                        <AvatarImage src={me.avatarUrl} alt={`${me.name || me.email}'s avatar`} />
+                      ) : null}
+                      <AvatarFallback>
+                        {(me.name || me.email || "U")
+                          .split(" ")
+                          .map((part) => part.charAt(0))
+                          .slice(0, 2)
+                          .join("")
+                          .toUpperCase()}
+                      </AvatarFallback>
+                    </Avatar>
+                    <div className="min-w-0">
+                      <div className="font-medium truncate">{me.name}</div>
+                      <div className="text-sm text-muted-foreground truncate">{me.email}</div>
+                    </div>
+                    <Badge variant="secondary" className="ml-auto">
+                      {me.authProvider === "google" ? "Signed in via Google" : "Email & password"}
+                    </Badge>
+                  </div>
+
+                  {showSetupBanner && !me.hasPassword && (
+                    <Alert>
+                      <Info className="h-4 w-4" />
+                      <AlertDescription>
+                        Add a password so you can also sign in with your email and password.
+                      </AlertDescription>
+                    </Alert>
+                  )}
+
+                  {!me.hasPassword ? (
+                    <form onSubmit={handleCreatePassword} className="space-y-4 max-w-md">
+                      <div className="space-y-2">
+                        <Label htmlFor="new-password">New password</Label>
+                        <PasswordInput
+                          id="new-password"
+                          placeholder="••••••••"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="confirm-new-password">Confirm password</Label>
+                        <PasswordInput
+                          id="confirm-new-password"
+                          placeholder="••••••••"
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <Button type="submit" loading={securityLoading}>
+                        Create password
+                      </Button>
+                    </form>
+                  ) : (
+                    <form onSubmit={handleChangePassword} className="space-y-4 max-w-md">
+                      <div className="space-y-2">
+                        <Label htmlFor="current-password">Current password</Label>
+                        <PasswordInput
+                          id="current-password"
+                          placeholder="••••••••"
+                          value={currentPassword}
+                          onChange={(e) => setCurrentPassword(e.target.value)}
+                          autoComplete="current-password"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="change-new-password">New password</Label>
+                        <PasswordInput
+                          id="change-new-password"
+                          placeholder="••••••••"
+                          value={newPassword}
+                          onChange={(e) => setNewPassword(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <div className="space-y-2">
+                        <Label htmlFor="change-confirm-password">Confirm new password</Label>
+                        <PasswordInput
+                          id="change-confirm-password"
+                          placeholder="••••••••"
+                          value={confirmNewPassword}
+                          onChange={(e) => setConfirmNewPassword(e.target.value)}
+                          autoComplete="new-password"
+                        />
+                      </div>
+                      <Button type="submit" loading={securityLoading}>
+                        Update password
+                      </Button>
+                    </form>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
         </div>
 
         <Tabs defaultValue="profile" className="space-y-4">

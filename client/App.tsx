@@ -160,7 +160,7 @@ const App = () => (
             />
             <Route
               path="/meetings/:meetingCode"
-              element={<TokenProtectedRoute element={<JoinMeeting />} />}
+              element={<JoinMeeting />}
             />
             <Route
               path="/calls/:callCode"

@@ -129,8 +129,9 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
     if (call.callLink) {
       const linkUrl = new URL(call.callLink, window.location.origin);
       const callCode = linkUrl.pathname.split('/').pop() || linkUrl.searchParams.get('callCode') || '';
+      // Route to the JoinCall page at its registered path /calls/:callCode
       if (callCode) {
-        navigate(`/join-call/${encodeURIComponent(callCode)}`);
+        navigate(`/calls/${encodeURIComponent(callCode)}`);
         return;
       }
     }

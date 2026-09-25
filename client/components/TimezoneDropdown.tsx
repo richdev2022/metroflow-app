@@ -19,6 +19,8 @@ interface TimezoneDropdownProps {
   value?: string;
   onChange: (value: string) => void;
   placeholder?: string;
+  triggerClassName?: string;
+  contentClassName?: string;
 }
 
 const TIMEZONES = [
@@ -480,6 +482,8 @@ export default function TimezoneDropdown({
   value,
   onChange,
   placeholder = "Select timezone",
+  triggerClassName,
+  contentClassName,
 }: TimezoneDropdownProps) {
   const [open, setOpen] = useState(false);
 
@@ -490,13 +494,13 @@ export default function TimezoneDropdown({
           variant="outline"
           role="combobox"
           aria-expanded={open}
-          className="w-full justify-between"
+          className={cn("w-full justify-between", triggerClassName)}
         >
           {value ? value : placeholder}
           <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
         </Button>
       </PopoverTrigger>
-      <PopoverContent className="w-full p-0 max-h-96 overflow-y-auto">
+      <PopoverContent className={cn("w-full p-0 max-h-96 overflow-y-auto", contentClassName)}>
         <Command>
           <CommandInput placeholder="Search timezone..." />
           <CommandEmpty>No timezone found.</CommandEmpty>

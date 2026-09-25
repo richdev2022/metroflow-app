@@ -7,8 +7,9 @@ import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, CheckCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, Info } from "lucide-react";
 import { AuthResponse } from "@shared/api";
+import { useGoogleAuth, type GoogleAuthSuccessResult } from "@/hooks/useGoogleAuth";
 
 type Step = "login" | "otp";
 
@@ -20,6 +21,8 @@ export default function Login() {
   const [step, setStep] = useState<Step>("login");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [infoMessage, setInfoMessage] = useState<string | null>(null);
+  const [googleError, setGoogleError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
 
   const [loginData, setLoginData] = useState({
@@ -32,9 +35,34 @@ export default function Login() {
     otpCode: "",
   });
 
+  const handleGoogleSuccess = (result: GoogleAuthSuccessResult) => {
+    setSuccessMessage("Login successful! Redirecting...");
+    setTimeout(() => {
+      if (result.requiresPasswordSetup) {
+        // SSO-only account: prompt to add a password before/after landing.
+        navigate("/settings?setupPassword=1");
+      } else {
+        navigate("/dashboard");
+      }
+    }, 1500);
+  };
+
+  const handleGoogleError = (message: string) => {
+    setGoogleError(message);
+  };
+
+  const google = useGoogleAuth({
+    onSuccess: handleGoogleSuccess,
+    onError: handleGoogleError,
+    theme: "outline",
+    text: "signin_with",
+    shape: "pill",
+  });
+
   const handleLogin = async () => {
     console.log("handleLogin started", loginData);
     setError(null);
+    setInfoMessage(null);
 
     if (!loginData.email || !loginData.password) {
       console.log("Validation failed: Email or password missing");
@@ -77,7 +105,15 @@ export default function Login() {
       console.error("Login Error Catch:", err);
       if (err.message) console.error("Error Message:", err.message);
       if (err.response) console.error("Error Response:", err.response);
-      setError(err.response?.data?.message || "Failed to login");
+      if (err?.response?.data?.code === "GOOGLE_ACCOUNT_NO_PASSWORD") {
+        // Google-created account trying email/password: guide them to Google Sign-In.
+        setInfoMessage(
+          err?.response?.data?.message ||
+            "This account was created with Google. Please sign in using the Google button below.",
+        );
+      } else {
+        setError(err.response?.data?.message || "Failed to login");
+      }
     } finally {
       setLoading(false);
     }
@@ -167,6 +203,13 @@ export default function Login() {
             </Alert>
           )}
 
+          {infoMessage && (
+            <Alert>
+              <Info className="h-4 w-4" />
+              <AlertDescription>{infoMessage}</AlertDescription>
+            </Alert>
+          )}
+
           {successMessage && (
             <Alert className="bg-green-50 border-green-200">
               <CheckCircle className="h-4 w-4 text-green-600" />
@@ -218,6 +261,28 @@ export default function Login() {
               >
                 Login
               </Button>
+
+              <div className="relative py-1" aria-hidden="true">
+                <div className="absolute inset-0 flex items-center">
+                  <span className="w-full border-t border-border" />
+                </div>
+                <div className="relative flex justify-center">
+                  <span className="bg-card px-3 text-xs uppercase tracking-wide text-muted-foreground">
+                    or
+                  </span>
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div
+                  ref={google.containerRef}
+                  className="w-full min-h-[44px] flex justify-center"
+                  aria-label="Sign in with Google"
+                />
+                {googleError && (
+                  <p className="text-xs text-center text-muted-foreground">{googleError}</p>
+                )}
+              </div>
 
               <div className="space-y-2">
                 <p className="text-sm text-center text-muted-foreground">

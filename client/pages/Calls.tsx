@@ -41,6 +41,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { toast as sonnerToast } from "sonner";
 import {
   Phone,
   Video,
@@ -54,6 +57,7 @@ import {
   Copy,
   BellRing,
   Lock,
+  Link2,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -101,23 +105,67 @@ const INITIAL_CALL_FORM: CreateCallInput = {
 };
 
 // ==========================================
-// Status Helpers
+// Design tokens — premium dark shell, matching the Meet-style call room
 // ==========================================
-const getStatusVariant = (status: string) => {
-  switch (status) {
-    case "ongoing":
-      return "default" as const;
-    case "ringing":
-      return "secondary" as const;
-    case "completed":
-      return "outline" as const;
-    case "missed":
-      return "destructive" as const;
-    case "cancelled":
-      return "outline" as const;
-    default:
-      return "outline" as const;
+const DARK_DIALOG =
+  "border-white/10 bg-gradient-to-br from-[#111221] via-[#141527] to-[#0d0e1a] text-white shadow-2xl";
+const DARK_INPUT =
+  "border-white/10 bg-white/5 text-white placeholder:text-white/35 focus-visible:border-indigo-500/60 focus-visible:ring-indigo-500/40 [color-scheme:dark]";
+const DARK_CANCEL =
+  "border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white";
+const DARK_SELECT_CONTENT = "border-white/10 bg-[#181926] text-white";
+const DARK_SELECT_ITEM =
+  "focus:bg-indigo-500/25 focus:text-white data-[state=checked]:text-indigo-300";
+const INDIGO_CTA = "bg-indigo-500 text-white hover:bg-indigo-600";
+
+const FormSection = ({ title, children }: { title: string; children: React.ReactNode }) => (
+  <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+    <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
+      {title}
+    </p>
+    <div className="space-y-4">{children}</div>
+  </div>
+);
+
+// Call-type icon chip: indigo for video, emerald for audio
+const CallTypeIcon = ({ type }: { type: string }) => (
+  <div
+    className={cn(
+      "flex h-9 w-9 shrink-0 items-center justify-center rounded-xl",
+      type === "video"
+        ? "bg-indigo-500/10 text-indigo-600"
+        : "bg-emerald-500/10 text-emerald-600"
+    )}
+  >
+    {type === "video" ? <Video className="h-4 w-4" /> : <Phone className="h-4 w-4" />}
+  </div>
+);
+
+// Status badge: ongoing = emerald pulse, ringing = emerald soft, missed = rose, rest muted
+const CallStatusBadge = ({ status }: { status: string }) => {
+  if (status === "ongoing" || status === "ringing") {
+    return (
+      <Badge className="gap-1.5 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+        </span>
+        {status === "ringing" ? "Ringing" : "Ongoing"}
+      </Badge>
+    );
   }
+  if (status === "missed") {
+    return (
+      <Badge className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-50 capitalize">
+        {status}
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="secondary" className="capitalize text-muted-foreground">
+      {status}
+    </Badge>
+  );
 };
 
 const isCallActive = (status: string) => status === "ringing" || status === "ongoing";
@@ -180,6 +228,9 @@ export default function Calls() {
 
   // Processing state
   const [isProcessing, setIsProcessing] = useState(false);
+
+  // Per-call busy state for guest invite link generation
+  const [inviteLinkBusyId, setInviteLinkBusyId] = useState<string | null>(null);
 
   // Create call form
   const [callForm, setCallForm] = useState<CreateCallInput>({ ...INITIAL_CALL_FORM });
@@ -477,6 +528,36 @@ export default function Calls() {
   }, [callToDelete, deleteCall, toast]);
 
   // ==========================================
+  // Guest invite link: POST /calls/generate-invite → copy to clipboard
+  // ==========================================
+  const handleCopyInviteLink = useCallback(async (call: Call) => {
+    setInviteLinkBusyId(call.id);
+    try {
+      const res = await api.post("/calls/generate-invite", {
+        roomId: call.callCode || call.id,
+        participantName: CURRENT_USER_NAME(),
+      });
+      const data = unwrapApiData<{ inviteLink?: string }>(
+        res.data,
+        "Failed to generate invite link"
+      );
+      const inviteLink = data?.inviteLink;
+      if (!inviteLink) throw new Error("Invite link missing from response");
+      await navigator.clipboard.writeText(inviteLink);
+      sonnerToast.success("Invite link copied", {
+        description:
+          "Guests can use this link to join the call (valid for 24h)",
+      });
+    } catch (err) {
+      sonnerToast.error("Couldn't copy invite link", {
+        description: getApiMessage(err, "Failed to generate invite link"),
+      });
+    } finally {
+      setInviteLinkBusyId(null);
+    }
+  }, []);
+
+  // ==========================================
   // Participant Added Handler (from VideoCallRoom)
   // ==========================================
   const handleParticipantsAdded = useCallback(
@@ -629,16 +710,20 @@ export default function Calls() {
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="w-full justify-between min-h-[40px] h-auto"
+            className="w-full justify-between min-h-[40px] h-auto border-white/10 bg-white/5 text-white hover:bg-white/10 hover:text-white"
           >
             <div className="flex flex-wrap gap-1">
               {selected.length === 0 ? (
-                <span className="text-muted-foreground">{placeholder}</span>
+                <span className="text-white/40">{placeholder}</span>
               ) : (
                 selected.map((id) => {
                   const member = teamMembers.find((d) => d.id === id);
                   return (
-                    <Badge key={id} variant="secondary" className="text-xs">
+                    <Badge
+                      key={id}
+                      variant="secondary"
+                      className="border-white/15 bg-white/10 text-white text-xs"
+                    >
                       {member?.name || id}
                       <button
                         type="button"
@@ -659,16 +744,20 @@ export default function Calls() {
             <Check className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-full p-0" align="start">
-          <Command>
-            <CommandInput placeholder="Search participants..." />
+        <PopoverContent className="w-full p-0 border-white/10 bg-[#181926] text-white" align="start">
+          <Command className="bg-transparent text-white">
+            <CommandInput
+              placeholder="Search participants..."
+              className="text-white placeholder:text-white/35"
+            />
             <CommandList>
-              <CommandEmpty>No team members found.</CommandEmpty>
+              <CommandEmpty className="text-white/50">No team members found.</CommandEmpty>
               <CommandGroup>
                 {teamMembers.map((member) => (
                   <CommandItem
                     key={member.id}
                     value={member.name}
+                    className="text-white data-[selected=true]:bg-indigo-500/25 data-[selected=true]:text-white focus:bg-indigo-500/25 focus:text-white"
                     onSelect={() => {
                       const newSelected = selected.includes(member.id)
                         ? selected.filter((s) => s !== member.id)
@@ -702,103 +791,126 @@ export default function Calls() {
     const isJoined = isCurrentUserJoined(call);
     const active = isCallActive(call.status);
     const participants = call.participants || [];
+    const inviteBusy = inviteLinkBusyId === call.id;
 
     return (
-      <Card key={call.id} className="flex flex-col">
-        <CardHeader>
-          <div className="flex justify-between items-start">
-            <div className="min-w-0 flex-1">
-              <CardTitle className="text-xl flex items-center gap-2">
-                {call.type === "video" ? (
-                  <Video className="h-5 w-5 shrink-0" />
-                ) : (
-                  <Phone className="h-5 w-5 shrink-0" />
-                )}
-                <span className="truncate">
-                  {call.type === "video" ? "Video" : "Audio"} Call
-                </span>
-                {(call.hasPassword || call.password) && (
-                  <Lock className="h-4 w-4 text-muted-foreground shrink-0" aria-label="Password protected" />
-                )}
-              </CardTitle>
-              <CardDescription>
-                {participants.length} participant{participants.length !== 1 ? "s" : ""}
-              </CardDescription>
+      <Card
+        key={call.id}
+        className="flex flex-col rounded-2xl border-gray-200/60 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg"
+      >
+        <CardHeader className="pb-3">
+          <div className="flex justify-between items-start gap-2">
+            <div className="flex items-start gap-2.5 min-w-0 flex-1">
+              <CallTypeIcon type={call.type} />
+              <div className="min-w-0">
+                <CardTitle className="text-lg leading-snug flex items-center gap-1.5">
+                  <span className="truncate">
+                    {call.type === "video" ? "Video" : "Audio"} Call
+                  </span>
+                  {(call.hasPassword || call.password) && (
+                    <Lock
+                      className="h-3.5 w-3.5 text-muted-foreground shrink-0"
+                      aria-label="Password protected"
+                    />
+                  )}
+                </CardTitle>
+                <CardDescription className="truncate">
+                  {participants.length} participant
+                  {participants.length !== 1 ? "s" : ""}
+                </CardDescription>
+              </div>
             </div>
-            <Badge variant={getStatusVariant(call.status)} className="shrink-0">
-              {call.status}
-            </Badge>
+            <CallStatusBadge status={call.status} />
           </div>
         </CardHeader>
-        <CardContent className="space-y-4 flex-1 flex flex-col">
-          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-            <Calendar className="h-4 w-4 shrink-0" />
-            <span className="truncate">{formatDateTime(call.createdAt || new Date().toISOString())}</span>
+        <CardContent className="space-y-3 flex-1 flex flex-col">
+          <div className="flex items-center gap-2 rounded-lg bg-muted/70 px-2.5 py-1.5 text-sm text-muted-foreground">
+            <Calendar className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+            <span className="truncate">
+              {formatDateTime(call.createdAt || new Date().toISOString())}
+            </span>
           </div>
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Users className="h-4 w-4 shrink-0" />
             <span className="truncate">
               {participants
                 .map((p) => getParticipantName(p.userId))
-                .join(", ")}
+                .join(", ") || "No participants yet"}
             </span>
           </div>
 
-          <div className="mt-auto space-y-2">
-            <Button
-              variant="outline"
-              size="sm"
-              className="w-full"
-              onClick={() => {
-                setSelectedCall(call);
-                setIsDetailDialogOpen(true);
-              }}
-            >
-              View Details
-            </Button>
-
+          <div className="mt-auto space-y-2 pt-2">
             <div className="flex gap-2">
               {active && (
-                <>
-                  <Button
-                    size="sm"
-                    className="flex-1"
-                    onClick={() => handleOpenCallRoom(call)}
-                    disabled={isProcessing}
-                  >
-                    {call.type === "video" ? (
-                      <Video className="h-4 w-4 mr-2" />
-                    ) : (
-                      <Phone className="h-4 w-4 mr-2" />
-                    )}
-                    {isJoined || isHost ? "Open Room" : "Join"}
-                  </Button>
-
-                  {isJoined && (
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => handleLeaveCall(call)}
-                      disabled={isProcessing}
-                    >
-                      <Phone className="h-4 w-4 mr-2 rotate-135" />
-                      Leave
-                    </Button>
+                <Button
+                  size="sm"
+                  className={cn("flex-1 shadow-md shadow-indigo-500/20", INDIGO_CTA)}
+                  onClick={() => handleOpenCallRoom(call)}
+                  disabled={isProcessing}
+                >
+                  {call.type === "video" ? (
+                    <Video className="h-4 w-4 mr-2" />
+                  ) : (
+                    <Phone className="h-4 w-4 mr-2" />
                   )}
+                  {isJoined || isHost ? "Open Room" : "Join"}
+                </Button>
+              )}
 
-                  {isHost && (
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => handleEndCall(call)}
-                      disabled={isProcessing}
-                    >
-                      End Call
-                    </Button>
-                  )}
-                </>
+              <Button
+                variant="outline"
+                size="sm"
+                className={cn("shrink-0 border-gray-200/60", !active && "flex-1")}
+                title="Copy guest invite link"
+                aria-label="Copy guest invite link"
+                onClick={() => handleCopyInviteLink(call)}
+                disabled={inviteBusy}
+              >
+                {inviteBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Link2 className="h-4 w-4" />
+                )}
+                {inviteBusy ? "Copying…" : "Copy Invite"}
+              </Button>
+            </div>
+
+            <div className="flex gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                className="flex-1 border-gray-200/60"
+                onClick={() => {
+                  setSelectedCall(call);
+                  setIsDetailDialogOpen(true);
+                }}
+              >
+                View Details
+              </Button>
+
+              {active && isJoined && (
+                <Button
+                  variant="destructive"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => handleLeaveCall(call)}
+                  disabled={isProcessing}
+                >
+                  <Phone className="h-4 w-4 mr-2 rotate-135" />
+                  Leave
+                </Button>
+              )}
+
+              {active && isHost && (
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1 border-gray-200/60"
+                  onClick={() => handleEndCall(call)}
+                  disabled={isProcessing}
+                >
+                  End Call
+                </Button>
               )}
 
               <Button
@@ -807,6 +919,7 @@ export default function Calls() {
                 onClick={() => setCallToDelete(call)}
                 disabled={isProcessing}
                 title="Delete call"
+                aria-label="Delete call"
               >
                 <Trash2 className="h-4 w-4" />
               </Button>
@@ -838,40 +951,44 @@ export default function Calls() {
             onOpenChange={setIsCreateDialogOpen}
           >
             <DialogTrigger asChild>
-              <Button>
+              <Button className={cn("shadow-lg shadow-indigo-500/20", INDIGO_CTA)}>
                 <Plus className="h-4 w-4 mr-2" />
                 New Call
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+            <DialogContent
+              className={cn(
+                "max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden rounded-2xl",
+                DARK_DIALOG
+              )}
+            >
               <DialogHeader className="shrink-0 pr-8">
-                <DialogTitle>Start New Call</DialogTitle>
-                <DialogDescription>
+                <DialogTitle className="text-white">Start New Call</DialogTitle>
+                <DialogDescription className="text-white/60">
                   Initiate a video or audio call with team members
                 </DialogDescription>
               </DialogHeader>
 
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto py-4 pr-1">
                 {/* Call Type */}
-                <div className="grid gap-2">
-                  <Label htmlFor="call-type">Call Type</Label>
+                <FormSection title="Call Type">
                   <Select
                     value={callForm.type}
                     onValueChange={(value) =>
                       setCallForm({ ...callForm, type: value as "audio" | "video" })
                     }
                   >
-                    <SelectTrigger id="call-type">
+                    <SelectTrigger id="call-type" className={DARK_INPUT}>
                       <SelectValue />
                     </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="video">
+                    <SelectContent className={DARK_SELECT_CONTENT}>
+                      <SelectItem className={DARK_SELECT_ITEM} value="video">
                         <div className="flex items-center gap-2">
                           <Video className="h-4 w-4" />
                           Video Call
                         </div>
                       </SelectItem>
-                      <SelectItem value="audio">
+                      <SelectItem className={DARK_SELECT_ITEM} value="audio">
                         <div className="flex items-center gap-2">
                           <Phone className="h-4 w-4" />
                           Audio Call
@@ -879,77 +996,83 @@ export default function Calls() {
                       </SelectItem>
                     </SelectContent>
                   </Select>
-                </div>
+                </FormSection>
 
-                {/* Password */}
-                <div className="grid gap-2">
-                  <Label htmlFor="call-password">Password (Optional)</Label>
-                  <Input
-                    id="call-password"
-                    type="password"
-                    value={callForm.password || ""}
-                    onChange={(e) =>
-                      setCallForm({ ...callForm, password: e.target.value })
-                    }
-                    placeholder="Enter call password"
-                  />
-                </div>
-
-                {/* Feature Toggles */}
-                <div className="grid gap-4">
-                  <div className="flex items-center justify-between">
-                    <Label
-                      htmlFor="call-waiting-room"
-                      className="cursor-pointer"
-                    >
-                      Waiting Room
+                {/* Security */}
+                <FormSection title="Security">
+                  <div className="grid gap-2">
+                    <Label htmlFor="call-password" className="text-white/70">
+                      Password (Optional)
                     </Label>
+                    <Input
+                      id="call-password"
+                      type="password"
+                      className={DARK_INPUT}
+                      value={callForm.password || ""}
+                      onChange={(e) =>
+                        setCallForm({ ...callForm, password: e.target.value })
+                      }
+                      placeholder="Enter call password"
+                    />
+                    <p className="text-xs text-white/45">Guests will need this to join</p>
+                  </div>
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="call-waiting-room" className="cursor-pointer text-white">
+                        Waiting Room
+                      </Label>
+                      <p className="text-xs text-white/45">You'll admit people manually</p>
+                    </div>
                     <Switch
                       id="call-waiting-room"
+                      className="data-[state=unchecked]:bg-white/20"
                       checked={callForm.waitingRoomEnabled}
                       onCheckedChange={(checked) =>
                         setCallForm({ ...callForm, waitingRoomEnabled: checked })
                       }
                     />
                   </div>
+                </FormSection>
+
+                {/* Feature Toggle */}
+                <FormSection title="In-call Features">
                   <div className="flex items-center justify-between">
-                    <Label
-                      htmlFor="call-recording"
-                      className="cursor-pointer"
-                    >
+                    <Label htmlFor="call-recording" className="cursor-pointer text-white/80">
                       Recording
                     </Label>
                     <Switch
                       id="call-recording"
+                      className="data-[state=unchecked]:bg-white/20"
                       checked={callForm.recordingEnabled}
                       onCheckedChange={(checked) =>
                         setCallForm({ ...callForm, recordingEnabled: checked })
                       }
                     />
                   </div>
-                </div>
+                </FormSection>
 
                 {/* Participants */}
-                <div className="grid gap-2">
-                  <Label>Participants</Label>
+                <FormSection title="Participants">
                   <TeamMemberMultiSelect
                     selected={callForm.participantIds}
                     onChange={(ids) =>
                       setCallForm({ ...callForm, participantIds: ids })
                     }
                   />
-                </div>
+                </FormSection>
               </div>
 
               <DialogFooter className="shrink-0">
                 <Button
                   variant="outline"
+                  className={DARK_CANCEL}
                   onClick={() => setIsCreateDialogOpen(false)}
                   disabled={isProcessing}
                 >
                   Cancel
                 </Button>
                 <Button
+                  className={INDIGO_CTA}
                   onClick={handleCreateCall}
                   disabled={isProcessing || callForm.participantIds.length === 0}
                 >
@@ -970,19 +1093,49 @@ export default function Calls() {
         {/* Calls Grid */}
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {callsLoading ? (
-            <Card className="col-span-full">
-              <CardContent className="pt-6 flex items-center justify-center">
-                <Loader2 className="h-8 w-8 animate-spin" />
-              </CardContent>
-            </Card>
+            Array.from({ length: 6 }).map((_, i) => (
+              <Card key={i} className="rounded-2xl border-gray-200/60">
+                <CardHeader className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2.5">
+                      <Skeleton className="h-9 w-9 rounded-xl" />
+                      <div className="space-y-1.5">
+                        <Skeleton className="h-4 w-24" />
+                        <Skeleton className="h-3 w-20" />
+                      </div>
+                    </div>
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Skeleton className="h-9 w-full rounded-lg" />
+                  <Skeleton className="h-3.5 w-2/3" />
+                  <Skeleton className="h-9 w-full" />
+                  <div className="flex gap-2">
+                    <Skeleton className="h-8 flex-1" />
+                    <Skeleton className="h-8 w-9" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))
           ) : calls.length === 0 ? (
-            <Card className="col-span-full">
-              <CardContent className="pt-6 text-center py-12">
-                <Video className="h-16 w-16 text-muted-foreground mx-auto mb-4" />
-                <p className="text-muted-foreground text-lg">No calls yet</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Start your first call to get started
+            <Card className="col-span-full rounded-2xl border-gray-200/60 shadow-sm">
+              <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/10">
+                  <Video className="h-8 w-8 text-indigo-500" />
+                </div>
+                <h3 className="text-lg font-semibold">No calls yet</h3>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Start your first call and invite teammates — or share a guest
+                  invite link with anyone.
                 </p>
+                <Button
+                  className={cn("mt-6 shadow-lg shadow-indigo-500/20", INDIGO_CTA)}
+                  onClick={() => setIsCreateDialogOpen(true)}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Call
+                </Button>
               </CardContent>
             </Card>
           ) : (
@@ -999,12 +1152,17 @@ export default function Calls() {
           open={isDetailDialogOpen}
           onOpenChange={setIsDetailDialogOpen}
         >
-          <DialogContent className="max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
+          <DialogContent
+            className={cn(
+              "max-w-2xl max-h-[90vh] flex flex-col overflow-hidden rounded-2xl",
+              DARK_DIALOG
+            )}
+          >
             <DialogHeader className="shrink-0">
-              <DialogTitle className="text-2xl">
+              <DialogTitle className="text-2xl text-white">
                 {selectedCall.type === "video" ? "Video" : "Audio"} Call Details
               </DialogTitle>
-              <DialogDescription>
+              <DialogDescription className="text-white/60">
                 {(selectedCall.participants || []).length} participant
                 {(selectedCall.participants || []).length !== 1 ? "s" : ""}
               </DialogDescription>
@@ -1014,18 +1172,21 @@ export default function Calls() {
               <div className="space-y-4 py-4 pr-4">
                 {/* Call Code */}
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Call Code</div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">
+                    Call Code
+                  </div>
                   <div className="flex items-center gap-2">
                     <Badge
                       variant="secondary"
-                      className="text-lg font-mono"
+                      className="text-lg font-mono border-white/10 bg-white/10 text-white"
                     >
                       {selectedCall.callCode}
                     </Badge>
                     <Button
                       variant="outline"
                       size="icon"
-                      className="h-9 w-9"
+                      className={cn("h-9 w-9", DARK_CANCEL)}
+                      title="Copy call code"
                       onClick={() => {
                         navigator.clipboard.writeText(selectedCall.callCode);
                         toast({
@@ -1036,57 +1197,86 @@ export default function Calls() {
                     >
                       <Copy className="h-4 w-4" />
                     </Button>
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      className={cn("h-9 w-9", DARK_CANCEL)}
+                      title="Copy guest invite link"
+                      aria-label="Copy guest invite link"
+                      onClick={() => handleCopyInviteLink(selectedCall)}
+                      disabled={inviteLinkBusyId === selectedCall.id}
+                    >
+                      {inviteLinkBusyId === selectedCall.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Link2 className="h-4 w-4" />
+                      )}
+                    </Button>
                   </div>
                 </div>
 
                 {/* Status */}
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Status</div>
-                  <Badge variant="default" className="capitalize">
-                    {selectedCall.status}
-                  </Badge>
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">
+                    Status
+                  </div>
+                  <CallStatusBadge status={selectedCall.status} />
                 </div>
 
                 {/* Type & Participants Count */}
                 <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <div className="text-sm text-muted-foreground">Type</div>
-                    <div className="capitalize">
+                    <div className="text-xs font-medium uppercase tracking-wide text-white/45">
+                      Type
+                    </div>
+                    <div className="capitalize text-white">
                       {selectedCall.type === "video"
                         ? "Video Call"
                         : "Audio Call"}
                     </div>
                   </div>
                   <div className="space-y-2">
-                    <div className="text-sm text-muted-foreground">
+                    <div className="text-xs font-medium uppercase tracking-wide text-white/45">
                       Participants
                     </div>
-                    <div>{(selectedCall.participants || []).length}</div>
+                    <div className="text-white">
+                      {(selectedCall.participants || []).length}
+                    </div>
                   </div>
                 </div>
 
                 {/* Features */}
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Features</div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">
+                    Features
+                  </div>
                   <div className="flex flex-wrap gap-2">
                     {selectedCall.waitingRoomEnabled && (
-                      <Badge variant="outline">Waiting Room</Badge>
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">
+                        Waiting Room
+                      </Badge>
                     )}
                     {selectedCall.recordingEnabled && (
-                      <Badge variant="outline">Recording</Badge>
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">
+                        Recording
+                      </Badge>
                     )}
                     {selectedCall.isGroupCall && (
-                      <Badge variant="outline">Group Call</Badge>
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">
+                        Group Call
+                      </Badge>
                     )}
                     {selectedCall.password && (
-                      <Badge variant="outline">Password Protected</Badge>
+                      <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">
+                        Password Protected
+                      </Badge>
                     )}
                   </div>
                 </div>
 
                 {/* Participant List */}
                 <div className="space-y-4">
-                  <div className="text-sm text-muted-foreground">
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">
                     Participants
                   </div>
                   {(() => {
@@ -1114,12 +1304,12 @@ export default function Calls() {
                             <h4
                               className={
                                 "text-[11px] font-semibold uppercase tracking-wider " +
-                                (color || "text-gray-400")
+                                (color || "text-white/40")
                               }
                             >
                               {title}
                             </h4>
-                            <Badge variant="outline" className="text-[10px] h-5 px-2">
+                            <Badge variant="outline" className="text-[10px] h-5 px-2 border-white/15 text-white/60">
                               {count}
                             </Badge>
                           </div>
@@ -1136,20 +1326,17 @@ export default function Calls() {
                                 participant.userId === selectedCall.createdById;
                               const statusBadge =
                                 participant.status === "joined" ? (
-                                  <Badge
-                                    variant="default"
-                                    className="text-[10px] bg-emerald-600 hover:bg-emerald-700"
-                                  >
+                                  <Badge className="text-[10px] border border-emerald-400/30 bg-emerald-500/20 text-emerald-300 hover:bg-emerald-500/20">
                                     In call
                                   </Badge>
                                 ) : participant.status === "invited" ? (
-                                  <Badge variant="secondary" className="text-[10px]">
+                                  <Badge variant="secondary" className="text-[10px] border-white/15 bg-white/10 text-white/80">
                                     Invited
                                   </Badge>
                                 ) : (
                                   <Badge
                                     variant="outline"
-                                    className="text-[10px] text-muted-foreground"
+                                    className="text-[10px] border-white/15 text-white/50"
                                   >
                                     Left
                                     {participant.leftAt
@@ -1164,15 +1351,15 @@ export default function Calls() {
                                 <div
                                   key={participant.id}
                                   className={
-                                    "flex items-center justify-between p-2 rounded-md gap-2 " +
+                                    "flex items-center justify-between p-2 rounded-md gap-2 transition-colors " +
                                     (participant.status === "left"
-                                      ? "opacity-70 hover:opacity-100 hover:bg-gray-50"
-                                      : "hover:bg-gray-50")
+                                      ? "opacity-70 hover:opacity-100 hover:bg-white/5"
+                                      : "hover:bg-white/5")
                                   }
                                 >
                                   <div className="flex items-center gap-2.5 min-w-0 flex-1">
                                     <Avatar className="h-8 w-8 shrink-0">
-                                      <AvatarFallback className="bg-blue-600 text-white text-xs">
+                                      <AvatarFallback className="bg-gradient-to-br from-indigo-500 to-violet-600 text-white text-xs">
                                         {name
                                           .split(" ")
                                           .slice(0, 2)
@@ -1183,17 +1370,17 @@ export default function Calls() {
                                       </AvatarFallback>
                                     </Avatar>
                                     <div className="min-w-0">
-                                      <p className="text-sm font-medium truncate">
+                                      <p className="text-sm font-medium truncate text-white">
                                         {name}
                                         {isMe && (
-                                          <span className="text-gray-400 text-xs ml-1">
+                                          <span className="text-white/45 text-xs ml-1">
                                             (You)
                                           </span>
                                         )}
                                       </p>
                                       <div className="flex items-center gap-2 mt-0.5">
                                         {isParticipantHost && (
-                                          <p className="text-[10px] text-blue-500">Host</p>
+                                          <p className="text-[10px] text-indigo-300">Host</p>
                                         )}
                                         {statusBadge}
                                       </div>
@@ -1207,7 +1394,7 @@ export default function Calls() {
                                           : "secondary"
                                       }
                                       size="sm"
-                                      className="h-7 px-2 text-xs gap-1 shrink-0"
+                                      className="h-7 px-2 text-xs gap-1 shrink-0 border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white"
                                       onClick={() => dialBackFromDetailDialog(participant)}
                                     >
                                       {participant.status === "invited" ? (
@@ -1233,21 +1420,21 @@ export default function Calls() {
                           title: "In Call",
                           count: joined.length,
                           items: joined,
-                          color: "text-emerald-600",
+                          color: "text-emerald-400",
                           showAction: false,
                         })}
                         {Section({
                           title: "Invited",
                           count: invited.length,
                           items: invited,
-                          color: undefined,
+                          color: "text-indigo-300",
                           showAction: true,
                         })}
                         {Section({
                           title: "Left",
                           count: left.length,
                           items: left,
-                          color: "text-rose-600",
+                          color: "text-rose-400",
                           showAction: true,
                         })}
                       </div>
@@ -1260,12 +1447,14 @@ export default function Calls() {
             <DialogFooter className="shrink-0 gap-2">
               <Button
                 variant="outline"
+                className={DARK_CANCEL}
                 onClick={() => setIsDetailDialogOpen(false)}
               >
                 Close
               </Button>
               {isCallActive(selectedCall.status) && (
                 <Button
+                  className={INDIGO_CTA}
                   onClick={() => {
                     setIsDetailDialogOpen(false);
                     handleOpenCallRoom(selectedCall);
@@ -1333,18 +1522,19 @@ export default function Calls() {
           open={!!passwordCall}
           onOpenChange={(open) => !open && setPasswordCall(null)}
         >
-          <DialogContent>
+          <DialogContent className={cn("rounded-2xl", DARK_DIALOG)}>
             <DialogHeader>
-              <DialogTitle>Enter Call Password</DialogTitle>
-              <DialogDescription>
+              <DialogTitle className="text-white">Enter Call Password</DialogTitle>
+              <DialogDescription className="text-white/60">
                 This call is protected. Enter the password to join.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-2">
-              <Label htmlFor="join-call-password">Password</Label>
+              <Label htmlFor="join-call-password" className="text-white/70">Password</Label>
               <Input
                 id="join-call-password"
                 type="password"
+                className={DARK_INPUT}
                 value={joinPassword}
                 onChange={(event) => {
                   setJoinPassword(event.target.value);
@@ -1358,18 +1548,20 @@ export default function Calls() {
                 autoFocus
               />
               {joinPasswordError && (
-                <p className="text-sm text-destructive">{joinPasswordError}</p>
+                <p className="text-sm text-rose-300">{joinPasswordError}</p>
               )}
             </div>
             <DialogFooter>
               <Button
                 variant="outline"
+                className={DARK_CANCEL}
                 onClick={() => setPasswordCall(null)}
                 disabled={isProcessing}
               >
                 Cancel
               </Button>
               <Button
+                className={INDIGO_CTA}
                 onClick={() => handleJoinCall(passwordCall, joinPassword)}
                 disabled={isProcessing || !joinPassword.trim()}
               >
@@ -1406,7 +1598,7 @@ export default function Calls() {
               <AlertDialogAction
                 onClick={handleDeleteCallConfirm}
                 disabled={isProcessing}
-                className="bg-red-600 hover:bg-red-700"
+                className="bg-rose-600 hover:bg-rose-700"
               >
                 {isProcessing ? (
                   <Loader2 className="mr-2 h-4 w-4 animate-spin" />

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, type ReactNode } from "react";
 import Layout from "@/components/layout";
 import VideoCallRoom from "@/components/VideoCallRoom";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
@@ -41,6 +41,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
+import { Skeleton } from "@/components/ui/skeleton";
+import { cn } from "@/lib/utils";
+import { toast as sonnerToast } from "sonner";
 import {
   Calendar,
   Clock,
@@ -55,6 +58,7 @@ import {
   Check,
   X,
   Lock,
+  Link2,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -82,6 +86,61 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+
+// ==========================================
+// Design tokens — premium dark shell, matching the Meet-style call room
+// ==========================================
+const DARK_DIALOG =
+  "border-white/10 bg-gradient-to-br from-[#111221] via-[#141527] to-[#0d0e1a] text-white shadow-2xl";
+const DARK_INPUT =
+  "border-white/10 bg-white/5 text-white placeholder:text-white/35 focus-visible:border-indigo-500/60 focus-visible:ring-indigo-500/40 [color-scheme:dark]";
+const DARK_CANCEL =
+  "border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white";
+const DARK_SELECT_CONTENT = "border-white/10 bg-[#181926] text-white";
+const DARK_SELECT_ITEM =
+  "focus:bg-indigo-500/25 focus:text-white data-[state=checked]:text-indigo-300";
+
+const FormSection = ({ title, children }: { title: string; children: ReactNode }) => (
+  <div className="rounded-xl border border-white/10 bg-white/[0.03] p-4">
+    <p className="mb-3 text-[11px] font-semibold uppercase tracking-wider text-indigo-300">
+      {title}
+    </p>
+    <div className="space-y-4">{children}</div>
+  </div>
+);
+
+const MeetingStatusBadge = ({ status }: { status: string }) => {
+  if (status === "ongoing") {
+    return (
+      <Badge className="gap-1.5 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-50">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+        </span>
+        Ongoing
+      </Badge>
+    );
+  }
+  if (status === "scheduled") {
+    return (
+      <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-50">
+        Scheduled
+      </Badge>
+    );
+  }
+  if (status === "cancelled") {
+    return (
+      <Badge className="border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-50">
+        Cancelled
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant="secondary" className="capitalize text-muted-foreground">
+      {status}
+    </Badge>
+  );
+};
 
 export default function Meetings() {
   const {
@@ -428,6 +487,20 @@ export default function Meetings() {
     return new Date(date.getTime() - offsetMs).toISOString().slice(0, 16);
   };
 
+  const copyGuestLink = (meeting: Meeting) => {
+    const link = `${window.location.origin}/meetings/${meeting.meetingCode}`;
+    navigator.clipboard
+      .writeText(link)
+      .then(() => {
+        sonnerToast.success("Guest link copied", {
+          description: "Anyone with this link can ask to join this meeting",
+        });
+      })
+      .catch(() => {
+        sonnerToast.error("Couldn't copy link", { description: link });
+      });
+  };
+
   const TeamMemberMultiSelect = ({
     selected,
     onChange,
@@ -445,16 +518,20 @@ export default function Meetings() {
             variant="outline"
             role="combobox"
             aria-expanded={open}
-            className="w-full justify-between"
+            className="w-full justify-between min-h-[40px] h-auto border-white/10 bg-white/5 text-white hover:bg-white/10 hover:text-white"
           >
             <div className="flex flex-wrap gap-1">
               {selected.length === 0 ? (
-                <span className="text-muted-foreground">{placeholder}</span>
+                <span className="text-white/40">{placeholder}</span>
               ) : (
                 selected.map((id) => {
                   const member = teamMembers.find((d) => d.id === id);
                   return (
-                    <Badge key={id} variant="secondary" className="text-xs">
+                    <Badge
+                      key={id}
+                      variant="secondary"
+                      className="border-white/15 bg-white/10 text-white text-xs"
+                    >
                       {member?.name}
                       <button
                         type="button"
@@ -475,15 +552,21 @@ export default function Meetings() {
             <Check className="ml-2 h-4 w-4 shrink-0 opacity-50" />
           </Button>
         </PopoverTrigger>
-        <PopoverContent className="w-full p-0">
-          <Command>
-            <CommandInput placeholder="Search attendees..." />
+        <PopoverContent className="w-full p-0 border-white/10 bg-[#181926] text-white">
+          <Command className="bg-transparent text-white">
+            <CommandInput
+              placeholder="Search attendees..."
+              className="text-white placeholder:text-white/35"
+            />
             <CommandList>
-              <CommandEmpty>No team members found.</CommandEmpty>
+              <CommandEmpty className="text-white/50">
+                No team members found.
+              </CommandEmpty>
               <CommandGroup>
                 {teamMembers.map((member) => (
                   <CommandItem
                     key={member.id}
+                    className="text-white data-[selected=true]:bg-indigo-500/25 data-[selected=true]:text-white focus:bg-indigo-500/25 focus:text-white"
                     onSelect={() => {
                       const newSelected = selected.includes(member.id)
                         ? selected.filter((s) => s !== member.id)
@@ -510,8 +593,38 @@ export default function Meetings() {
   if (meetingsLoading) {
     return (
       <Layout>
-        <div className="flex items-center justify-center h-96">
-          <Loader2 className="h-8 w-8 animate-spin" />
+        <div className="space-y-8">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="space-y-2">
+              <Skeleton className="h-9 w-48" />
+              <Skeleton className="h-4 w-72" />
+            </div>
+            <Skeleton className="h-10 w-36" />
+          </div>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+            {Array.from({ length: 6 }).map((_, i) => (
+              <Card key={i} className="rounded-2xl border-gray-200/60">
+                <CardHeader className="space-y-3">
+                  <div className="flex items-start justify-between gap-2">
+                    <Skeleton className="h-5 w-3/4" />
+                    <Skeleton className="h-5 w-20 rounded-full" />
+                  </div>
+                  <Skeleton className="h-3 w-1/2" />
+                </CardHeader>
+                <CardContent className="space-y-3">
+                  <Skeleton className="h-9 w-full rounded-lg" />
+                  <Skeleton className="h-3.5 w-2/3" />
+                  <Skeleton className="h-3.5 w-1/2" />
+                  <Skeleton className="h-9 w-full" />
+                  <div className="flex gap-2">
+                    <Skeleton className="h-8 flex-1" />
+                    <Skeleton className="h-8 flex-1" />
+                    <Skeleton className="h-8 flex-1" />
+                  </div>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
         </div>
       </Layout>
     );
@@ -535,106 +648,131 @@ export default function Meetings() {
           </div>
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
-              <Button>
+              <Button className="bg-indigo-500 text-white hover:bg-indigo-600 shadow-lg shadow-indigo-500/20">
                 <Plus className="h-4 w-4 mr-2" />
                 New Meeting
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+            <DialogContent
+              className={cn(
+                "max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden rounded-2xl",
+                DARK_DIALOG
+              )}
+            >
               <DialogHeader className="shrink-0 pr-8">
-                <DialogTitle>Schedule New Meeting</DialogTitle>
-                <DialogDescription>
+                <DialogTitle className="text-white">Schedule New Meeting</DialogTitle>
+                <DialogDescription className="text-white/60">
                   Create a new meeting and invite team members
                 </DialogDescription>
               </DialogHeader>
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
-                <div className="grid gap-2">
-                  <Label htmlFor="title">Title</Label>
-                  <Input
-                    id="title"
+              <div className="min-h-0 flex-1 space-y-3 overflow-y-auto py-4 pr-1">
+                <FormSection title="Details">
+                  <div className="grid gap-2">
+                    <Label htmlFor="title" className="text-white/70">Title</Label>
+                    <Input
+                      id="title"
+                      className={DARK_INPUT}
                       value={meetingForm.title}
-                    onChange={(e) =>
-                      setMeetingForm({ ...meetingForm, title: e.target.value })
-                    }
-                    placeholder="Enter meeting title"
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="description">Description</Label>
-                  <Textarea
-                    id="description"
-                    value={meetingForm.description}
-                    onChange={(e) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        description: e.target.value,
-                      })
-                    }
-                    placeholder="Enter meeting description"
-                  />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      onChange={(e) =>
+                        setMeetingForm({ ...meetingForm, title: e.target.value })
+                      }
+                      placeholder="Enter meeting title"
+                    />
+                  </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="startTime">Start Time</Label>
-                    <Input
-                      id="startTime"
-                      type="datetime-local"
-                      value={meetingForm.startTime}
+                    <Label htmlFor="description" className="text-white/70">Description</Label>
+                    <Textarea
+                      id="description"
+                      className={DARK_INPUT}
+                      value={meetingForm.description}
                       onChange={(e) =>
                         setMeetingForm({
                           ...meetingForm,
-                          startTime: e.target.value,
+                          description: e.target.value,
+                        })
+                      }
+                      placeholder="Enter meeting description"
+                    />
+                  </div>
+                </FormSection>
+                <FormSection title="Schedule">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                    <div className="grid gap-2">
+                      <Label htmlFor="startTime" className="text-white/70">Start Time</Label>
+                      <Input
+                        id="startTime"
+                        type="datetime-local"
+                        className={DARK_INPUT}
+                        value={meetingForm.startTime}
+                        onChange={(e) =>
+                          setMeetingForm({
+                            ...meetingForm,
+                            startTime: e.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                    <div className="grid gap-2">
+                      <Label htmlFor="endTime" className="text-white/70">End Time</Label>
+                      <Input
+                        id="endTime"
+                        type="datetime-local"
+                        className={DARK_INPUT}
+                        value={meetingForm.endTime}
+                        onChange={(e) =>
+                          setMeetingForm({
+                            ...meetingForm,
+                            endTime: e.target.value,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="grid gap-2">
+                    <Label htmlFor="timezone" className="text-white/70">Timezone</Label>
+                    <TimezoneDropdown
+                      value={meetingForm.timezone}
+                      triggerClassName="border-white/10 bg-white/5 text-white hover:bg-white/10 hover:text-white"
+                      contentClassName="border-white/10 bg-[#181926] text-white"
+                      onChange={(timezone) =>
+                        setMeetingForm({
+                          ...meetingForm,
+                          timezone,
                         })
                       }
                     />
                   </div>
+                </FormSection>
+                <FormSection title="Security">
                   <div className="grid gap-2">
-                    <Label htmlFor="endTime">End Time</Label>
+                    <Label htmlFor="password" className="text-white/70">Password (Optional)</Label>
                     <Input
-                      id="endTime"
-                      type="datetime-local"
-                      value={meetingForm.endTime}
+                      id="password"
+                      type="password"
+                      className={DARK_INPUT}
+                      value={meetingForm.password || ""}
                       onChange={(e) =>
                         setMeetingForm({
                           ...meetingForm,
-                          endTime: e.target.value,
+                          password: e.target.value,
                         })
                       }
+                      placeholder="Enter meeting password"
                     />
+                    <p className="text-xs text-white/45">
+                      Guests will need this to join
+                    </p>
                   </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="timezone">Timezone</Label>
-                  <TimezoneDropdown
-                    value={meetingForm.timezone}
-                    onChange={(timezone) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        timezone,
-                      })
-                    }
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="password">Password (Optional)</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={meetingForm.password || ""}
-                    onChange={(e) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        password: e.target.value,
-                      })
-                    }
-                    placeholder="Enter meeting password"
-                  />
-                </div>
-                <div className="grid gap-4">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
+                  <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                    <div className="space-y-0.5">
+                      <Label htmlFor="waitingRoomEnabled" className="cursor-pointer text-white">
+                        Waiting Room
+                      </Label>
+                      <p className="text-xs text-white/45">You'll admit people manually</p>
+                    </div>
                     <Switch
                       id="waitingRoomEnabled"
+                      className="data-[state=unchecked]:bg-white/20"
                       checked={meetingForm.waitingRoomEnabled}
                       onCheckedChange={(checked) =>
                         setMeetingForm({
@@ -644,10 +782,13 @@ export default function Meetings() {
                       }
                     />
                   </div>
+                </FormSection>
+                <FormSection title="In-call Features">
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
+                    <Label htmlFor="recordingEnabled" className="cursor-pointer text-white/80">Recording</Label>
                     <Switch
                       id="recordingEnabled"
+                      className="data-[state=unchecked]:bg-white/20"
                       checked={meetingForm.recordingEnabled}
                       onCheckedChange={(checked) =>
                         setMeetingForm({
@@ -658,9 +799,10 @@ export default function Meetings() {
                     />
                   </div>
                   <div className="flex items-center justify-between">
-                    <Label htmlFor="screenSharingEnabled" className="cursor-pointer">Screen Sharing</Label>
+                    <Label htmlFor="screenSharingEnabled" className="cursor-pointer text-white/80">Screen Sharing</Label>
                     <Switch
                       id="screenSharingEnabled"
+                      className="data-[state=unchecked]:bg-white/20"
                       checked={meetingForm.screenSharingEnabled}
                       onCheckedChange={(checked) =>
                         setMeetingForm({
@@ -670,9 +812,8 @@ export default function Meetings() {
                       }
                     />
                   </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Attendees</Label>
+                </FormSection>
+                <FormSection title="Attendees">
                   <TeamMemberMultiSelect
                     selected={meetingForm.attendeeIds}
                     onChange={(ids) =>
@@ -682,17 +823,19 @@ export default function Meetings() {
                       })
                     }
                   />
-                </div>
+                </FormSection>
               </div>
               <DialogFooter className="shrink-0">
                 <Button
                   variant="outline"
+                  className={DARK_CANCEL}
                   onClick={() => setIsCreateDialogOpen(false)}
                   disabled={isProcessing}
                 >
                   Cancel
                 </Button>
                 <Button
+                  className="bg-indigo-500 text-white hover:bg-indigo-600"
                   onClick={handleCreateMeeting}
                   disabled={isProcessing}
                 >
@@ -708,254 +851,346 @@ export default function Meetings() {
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
           {meetings.length === 0 ? (
-            <Card className="col-span-full">
-              <CardContent className="pt-6 text-center">
-                <p className="text-muted-foreground">No meetings scheduled</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Create your first meeting to get started
+            <Card className="col-span-full rounded-2xl border-gray-200/60 shadow-sm">
+              <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="mb-4 flex h-16 w-16 items-center justify-center rounded-full bg-indigo-500/10">
+                  <Video className="h-8 w-8 text-indigo-500" />
+                </div>
+                <h3 className="text-lg font-semibold">No meetings scheduled</h3>
+                <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                  Create your first meeting and share the guest link with your
+                  team to get started.
                 </p>
+                <Button
+                  className="mt-6 bg-indigo-500 text-white hover:bg-indigo-600 shadow-lg shadow-indigo-500/20"
+                  onClick={() => setIsCreateDialogOpen(true)}
+                >
+                  <Plus className="h-4 w-4 mr-2" />
+                  New Meeting
+                </Button>
               </CardContent>
             </Card>
           ) : (
-            meetings.map((meeting) => (
-              <Card key={meeting.id}>
-                <CardHeader>
-                  <div className="flex justify-between items-start">
-                    <div className="flex items-start gap-2">
-                      <CardTitle className="text-xl">{meeting.title}</CardTitle>
-                      {(meeting.hasPassword || meeting.password) && (
-                        <Lock className="h-4 w-4 mt-1.5 text-muted-foreground shrink-0" aria-label="Password protected" />
-                      )}
+            meetings.map((meeting) => {
+              const isHost = isCurrentUserHost(meeting);
+              const isYou = isCurrentUserAttendee(meeting);
+              return (
+                <Card
+                  key={meeting.id}
+                  className="group flex flex-col rounded-2xl border-gray-200/60 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-indigo-200 hover:shadow-lg"
+                >
+                  <CardHeader className="pb-3">
+                    <div className="flex justify-between items-start gap-2">
+                      <div className="flex items-start gap-2.5 min-w-0">
+                        <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-indigo-500/10 text-indigo-600">
+                          <Video className="h-4 w-4" />
+                        </div>
+                        <CardTitle className="text-lg leading-snug break-words">
+                          {meeting.title}
+                        </CardTitle>
+                        {(meeting.hasPassword || meeting.password) && (
+                          <Lock
+                            className="h-4 w-4 mt-1.5 text-muted-foreground shrink-0"
+                            aria-label="Password protected"
+                          />
+                        )}
+                      </div>
+                      <MeetingStatusBadge status={meeting.status} />
                     </div>
-                    <Badge variant="outline">
-                      {meeting.status}
-                    </Badge>
-                  </div>
-                  {meeting.description && (
-                    <CardDescription className="mt-2">
-                      {meeting.description}
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Calendar className="h-4 w-4" />
-                    {formatDateTime(meeting.startTime)} -{" "}
-                    {formatDateTime(meeting.endTime).split(", ")[1]}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="h-4 w-4" />
-                    {meeting.timezone}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    {meeting.attendees.length} attendees
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => openMeetingRoom(meeting)}
-                    >
-                      <Video className="h-4 w-4 mr-2" />
-                      Join Meeting
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openDetailDialog(meeting)}
-                    >
-                      <Info className="h-4 w-4 mr-2" />
-                      Details
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openEditDialog(meeting)}
-                    >
-                      <Edit className="h-4 w-4 mr-2" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => {
-                        setSelectedMeeting(meeting);
-                        setIsDeleteDialogOpen(true);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))
+                    {meeting.description && (
+                      <CardDescription className="mt-2 line-clamp-2">
+                        {meeting.description}
+                      </CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3 flex-1 flex flex-col">
+                    <div className="flex items-center gap-2 rounded-lg bg-muted/70 px-2.5 py-1.5 text-sm text-muted-foreground">
+                      <Calendar className="h-3.5 w-3.5 shrink-0 text-indigo-500" />
+                      <span className="truncate">
+                        {formatDateTime(meeting.startTime)}
+                        {meeting.endTime
+                          ? ` – ${
+                              formatDateTime(meeting.endTime).split(", ")[1] ||
+                              formatDateTime(meeting.endTime)
+                            }`
+                          : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <Clock className="h-4 w-4 shrink-0" />
+                      <span className="truncate">{meeting.timezone}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2 text-sm text-muted-foreground">
+                      <div className="flex items-center gap-2 min-w-0">
+                        <Users className="h-4 w-4 shrink-0" />
+                        <span className="truncate">
+                          {meeting.attendees.length} attendee
+                          {meeting.attendees.length !== 1 ? "s" : ""}
+                        </span>
+                      </div>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {isHost && (
+                          <Badge className="border-indigo-200 bg-indigo-50 text-indigo-700 hover:bg-indigo-50">
+                            Host
+                          </Badge>
+                        )}
+                        {isYou && !isHost && (
+                          <Badge variant="secondary">You</Badge>
+                        )}
+                        {meeting.isInstant && (
+                          <Badge variant="outline" className="text-muted-foreground">
+                            Instant
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+                    <div className="mt-auto space-y-2 pt-2">
+                      <div className="flex gap-2">
+                        <Button
+                          size="sm"
+                          className="flex-1 bg-indigo-500 text-white hover:bg-indigo-600 shadow-md shadow-indigo-500/20"
+                          onClick={() => openMeetingRoom(meeting)}
+                        >
+                          <Video className="h-4 w-4 mr-2" />
+                          Join Meeting
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="shrink-0 border-gray-200/60"
+                          title="Copy guest link"
+                          aria-label="Copy guest link"
+                          onClick={() => copyGuestLink(meeting)}
+                        >
+                          <Link2 className="h-4 w-4" />
+                        </Button>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 border-gray-200/60"
+                          onClick={() => openDetailDialog(meeting)}
+                        >
+                          <Info className="h-4 w-4 mr-2" />
+                          Details
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
+                          className="flex-1 border-gray-200/60"
+                          onClick={() => openEditDialog(meeting)}
+                        >
+                          <Edit className="h-4 w-4 mr-2" />
+                          Edit
+                        </Button>
+                        <Button
+                          variant="destructive"
+                          size="sm"
+                          className="flex-1"
+                          onClick={() => {
+                            setSelectedMeeting(meeting);
+                            setIsDeleteDialogOpen(true);
+                          }}
+                        >
+                          <Trash2 className="h-4 w-4 mr-2" />
+                          Delete
+                        </Button>
+                      </div>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })
           )}
         </div>
       </div>
 
       <Dialog open={isEditDialogOpen} onOpenChange={setIsEditDialogOpen}>
-        <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+        <DialogContent
+          className={cn(
+            "max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden rounded-2xl",
+            DARK_DIALOG
+          )}
+        >
           <DialogHeader className="shrink-0 pr-8">
-            <DialogTitle>Edit Meeting</DialogTitle>
-            <DialogDescription>Update meeting details</DialogDescription>
+            <DialogTitle className="text-white">Edit Meeting</DialogTitle>
+            <DialogDescription className="text-white/60">
+              Update meeting details
+            </DialogDescription>
           </DialogHeader>
-          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
+          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto py-4 pr-1">
+            <FormSection title="Details">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-title" className="text-white/70">Title</Label>
+                <Input
+                  id="edit-title"
+                  className={DARK_INPUT}
+                  value={editForm.title || ""}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, title: e.target.value })
+                  }
+                />
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-description" className="text-white/70">Description</Label>
+                <Textarea
+                  id="edit-description"
+                  className={DARK_INPUT}
+                  value={editForm.description || ""}
+                  onChange={(e) =>
+                    setEditForm({ ...editForm, description: e.target.value })
+                  }
+                />
+              </div>
+            </FormSection>
+            <FormSection title="Schedule">
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="grid gap-2">
-                  <Label htmlFor="edit-title">Title</Label>
+                  <Label htmlFor="edit-startTime" className="text-white/70">Start Time</Label>
                   <Input
-                    id="edit-title"
-                    value={editForm.title || ""}
+                    id="edit-startTime"
+                    type="datetime-local"
+                    className={DARK_INPUT}
+                    value={editForm.startTime || ""}
                     onChange={(e) =>
-                      setEditForm({ ...editForm, title: e.target.value })
+                      setEditForm({ ...editForm, startTime: e.target.value })
                     }
                   />
                 </div>
                 <div className="grid gap-2">
-                  <Label htmlFor="edit-description">Description</Label>
-                  <Textarea
-                    id="edit-description"
-                    value={editForm.description || ""}
-                    onChange={(e) =>
-                      setEditForm({ ...editForm, description: e.target.value })
-                    }
-                  />
-                </div>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                  <div className="grid gap-2">
-                    <Label htmlFor="edit-startTime">Start Time</Label>
-                    <Input
-                      id="edit-startTime"
-                      type="datetime-local"
-                      value={editForm.startTime || ""}
-                      onChange={(e) =>
-                        setEditForm({ ...editForm, startTime: e.target.value })
-                      }
-                    />
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="edit-endTime">End Time</Label>
-                    <Input
-                      id="edit-endTime"
-                      type="datetime-local"
-                      value={editForm.endTime || ""}
-                      onChange={(e) =>
-                        setEditForm({ ...editForm, endTime: e.target.value })
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-timezone">Timezone</Label>
-                  <TimezoneDropdown
-                    value={editForm.timezone || ""}
-                    onChange={(timezone) =>
-                      setEditForm({ ...editForm, timezone })
-                    }
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-password">Password (Optional)</Label>
+                  <Label htmlFor="edit-endTime" className="text-white/70">End Time</Label>
                   <Input
-                    id="edit-password"
-                    type="password"
-                    value={editForm.password || ""}
+                    id="edit-endTime"
+                    type="datetime-local"
+                    className={DARK_INPUT}
+                    value={editForm.endTime || ""}
                     onChange={(e) =>
-                      setEditForm({
-                        ...editForm,
-                        password: e.target.value,
-                      })
+                      setEditForm({ ...editForm, endTime: e.target.value })
                     }
-                    placeholder="Enter meeting password"
                   />
-                </div>
-                <div className="grid gap-4">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="edit-waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
-                    <Switch
-                      id="edit-waitingRoomEnabled"
-                      checked={editForm.waitingRoomEnabled ?? false}
-                      onCheckedChange={(checked) =>
-                        setEditForm({
-                          ...editForm,
-                          waitingRoomEnabled: checked,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="edit-recordingEnabled" className="cursor-pointer">Recording</Label>
-                    <Switch
-                      id="edit-recordingEnabled"
-                      checked={editForm.recordingEnabled ?? false}
-                      onCheckedChange={(checked) =>
-                        setEditForm({
-                          ...editForm,
-                          recordingEnabled: checked,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="edit-screenSharingEnabled" className="cursor-pointer">Screen Sharing</Label>
-                    <Switch
-                      id="edit-screenSharingEnabled"
-                      checked={editForm.screenSharingEnabled ?? false}
-                      onCheckedChange={(checked) =>
-                        setEditForm({
-                          ...editForm,
-                          screenSharingEnabled: checked,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Attendees</Label>
-                  <TeamMemberMultiSelect
-                    selected={editForm.attendeeIds || []}
-                    onChange={(ids) => setEditForm({ ...editForm, attendeeIds: ids })}
-                  />
-                </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="edit-status">Status</Label>
-                  <Select
-                    value={editForm.status || ""}
-                    onValueChange={(value) =>
-                      setEditForm({
-                        ...editForm,
-                        status: value as any,
-                      })
-                    }
-                  >
-                    <SelectTrigger>
-                      <SelectValue placeholder="Select status" />
-                    </SelectTrigger>
-                    <SelectContent>
-                      <SelectItem value="scheduled">Scheduled</SelectItem>
-                      <SelectItem value="ongoing">Ongoing</SelectItem>
-                      <SelectItem value="completed">Completed</SelectItem>
-                      <SelectItem value="cancelled">Cancelled</SelectItem>
-                    </SelectContent>
-                  </Select>
                 </div>
               </div>
+              <div className="grid gap-2">
+                <Label htmlFor="edit-timezone" className="text-white/70">Timezone</Label>
+                <TimezoneDropdown
+                  value={editForm.timezone || ""}
+                  triggerClassName="border-white/10 bg-white/5 text-white hover:bg-white/10 hover:text-white"
+                  contentClassName="border-white/10 bg-[#181926] text-white"
+                  onChange={(timezone) =>
+                    setEditForm({ ...editForm, timezone })
+                  }
+                />
+              </div>
+            </FormSection>
+            <FormSection title="Security">
+              <div className="grid gap-2">
+                <Label htmlFor="edit-password" className="text-white/70">Password (Optional)</Label>
+                <Input
+                  id="edit-password"
+                  type="password"
+                  className={DARK_INPUT}
+                  value={editForm.password || ""}
+                  onChange={(e) =>
+                    setEditForm({
+                      ...editForm,
+                      password: e.target.value,
+                    })
+                  }
+                  placeholder="Enter meeting password"
+                />
+                <p className="text-xs text-white/45">Guests will need this to join</p>
+              </div>
+              <div className="flex items-center justify-between rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2.5">
+                <div className="space-y-0.5">
+                  <Label htmlFor="edit-waitingRoomEnabled" className="cursor-pointer text-white">Waiting Room</Label>
+                  <p className="text-xs text-white/45">You'll admit people manually</p>
+                </div>
+                <Switch
+                  id="edit-waitingRoomEnabled"
+                  className="data-[state=unchecked]:bg-white/20"
+                  checked={editForm.waitingRoomEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    setEditForm({
+                      ...editForm,
+                      waitingRoomEnabled: checked,
+                    })
+                  }
+                />
+              </div>
+            </FormSection>
+            <FormSection title="In-call Features">
+              <div className="flex items-center justify-between">
+                <Label htmlFor="edit-recordingEnabled" className="cursor-pointer text-white/80">Recording</Label>
+                <Switch
+                  id="edit-recordingEnabled"
+                  className="data-[state=unchecked]:bg-white/20"
+                  checked={editForm.recordingEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    setEditForm({
+                      ...editForm,
+                      recordingEnabled: checked,
+                    })
+                  }
+                />
+              </div>
+              <div className="flex items-center justify-between">
+                <Label htmlFor="edit-screenSharingEnabled" className="cursor-pointer text-white/80">Screen Sharing</Label>
+                <Switch
+                  id="edit-screenSharingEnabled"
+                  className="data-[state=unchecked]:bg-white/20"
+                  checked={editForm.screenSharingEnabled ?? false}
+                  onCheckedChange={(checked) =>
+                    setEditForm({
+                      ...editForm,
+                      screenSharingEnabled: checked,
+                    })
+                  }
+                />
+              </div>
+            </FormSection>
+            <FormSection title="Attendees">
+              <TeamMemberMultiSelect
+                selected={editForm.attendeeIds || []}
+                onChange={(ids) => setEditForm({ ...editForm, attendeeIds: ids })}
+              />
+            </FormSection>
+            <FormSection title="Status">
+              <Select
+                value={editForm.status || ""}
+                onValueChange={(value) =>
+                  setEditForm({
+                    ...editForm,
+                    status: value as any,
+                  })
+                }
+              >
+                <SelectTrigger id="edit-status" className={DARK_INPUT}>
+                  <SelectValue placeholder="Select status" />
+                </SelectTrigger>
+                <SelectContent className={DARK_SELECT_CONTENT}>
+                  <SelectItem className={DARK_SELECT_ITEM} value="scheduled">Scheduled</SelectItem>
+                  <SelectItem className={DARK_SELECT_ITEM} value="ongoing">Ongoing</SelectItem>
+                  <SelectItem className={DARK_SELECT_ITEM} value="completed">Completed</SelectItem>
+                  <SelectItem className={DARK_SELECT_ITEM} value="cancelled">Cancelled</SelectItem>
+                </SelectContent>
+              </Select>
+            </FormSection>
+          </div>
           <DialogFooter className="shrink-0">
             <Button
               variant="outline"
+              className={DARK_CANCEL}
               onClick={() => setIsEditDialogOpen(false)}
               disabled={isProcessing}
             >
               Cancel
             </Button>
-            <Button onClick={handleEditMeeting} disabled={isProcessing}>
+            <Button
+              className="bg-indigo-500 text-white hover:bg-indigo-600"
+              onClick={handleEditMeeting}
+              disabled={isProcessing}
+            >
               {isProcessing ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
               ) : null}
@@ -967,46 +1202,55 @@ export default function Meetings() {
 
       {selectedMeeting && (
         <Dialog open={isDetailDialogOpen} onOpenChange={setIsDetailDialogOpen}>
-          <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
+          <DialogContent
+            className={cn(
+              "max-w-2xl max-h-[90vh] overflow-y-auto rounded-2xl",
+              DARK_DIALOG
+            )}
+          >
             <DialogHeader>
-              <DialogTitle className="text-2xl">{selectedMeeting.title}</DialogTitle>
-              <DialogDescription>{selectedMeeting.description}</DialogDescription>
+              <DialogTitle className="text-2xl text-white">{selectedMeeting.title}</DialogTitle>
+              <DialogDescription className="text-white/60">
+                {selectedMeeting.description}
+              </DialogDescription>
             </DialogHeader>
             <div className="space-y-4 py-4">
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Start Time</div>
-                  <div className="flex items-center gap-2">
-                    <Calendar className="h-4 w-4 text-muted-foreground" />
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">Start Time</div>
+                  <div className="flex items-center gap-2 text-white">
+                    <Calendar className="h-4 w-4 text-indigo-300" />
                     <span>{formatDateTime(selectedMeeting.startTime)}</span>
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">End Time</div>
-                  <div className="flex items-center gap-2">
-                    <Clock className="h-4 w-4 text-muted-foreground" />
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">End Time</div>
+                  <div className="flex items-center gap-2 text-white">
+                    <Clock className="h-4 w-4 text-indigo-300" />
                     <span>{formatDateTime(selectedMeeting.endTime)}</span>
                   </div>
                 </div>
               </div>
-              
+
               <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Timezone</div>
-                <div className="flex items-center gap-2">
-                  <Clock className="h-4 w-4 text-muted-foreground" />
+                <div className="text-xs font-medium uppercase tracking-wide text-white/45">Timezone</div>
+                <div className="flex items-center gap-2 text-white">
+                  <Clock className="h-4 w-4 text-indigo-300" />
                   <span>{selectedMeeting.timezone}</span>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Meeting Code</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-white/45">Meeting Code</div>
                 <div className="flex items-center gap-2">
-                  <Badge variant="secondary" className="text-lg font-mono">
+                  <Badge variant="secondary" className="text-lg font-mono border-white/10 bg-white/10 text-white">
                     {selectedMeeting.meetingCode}
                   </Badge>
                   <Button
                     variant="outline"
                     size="icon"
+                    className={DARK_CANCEL}
+                    title="Copy meeting code"
                     onClick={() => {
                       navigator.clipboard.writeText(selectedMeeting.meetingCode);
                       toast({
@@ -1017,52 +1261,60 @@ export default function Meetings() {
                   >
                     <Copy className="h-4 w-4" />
                   </Button>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className={DARK_CANCEL}
+                    title="Copy guest link"
+                    aria-label="Copy guest link"
+                    onClick={() => copyGuestLink(selectedMeeting)}
+                  >
+                    <Link2 className="h-4 w-4" />
+                  </Button>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Status</div>
-                <Badge variant="default" className="capitalize">
-                  {selectedMeeting.status}
-                </Badge>
+                <div className="text-xs font-medium uppercase tracking-wide text-white/45">Status</div>
+                <MeetingStatusBadge status={selectedMeeting.status} />
               </div>
 
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Max Participants</div>
-                  <div>{selectedMeeting.maxParticipants}</div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">Max Participants</div>
+                  <div className="text-white">{selectedMeeting.maxParticipants}</div>
                 </div>
                 <div className="space-y-2">
-                  <div className="text-sm text-muted-foreground">Created At</div>
-                  <div>{formatDateTime(selectedMeeting.createdAt)}</div>
+                  <div className="text-xs font-medium uppercase tracking-wide text-white/45">Created At</div>
+                  <div className="text-white">{formatDateTime(selectedMeeting.createdAt)}</div>
                 </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Features</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-white/45">Features</div>
                 <div className="flex flex-wrap gap-2">
                   {selectedMeeting.waitingRoomEnabled && (
-                    <Badge variant="outline">Waiting Room</Badge>
+                    <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">Waiting Room</Badge>
                   )}
                   {selectedMeeting.recordingEnabled && (
-                    <Badge variant="outline">Recording</Badge>
+                    <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">Recording</Badge>
                   )}
                   {selectedMeeting.screenSharingEnabled && (
-                    <Badge variant="outline">Screen Sharing</Badge>
+                    <Badge variant="outline" className="border-white/15 bg-white/5 text-white/80">Screen Sharing</Badge>
                   )}
                   {selectedMeeting.isInstant && (
-                    <Badge variant="outline">Instant Meeting</Badge>
+                    <Badge variant="outline" className="border-indigo-400/30 bg-indigo-500/15 text-indigo-300">Instant Meeting</Badge>
                   )}
                 </div>
               </div>
 
               <div className="space-y-2">
-                <div className="text-sm text-muted-foreground">Attendees</div>
+                <div className="text-xs font-medium uppercase tracking-wide text-white/45">Attendees</div>
                 <div className="flex flex-wrap gap-2">
                   {(selectedMeeting.attendees ?? []).map((attendee) => {
                     const member = teamMembers.find((m) => m.id === attendee.userId);
                     return (
-                      <Badge key={attendee.id} variant="outline">
+                      <Badge key={attendee.id} variant="outline" className="border-white/15 bg-white/5 text-white/80">
                         {member?.name || attendee.userId}
                       </Badge>
                     );
@@ -1073,11 +1325,13 @@ export default function Meetings() {
             <DialogFooter className="gap-2">
               <Button
                 variant="outline"
+                className={DARK_CANCEL}
                 onClick={() => setIsDetailDialogOpen(false)}
               >
                 Close
               </Button>
               <Button
+                className="bg-indigo-500 text-white hover:bg-indigo-600"
                 onClick={() => {
                   setIsDetailDialogOpen(false);
                   openMeetingRoom(selectedMeeting);
@@ -1088,6 +1342,7 @@ export default function Meetings() {
               </Button>
               <Button
                 variant="outline"
+                className={DARK_CANCEL}
                 onClick={() => {
                   setIsDetailDialogOpen(false);
                   openEditDialog(selectedMeeting);
@@ -1143,18 +1398,19 @@ export default function Meetings() {
           open={!!passwordMeeting}
           onOpenChange={(open) => !open && setPasswordMeeting(null)}
         >
-          <DialogContent>
+          <DialogContent className={cn("rounded-2xl", DARK_DIALOG)}>
             <DialogHeader>
-              <DialogTitle>Enter Meeting Password</DialogTitle>
-              <DialogDescription>
+              <DialogTitle className="text-white">Enter Meeting Password</DialogTitle>
+              <DialogDescription className="text-white/60">
                 This meeting is protected. Enter the password to join.
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-2 py-2">
-              <Label htmlFor="join-meeting-password">Password</Label>
+              <Label htmlFor="join-meeting-password" className="text-white/70">Password</Label>
               <Input
                 id="join-meeting-password"
                 type="password"
+                className={DARK_INPUT}
                 value={joinPassword}
                 onChange={(event) => {
                   setJoinPassword(event.target.value);
@@ -1168,18 +1424,20 @@ export default function Meetings() {
                 autoFocus
               />
               {joinPasswordError && (
-                <p className="text-sm text-destructive">{joinPasswordError}</p>
+                <p className="text-sm text-rose-300">{joinPasswordError}</p>
               )}
             </div>
             <DialogFooter>
               <Button
                 variant="outline"
+                className={DARK_CANCEL}
                 onClick={() => setPasswordMeeting(null)}
                 disabled={isProcessing}
               >
                 Cancel
               </Button>
               <Button
+                className="bg-indigo-500 text-white hover:bg-indigo-600"
                 onClick={() => handleJoinMeeting(passwordMeeting, joinPassword)}
                 disabled={isProcessing || !joinPassword.trim()}
               >
@@ -1211,7 +1469,7 @@ export default function Meetings() {
             <AlertDialogAction
               onClick={handleDeleteMeeting}
               disabled={isProcessing}
-              className="bg-red-600 hover:bg-red-700"
+              className="bg-rose-600 hover:bg-rose-700"
             >
               {isProcessing ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-2" />
