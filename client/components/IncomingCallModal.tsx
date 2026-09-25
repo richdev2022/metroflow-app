@@ -130,7 +130,7 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
       const linkUrl = new URL(call.callLink, window.location.origin);
       const callCode = linkUrl.pathname.split('/').pop() || linkUrl.searchParams.get('callCode') || '';
       if (callCode) {
-        navigate(`/join-call/${encodeURIComponent(callCode)}`);
+        navigate(`/calls/${encodeURIComponent(callCode)}`);
         return;
       }
     }

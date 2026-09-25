@@ -7,6 +7,39 @@ interface UseSocketOptions {
   userName?: string;
 }
 
+// Resolve the socket server URL.
+// Priority: VITE_SOCKET_URL > origin of VITE_API_BASE_URL > same origin.
+// In production the API is usually on a different origin than the static app,
+// so the socket must explicitly target it.
+function resolveSocketUrl(): string {
+  const env = (k: string) => (import.meta as any).env?.[k] as string | undefined;
+  const explicit = env('VITE_SOCKET_URL')?.trim();
+  if (explicit) return explicit.replace(/\/+$/, '');
+  const apiBase = env('VITE_API_BASE_URL')?.trim();
+  if (apiBase) {
+    try {
+      return new URL(apiBase).origin;
+    } catch { /* relative base - fall through */ }
+  }
+  return '';
+}
+
+// Extra handshake auth (e.g. guest token) that can be set before connecting.
+let singletonExtraAuth: { token?: string; guestToken?: string } = {};
+
+/**
+ * Set extra socket handshake auth (guest token etc).
+ * Drops any existing singleton so the next connection picks up the new auth.
+ */
+export function setSocketAuth(auth: { token?: string; guestToken?: string } | null) {
+  singletonExtraAuth = auth || {};
+  if (singletonSocket) {
+    try { singletonSocket.removeAllListeners(); singletonSocket.disconnect(); } catch {}
+    singletonSocket = null;
+    singletonLastCreds = null;
+  }
+}
+
 let singletonSocket: Socket | null = null;
 let singletonRefCount = 0;
 let singletonConnectedListeners = new Set<(connected: boolean) => void>();
@@ -24,20 +57,35 @@ function ensureSingletonSocket(userId: string, businessId: string, userName: str
   }
   if (!singletonSocket) {
     singletonLastCreds = { userId, businessId };
-    const socket = io({
+    const token = singletonExtraAuth.token ?? localStorage.getItem('token') ?? undefined;
+    const auth: Record<string, string> = {};
+    if (token) auth.token = token;
+    if (singletonExtraAuth.guestToken) auth.guestToken = singletonExtraAuth.guestToken;
+    const url = resolveSocketUrl();
+    const socket = url ? io(url, {
       transports: ['polling', 'websocket'],
       path: '/socket.io',
-      withCredentials: true
+      withCredentials: true,
+      auth,
+    }) : io({
+      transports: ['polling', 'websocket'],
+      path: '/socket.io',
+      withCredentials: true,
+      auth,
     });
     singletonSocket = socket;
 
     socket.on('connect', () => {
       console.log('[Socket] Singleton connected');
-      socket.emit('user-online', userId, businessId, userName || localStorage.getItem('userName') || '');
+      // Server-verified identity comes from the handshake token; this event
+      // keeps legacy presence behavior working.
+      if (businessId) {
+        socket.emit('user-online', userId, businessId, userName || localStorage.getItem('userName') || '');
+      }
       singletonConnectedListeners.forEach(fn => fn(true));
       if (singletonKeepAliveInterval) clearInterval(singletonKeepAliveInterval);
       singletonKeepAliveInterval = setInterval(() => {
-        try { socket.emit('user-keep-alive', userId, businessId); } catch {}
+        try { if (businessId) socket.emit('user-keep-alive', userId, businessId); } catch {}
       }, 30000);
     });
 
@@ -64,10 +112,12 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
   const localSubscribedRef = useRef(false);
 
   useEffect(() => {
-    if (!userId || !businessId) return;
+    // Guests connect with a generated id and no businessId
+    if (!userId) return;
     const resolvedUserName = userName || localStorage.getItem('userName') || '';
+    const resolvedBusinessId = businessId || '';
 
-    ensureSingletonSocket(userId, businessId, resolvedUserName);
+    ensureSingletonSocket(userId, resolvedBusinessId, resolvedUserName);
     singletonRefCount += 1;
     localSubscribedRef.current = true;
 
@@ -108,6 +158,7 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
     isHost?: boolean;
     audioEnabled?: boolean;
     videoEnabled?: boolean;
+    isGuest?: boolean;
   }, callback?: (resp: any) => void) => {
     singletonSocket?.emit('call:join', {
       roomId,
@@ -116,6 +167,7 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
       isHost: opts?.isHost,
       audioEnabled: opts?.audioEnabled,
       videoEnabled: opts?.videoEnabled,
+      isGuest: opts?.isGuest,
     }, callback);
   }, []);
 
@@ -192,8 +244,14 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
   }, []);
 
   // --- In-meeting chat
-  const sendMeetingChat = useCallback((roomId: string, message: string) => {
-    singletonSocket?.emit('meeting-chat:message', { roomId, message });
+  const sendMeetingChat = useCallback((roomId: string, message: string, opts?: { userId?: string; userName?: string }) => {
+    singletonSocket?.emit('meeting-chat:message', {
+      roomId,
+      message,
+      userId: opts?.userId,
+      senderName: opts?.userName || localStorage.getItem('userName') || undefined,
+      timestamp: new Date().toISOString(),
+    });
   }, []);
 
   const on = useCallback((event: string, callback: (...args: any[]) => void) => {

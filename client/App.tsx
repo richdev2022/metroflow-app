@@ -132,7 +132,7 @@ const App = () => (
             />
             <Route
               path="/payment/callback"
-              element={<TokenProtectedRoute element={<PaymentCallback />} />}
+              element={<PaymentCallback />}
             />
             <Route
               path="/wallet"
@@ -160,11 +160,11 @@ const App = () => (
             />
             <Route
               path="/meetings/:meetingCode"
-              element={<TokenProtectedRoute element={<JoinMeeting />} />}
+              element={<JoinMeeting />}
             />
             <Route
               path="/calls/:callCode"
-              element={<TokenProtectedRoute element={<JoinCall />} />}
+              element={<JoinCall />}
             />
             <Route
               path="/chat"

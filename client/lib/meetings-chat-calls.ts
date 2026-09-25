@@ -56,7 +56,7 @@ export const useMeetingByCode = (code: string) => {
   });
 };
 
-export const useValidateMeetingCode = (code: string) => {
+export const useValidateMeetingCode = (code: string, opts?: { enabled?: boolean }) => {
   return useQuery({
     queryKey: ['validate-meeting-code', code],
     queryFn: async () => {
@@ -66,7 +66,7 @@ export const useValidateMeetingCode = (code: string) => {
         'Failed to validate meeting code'
       );
     },
-    enabled: !!code,
+    enabled: !!code && (opts?.enabled ?? true),
   });
 };
 
@@ -230,7 +230,7 @@ export const useCallByCode = (code: string) => {
   });
 };
 
-export const useValidateCallCode = (code: string) => {
+export const useValidateCallCode = (code: string, opts?: { enabled?: boolean }) => {
   return useQuery({
     queryKey: ['validate-call-code', code],
     queryFn: async () => {
@@ -240,7 +240,7 @@ export const useValidateCallCode = (code: string) => {
         'Failed to validate call code'
       );
     },
-    enabled: !!code,
+    enabled: !!code && (opts?.enabled ?? true),
   });
 };
 
@@ -376,4 +376,84 @@ export const useDeleteRecording = () => {
       queryClient.invalidateQueries({ queryKey: ['recordings'] });
     },
   });
+};
+
+// --- Guest access (public endpoints; no auth required) ---
+
+export interface GuestMeetingInfo {
+  meeting: {
+    id: string;
+    title: string;
+    meetingCode: string;
+    status: string;
+    startTime: string;
+    endTime: string;
+    hostName: string;
+    waitingRoomEnabled: boolean;
+    recordingEnabled: boolean;
+    screenSharingEnabled: boolean;
+    hasPassword: boolean;
+  };
+  accessState?: string;
+  reasons?: string[];
+}
+
+export interface GuestJoinResult {
+  meeting: GuestMeetingInfo['meeting'];
+  guestToken: string;
+  guestId: string;
+  guestName: string;
+  roomId: string;
+  socketRoom: string;
+  expiresAt: string;
+}
+
+export const guestValidateMeeting = async (code: string, inviteToken?: string) => {
+  const response = await api.get(`/meetings/guest/validate/${code}`, {
+    params: inviteToken ? { token: inviteToken } : undefined,
+  });
+  return unwrapApiData<GuestMeetingInfo>(response.data, 'Failed to validate meeting link');
+};
+
+export const guestJoinMeeting = async (code: string, name: string, password?: string) => {
+  const response = await api.post(`/meetings/guest/${code}/join`, { name, password });
+  return unwrapApiData<GuestJoinResult>(response.data, 'Failed to join meeting as guest');
+};
+
+export interface GuestCallInfo {
+  call: {
+    id: string;
+    type: string;
+    callCode: string;
+    status: string;
+    hostName: string;
+    waitingRoomEnabled: boolean;
+    recordingEnabled: boolean;
+    isGroupCall: boolean;
+    hasPassword: boolean;
+  };
+  accessState?: string;
+  reasons?: string[];
+}
+
+export interface GuestCallJoinResult {
+  call: GuestCallInfo['call'];
+  guestToken: string;
+  guestId: string;
+  guestName: string;
+  roomId: string;
+  socketRoom: string;
+  expiresAt: string;
+}
+
+export const guestValidateCall = async (code: string, inviteToken?: string) => {
+  const response = await api.get(`/calls/guest/validate/${code}`, {
+    params: inviteToken ? { token: inviteToken } : undefined,
+  });
+  return unwrapApiData<GuestCallInfo>(response.data, 'Failed to validate call link');
+};
+
+export const guestJoinCall = async (code: string, name: string, password?: string) => {
+  const response = await api.post(`/calls/guest/${code}/join`, { name, password });
+  return unwrapApiData<GuestCallJoinResult>(response.data, 'Failed to join call as guest');
 };

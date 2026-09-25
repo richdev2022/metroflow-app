@@ -106,7 +106,7 @@ type ChatMessage = {
   attachmentUrl?: string;
   attachment_type?: string;
   attachmentType?: string;
-  status?: "sending" | "sent" | "failed";
+  status?: "sending" | "sent" | "failed" | "read";
   isOptimistic?: boolean;
 };
 
@@ -811,8 +811,28 @@ export default function Chat() {
     };
 
     on("chat:message", handleNewMessage);
-    return () => off("chat:message", handleNewMessage);
+    // Real backend emits `message:created` (see POST /chat/conversations/:id/messages)
+    on("message:created", handleNewMessage as any);
+    return () => {
+      off("chat:message", handleNewMessage);
+      off("message:created", handleNewMessage as any);
+    };
   }, [selectedConversation?.id, isConnected, on, off, scrollToBottom]);
+
+  // Socket: Read receipts (backend emits `conversation:read` on markConversationAsRead)
+  useEffect(() => {
+    if (!isConnected) return;
+    const handleRead = ({ conversationId, userId }: { conversationId: string; userId: string }) => {
+      if (conversationId !== selectedConversation?.id || userId === CURRENT_USER_ID()) return;
+      setLocalMessages((prev) => prev.map((m) => {
+        const senderId = (m as any).senderId || (m as any).sender_id || '';
+        const isOwn = senderId === CURRENT_USER_ID();
+        return isOwn && m.status !== 'failed' ? { ...m, status: 'read' as const } : m;
+      }));
+    };
+    on("conversation:read", handleRead as any);
+    return () => off("conversation:read", handleRead as any);
+  }, [selectedConversation?.id, isConnected, on, off]);
 
   // Socket: Presence
   useEffect(() => {
