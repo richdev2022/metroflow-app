@@ -52,6 +52,27 @@ const transferSchema = z.object({
   remark: z.string().optional(),
 });
 
+interface ProviderConfigStatus {
+  configured?: boolean;
+  requiredEnv?: string[];
+}
+
+interface ProvidersListData {
+  providers?: string[];
+  activeProvider?: string;
+  defaultProvider?: string;
+  configStatus?: Record<string, ProviderConfigStatus>;
+}
+
+const formatProviderName = (name: string) => {
+  const labels: Record<string, string> = {
+    squad: "Squad",
+    monnify: "Monnify",
+    flutterwave: "Flutterwave",
+  };
+  return labels[name] || name.charAt(0).toUpperCase() + name.slice(1);
+};
+
 export default function Wallet() {
   const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
   const [loading, setLoading] = useState(true);
@@ -62,6 +83,12 @@ export default function Wallet() {
   const [transferOpen, setTransferOpen] = useState(false);
   const [selectedWalletType, setSelectedWalletType] = useState<"user" | "business">("user");
   const [bankOpen, setBankOpen] = useState(false);
+
+  // Payment providers state (card funding)
+  const [availableProviders, setAvailableProviders] = useState<string[]>([]);
+  const [activeProvider, setActiveProvider] = useState<string>("");
+  const [selectedProvider, setSelectedProvider] = useState<string>("");
+  const [providersLoading, setProvidersLoading] = useState(false);
 
   // Transfer State
   const [transferStep, setTransferStep] = useState<"details" | "otp">("details");
@@ -115,6 +142,43 @@ export default function Wallet() {
       fetchBanks();
     }
   }, [transferOpen]);
+
+  // Fetch available payment providers when the fund dialog opens
+  useEffect(() => {
+    if (!fundWalletOpen) return;
+    let cancelled = false;
+    const fetchProviders = async () => {
+      try {
+        setProvidersLoading(true);
+        const response = await api.get("/providers/list");
+        const payload = (response.data?.data ?? response.data) as ProvidersListData;
+        const list = Array.isArray(payload?.providers) ? payload.providers : [];
+        const configStatus = payload?.configStatus ?? {};
+        // Only expose providers that are fully configured on the backend
+        const configured = list.filter((name) => {
+          const cfg = configStatus?.[name];
+          return cfg ? cfg.configured !== false : true;
+        });
+        if (cancelled) return;
+        setAvailableProviders(configured);
+        setActiveProvider(payload?.activeProvider || "");
+        const preferred =
+          payload?.activeProvider && configured.includes(payload.activeProvider)
+            ? payload.activeProvider
+            : configured[0] || "";
+        setSelectedProvider(preferred);
+      } catch (error) {
+        console.error("Failed to fetch payment providers", error);
+        if (!cancelled) setAvailableProviders([]);
+      } finally {
+        if (!cancelled) setProvidersLoading(false);
+      }
+    };
+    fetchProviders();
+    return () => {
+      cancelled = true;
+    };
+  }, [fundWalletOpen]);
 
   // Account Lookup
   const handleAccountLookup = async (accountNumber: string, bankCode: string) => {
@@ -410,6 +474,33 @@ export default function Wallet() {
     fetchWalletInfo();
   }, []);
 
+  // Handle redirect back from the payment provider (backend redirects to
+  // /wallet?status=success|failed&reference=... after verification)
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const status = params.get("status");
+    if (!status) return;
+    const reference = params.get("reference");
+
+    if (status === "success") {
+      toast({
+        title: "Payment Successful",
+        description: `Wallet funded successfully${reference ? ` (Ref: ${reference})` : ""}`,
+      });
+      fetchWalletInfo();
+    } else if (status === "failed") {
+      toast({
+        title: "Payment Failed",
+        description: "Your payment could not be completed. Please try again.",
+        variant: "destructive",
+      });
+    }
+
+    // Strip query params so the toasts don't repeat on refresh
+    window.history.replaceState({}, "", "/wallet");
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const onFundWallet = async (values: z.infer<typeof fundWalletSchema>) => {
     try {
       setFundingLoading(true);
@@ -427,10 +518,26 @@ export default function Wallet() {
       const response = await api.post("/wallet/fund/card", {
         amount: Number(values.amount),
         wallet_id: wallet.id,
-        redirect_url: window.location.origin + "/payment-callback",
+        redirect_url: window.location.origin,
+        provider: selectedProvider || undefined,
       });
-      
-      if (response.data.payment_url) {
+
+      if (response.data?.payment_url) {
+        // Surface fee/total from the checkout response before redirecting
+        const parts: string[] = [];
+        if (response.data.fee != null && !isNaN(Number(response.data.fee))) {
+          parts.push(`Fee: ₦${Number(response.data.fee).toLocaleString()}`);
+        }
+        if (response.data.total_amount != null && !isNaN(Number(response.data.total_amount))) {
+          parts.push(`Total: ₦${Number(response.data.total_amount).toLocaleString()}`);
+        }
+        if (response.data.reference) {
+          parts.push(`Ref: ${response.data.reference}`);
+        }
+        toast({
+          title: "Redirecting to secure checkout",
+          description: parts.length ? parts.join(" • ") : "Complete your payment to fund your wallet.",
+        });
         window.location.href = response.data.payment_url;
       } else {
          toast({
@@ -745,6 +852,34 @@ export default function Wallet() {
                     </FormItem>
                   )}
                 />
+                {/* Payment Method */}
+                <div className="space-y-2">
+                  <Label>Payment Method</Label>
+                  {providersLoading ? (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                      Loading payment methods...
+                    </div>
+                  ) : availableProviders.length === 0 ? (
+                    <p className="text-sm text-muted-foreground">
+                      No payment methods are currently available. Please try again later.
+                    </p>
+                  ) : (
+                    <Select value={selectedProvider} onValueChange={setSelectedProvider}>
+                      <SelectTrigger className="w-full">
+                        <SelectValue placeholder="Select payment method" />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {availableProviders.map((provider) => (
+                          <SelectItem key={provider} value={provider}>
+                            {formatProviderName(provider)}
+                            {provider === activeProvider ? " (Default)" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  )}
+                </div>
                 <DialogFooter>
                   <Button type="submit" loading={fundingLoading}>
                     Proceed to Payment

@@ -258,6 +258,10 @@ export default function VideoCallRoom({
   const hasJoinedRestRef = useRef(false);
   const dialBackCooldownRef = useRef<Map<string, number>>(new Map());
   const leaveCallRef = useRef<(() => Promise<void>) | null>(null);
+  // Chat dedupe: last own message appended (server broadcasts to the whole room
+  // including the sender, so identical echoes within 2s are dropped)
+  const lastOwnChatRef = useRef<{ text: string; at: number } | null>(null);
+  const chatSeqRef = useRef(0);
   
   const { socket, isConnected, joinMeeting, joinCall, leaveCall: emitSocketLeaveCall, leaveMeeting, startScreenShare: emitScreenShareStart, stopScreenShare: emitScreenShareStop, startRecording: emitRecordingStart, stopRecording: emitRecordingStop, sendMeetingChat, inviteToCall } = useSocket({
     userId: localStorage.getItem('userId') || '',
@@ -1719,31 +1723,20 @@ export default function VideoCallRoom({
 
     const userId = localStorage.getItem('userId') || '';
     const exactUserName = resolveSenderName(userId, userName);
+    const trimmedMessage = chatInput.trim();
 
-    const message: ChatMessage = {
-      id: Date.now().toString(),
-      userId,
-      userName: exactUserName,
-      content: chatInput.trim(),
-      timestamp: new Date()
-    };
-
-    setChatMessages(prev => [...prev, message]);
-
+    // Emit ONCE — the server broadcasts `meeting-chat:message` to the whole
+    // room (including the sender) with senderName echoed back, and the
+    // incoming listener below appends it. No optimistic add here to avoid
+    // duplicates.
     try {
-      // Pass userName in case sendMeetingChat supports more than 2 args
-      (sendMeetingChat as any)(roomId, chatInput.trim(), exactUserName);
-    } catch {}
-
-    // Fallback: explicitly emit with userName included so server broadcasts it
-    try {
-      socket.emit('meeting-chat:send', {
+      socket.emit('meeting-chat:message', {
         roomId,
-        message: chatInput.trim(),
-        userId,
-        userName: exactUserName,
+        ...(meetingId ? { meetingId } : {}),
+        ...(callId ? { callId } : {}),
+        message: trimmedMessage,
         senderName: exactUserName,
-        timestamp: Date.now(),
+        userId,
       });
     } catch {}
 
@@ -2340,20 +2333,35 @@ export default function VideoCallRoom({
   useEffect(() => {
     if (!socket) return;
 
-    const handleIncomingMessage = ({ userId, message, timestamp, userName: senderName, senderName: senderNameAlt }: any) => {
+    const handleIncomingMessage = ({ userId: senderUserId, message, timestamp, userName: senderName, senderName: senderNameAlt }: any) => {
       const currentUserId = localStorage.getItem('userId') || '';
-      if (userId === currentUserId) return;
+      const text = typeof message === 'string' ? message : String(message ?? '');
 
-      const exactName = resolveSenderName(userId, senderName || senderNameAlt);
+      // The server broadcasts to the whole room including the sender. Dedupe:
+      // skip a second identical echo of our own message within 2 seconds.
+      if (senderUserId === currentUserId) {
+        const last = lastOwnChatRef.current;
+        if (last && last.text === text && Date.now() - last.at < 2000) {
+          return;
+        }
+        lastOwnChatRef.current = { text, at: Date.now() };
+      }
+
+      // Prefer the senderName echoed by the server; fall back to resolving it
+      const payloadName = String(senderName || senderNameAlt || '').trim();
+      const exactName = payloadName || resolveSenderName(senderUserId, payloadName);
 
       setChatMessages(prev => [...prev, {
-        id: Date.now().toString() + Math.random().toString(36).slice(2),
-        userId,
+        id: `${timestamp ?? Date.now()}-${senderUserId ?? ''}-${chatSeqRef.current++}`,
+        userId: senderUserId || '',
         userName: exactName,
-        content: message,
+        content: text,
         timestamp: timestamp ? new Date(timestamp) : new Date()
       }]);
-      AudioUtils.playNotification();
+      // Play the notification sound only for other people's messages
+      if (senderUserId !== currentUserId) {
+        AudioUtils.playNotification();
+      }
     };
 
     socket.on('meeting-chat:message', handleIncomingMessage);

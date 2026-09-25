@@ -36,6 +36,7 @@ import Calls from "./pages/Calls";
 import Recordings from "./pages/Recordings";
 import JoinMeeting from "./pages/JoinMeeting";
 import JoinCall from "./pages/JoinCall";
+import JoinAsGuest from "./pages/JoinAsGuest";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -179,6 +180,15 @@ const App = () => (
               element={<TokenProtectedRoute element={<Recordings />} />}
             />
             <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+            {/* Public guest join pages (no auth required) */}
+            <Route
+              path="/join/meeting/:code"
+              element={<JoinAsGuest kind="meeting" />}
+            />
+            <Route
+              path="/join/call/:code"
+              element={<JoinAsGuest kind="call" />}
+            />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
