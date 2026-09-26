@@ -313,7 +313,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <Sidebar collapsible="icon">
         <SidebarHeader>
           <div className="flex items-center gap-2 p-2 group-data-[collapsible=icon]:justify-center">
-            <img src="/Assets/logo.png" alt="Metricorex Logo" className="h-8 w-auto" />
+            <BrandMark size={32} />
             <span className="font-bold text-xl group-data-[collapsible=icon]:hidden truncate">Metricorex</span>
           </div>
         </SidebarHeader>

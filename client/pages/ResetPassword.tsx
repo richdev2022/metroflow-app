@@ -7,6 +7,7 @@ import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle } from "lucide-react";
+import { BrandLogo } from "@/components/BrandLogo";
 
 export default function ResetPassword() {
   const navigate = useNavigate();
@@ -79,8 +80,7 @@ export default function ResetPassword() {
             className="flex items-center justify-center gap-3 mb-4 cursor-pointer"
             onClick={() => window.location.href = import.meta.env.VITE_SITE_URL}
           >
-            <img src="/Assets/logo.png" alt="Metricorex Logo" className="h-10 w-auto" />
-            <span className="font-bold text-xl">Metricorex</span>
+            <BrandLogo size={40} />
           </div>
           <CardTitle className="text-center">Set New Password</CardTitle>
         </CardHeader>

@@ -1,19 +1,19 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
+import { motion } from "framer-motion";
 import { api } from "@/lib/api-client";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { PasswordInput } from "@/components/ui/password-input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, CheckCircle } from "lucide-react";
+import { AlertCircle, CheckCircle, Lock, Mail } from "lucide-react";
 import { AuthResponse } from "@shared/api";
 import GoogleSignInButton from "@/components/GoogleSignInButton";
+import AuthShell from "@/components/auth/AuthShell";
+import { useCountdown } from "@/hooks/useCountdown";
 
 type Step = "login" | "otp";
-
-import { useCountdown } from "@/hooks/useCountdown";
 
 export default function Login() {
   const navigate = useNavigate();
@@ -33,27 +33,23 @@ export default function Login() {
     otpCode: "",
   });
 
-  const handleLogin = async () => {
-    console.log("handleLogin started", loginData);
+  const handleLogin = async (e?: React.FormEvent) => {
+    e?.preventDefault();
     setError(null);
 
     if (!loginData.email || !loginData.password) {
-      console.log("Validation failed: Email or password missing");
       setError("Email and password are required");
       return;
     }
 
     try {
       setLoading(true);
-      console.log("Attempting API request to /auth/login");
       const response = await api.post("/auth/login", {
         email: loginData.email.trim(),
         password: loginData.password,
       });
-      console.log("API response received", response);
 
       const data = response.data as AuthResponse;
-
 
       if (data.success) {
         if (data.requiresOtp) {
@@ -67,7 +63,7 @@ export default function Login() {
           localStorage.setItem("businessId", data.businessId || "");
           localStorage.setItem("userName", loginData.email);
           setSuccessMessage("Login successful! Redirecting...");
-          setTimeout(() => navigate("/dashboard"), 1500);
+          setTimeout(() => navigate("/dashboard"), 1200);
         } else {
           setError("Login successful but no token received. Please try again.");
         }
@@ -75,9 +71,6 @@ export default function Login() {
         setError(data.message || "Login failed");
       }
     } catch (err: any) {
-      console.error("Login Error Catch:", err);
-      if (err.message) console.error("Error Message:", err.message);
-      if (err.response) console.error("Error Response:", err.response);
       setError(err.response?.data?.message || "Failed to login");
     } finally {
       setLoading(false);
@@ -107,13 +100,12 @@ export default function Login() {
         localStorage.setItem("businessId", data.businessId || "");
         localStorage.setItem("userName", otpData.email);
         setSuccessMessage("Verified! Redirecting...");
-        setTimeout(() => navigate("/dashboard"), 1500);
+        setTimeout(() => navigate("/dashboard"), 1200);
       } else {
         setError(data.message || "Failed to verify OTP");
       }
     } catch (err: any) {
       setError(err.response?.data?.message || "Failed to verify OTP");
-      console.error(err);
     } finally {
       setLoading(false);
     }
@@ -136,167 +128,177 @@ export default function Login() {
       } else {
         setError(data.message || "Failed to resend OTP");
       }
-    } catch (err) {
-      setError("Failed to resend OTP");
-      console.error(err);
+    } catch (err: any) {
+      setError(err.response?.data?.message || "Failed to resend OTP");
     } finally {
       setLoading(false);
     }
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-blue-100 flex items-center justify-center p-4">
-      <Card className="w-full max-w-md">
-        <CardHeader>
-          <div 
-            className="flex items-center justify-center gap-3 mb-4 cursor-pointer"
-            onClick={() => window.location.href = import.meta.env.VITE_SITE_URL}
-          >
-            <img src="/Assets/logo.png" alt="Metricorex Logo" className="h-10 w-auto" />
-            <span className="font-bold text-xl">Metricorex</span>
-          </div>
-          <CardTitle className="text-center">
-            {step === "login" ? "Login to Your Account" : "Verify Email"}
-          </CardTitle>
-        </CardHeader>
+    <AuthShell
+      title={step === "login" ? "Welcome back" : "Check your inbox"}
+      subtitle={
+        step === "login"
+          ? "Sign in to your workspace to continue."
+          : undefined
+      }
+    >
+      {error && (
+        <Alert variant="destructive" className="mb-4">
+          <AlertCircle className="h-4 w-4" />
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
-        <CardContent className="space-y-4">
-          {error && (
-            <Alert variant="destructive">
-              <AlertCircle className="h-4 w-4" />
-              <AlertDescription>{error}</AlertDescription>
-            </Alert>
-          )}
+      {successMessage && (
+        <Alert className="mb-4 border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/40">
+          <CheckCircle className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <AlertDescription className="text-emerald-700 dark:text-emerald-300">
+            {successMessage}
+          </AlertDescription>
+        </Alert>
+      )}
 
-          {successMessage && (
-            <Alert className="bg-green-50 border-green-200">
-              <CheckCircle className="h-4 w-4 text-green-600" />
-              <AlertDescription className="text-green-700">
-                {successMessage}
-              </AlertDescription>
-            </Alert>
-          )}
-
-          {step === "login" ? (
-            <form
-              className="space-y-4"
-              onSubmit={(e) => {
-                e.preventDefault();
-                handleLogin();
-              }}
-            >
-              <div>
-                <Label htmlFor="email">Email *</Label>
-                <Input
-                  id="email"
-                  type="email"
-                  placeholder="your@example.com"
-                  value={loginData.email}
-                  onChange={(e) =>
-                    setLoginData({ ...loginData, email: e.target.value })
-                  }
-                  className="mt-1"
-                />
-              </div>
-
-              <div>
-                <Label htmlFor="password">Password *</Label>
-                <PasswordInput
-                  id="password"
-                  placeholder="••••••••"
-                  value={loginData.password}
-                  onChange={(e) =>
-                    setLoginData({ ...loginData, password: e.target.value })
-                  }
-                  className="mt-1"
-                />
-              </div>
-
-              <Button
-                type="submit"
-                loading={loading}
-                className="w-full"
-              >
-                Login
-              </Button>
-
-              <GoogleSignInButton mode="login" />
-
-              <div className="space-y-2">
-                <p className="text-sm text-center text-muted-foreground">
-                  Don't have an account?{" "}
-                  <button
-                    onClick={() => navigate("/register")}
-                    className="text-primary hover:underline font-semibold"
-                  >
-                    Register here
-                  </button>
-                </p>
-                <p className="text-sm text-center text-muted-foreground">
-                  <button
-                    onClick={() => navigate("/forgot-password")}
-                    className="text-primary hover:underline font-semibold"
-                  >
-                    Forgot Password?
-                  </button>
-                </p>
-              </div>
-            </form>
-          ) : (
-            <div className="space-y-4">
-              <p className="text-sm text-muted-foreground">
-                We've sent a 6-digit OTP to <strong>{otpData.email}</strong>
-              </p>
-
-              <div>
-                <Label htmlFor="otpCode">OTP Code *</Label>
-                <Input
-                  id="otpCode"
-                  placeholder="000000"
-                  maxLength={6}
-                  value={otpData.otpCode}
-                  onChange={(e) =>
-                    setOtpData({
-                      ...otpData,
-                      otpCode: e.target.value.replace(/\D/g, ""),
-                    })
-                  }
-                  className="mt-1 text-center text-2xl tracking-widest"
-                />
-              </div>
-
-              <p className="text-xs text-muted-foreground">
-                OTP expires in 10 minutes
-              </p>
-
-              <Button
-                onClick={handleVerifyOTP}
-                disabled={loading}
-                className="w-full"
-              >
-                {loading ? "Verifying..." : "Verify Email"}
-              </Button>
-
-              <Button
-                variant="ghost"
-                onClick={handleResendOTP}
-                disabled={loading || isActive}
-                className="w-full"
-              >
-                {loading ? "Sending..." : isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
-              </Button>
-
-              <Button
-                variant="outline"
-                onClick={() => setStep("login")}
-                className="w-full"
-              >
-                Back
-              </Button>
+      {step === "login" ? (
+        <form
+          className="space-y-5"
+          onSubmit={(e) => {
+            e.preventDefault();
+            handleLogin();
+          }}
+        >
+          <div className="space-y-2">
+            <Label htmlFor="email" className="text-sm font-medium">
+              Email
+            </Label>
+            <div className="relative">
+              <Mail className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                id="email"
+                type="email"
+                autoComplete="email"
+                placeholder="you@company.com"
+                value={loginData.email}
+                onChange={(e) =>
+                  setLoginData({ ...loginData, email: e.target.value })
+                }
+                className="h-11 rounded-xl border-border/70 bg-background/60 pl-10 shadow-sm backdrop-blur transition-colors focus-visible:ring-2 focus-visible:ring-primary/60"
+              />
             </div>
-          )}
-        </CardContent>
-      </Card>
-    </div>
+          </div>
+
+          <div className="space-y-2">
+            <div className="flex items-center justify-between">
+              <Label htmlFor="password" className="text-sm font-medium">
+                Password
+              </Label>
+              <button
+                type="button"
+                onClick={() => navigate("/forgot-password")}
+                className="text-xs font-semibold text-primary hover:underline"
+              >
+                Forgot password?
+              </button>
+            </div>
+            <div className="relative">
+              <Lock className="pointer-events-none absolute left-3.5 top-1/2 z-10 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+              <PasswordInput
+                id="password"
+                autoComplete="current-password"
+                placeholder="••••••••"
+                value={loginData.password}
+                onChange={(e) =>
+                  setLoginData({ ...loginData, password: e.target.value })
+                }
+                className="h-11 rounded-xl border-border/70 bg-background/60 pl-10 shadow-sm backdrop-blur transition-colors focus-visible:ring-2 focus-visible:ring-primary/60"
+              />
+            </div>
+          </div>
+
+          <Button
+            type="submit"
+            disabled={loading}
+            className="h-11 w-full rounded-xl border-0 bg-gradient-to-r from-blue-600 to-violet-600 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-all hover:shadow-blue-600/40 hover:brightness-110 active:scale-[0.99]"
+          >
+            {loading ? "Signing in..." : "Sign in"}
+          </Button>
+
+          <GoogleSignInButton mode="login" />
+
+          <p className="pt-1 text-center text-sm text-muted-foreground">
+            New to MetriCorex?{" "}
+            <button
+              type="button"
+              onClick={() => navigate("/register")}
+              className="font-semibold text-primary hover:underline"
+            >
+              Create an account
+            </button>
+          </p>
+        </form>
+      ) : (
+        <div className="space-y-5">
+          <p className="text-center text-sm text-muted-foreground">
+            We sent a 6-digit code to{" "}
+            <span className="font-semibold text-foreground">{otpData.email}</span>
+          </p>
+
+          <motion.div
+            initial={{ scale: 0.97 }}
+            animate={{ scale: 1 }}
+            className="rounded-2xl border border-border/70 bg-card/60 p-5 shadow-sm backdrop-blur"
+          >
+            <Label htmlFor="otpCode" className="text-sm font-medium">
+              Verification code
+            </Label>
+            <Input
+              id="otpCode"
+              inputMode="numeric"
+              placeholder="000000"
+              maxLength={6}
+              value={otpData.otpCode}
+              onChange={(e) =>
+                setOtpData({
+                  ...otpData,
+                  otpCode: e.target.value.replace(/\D/g, ""),
+                })
+              }
+              className="mt-2 h-14 rounded-xl border-border/70 bg-background/80 text-center text-2xl font-semibold tracking-[0.5em] shadow-sm focus-visible:ring-2 focus-visible:ring-primary/60"
+            />
+            <p className="mt-2 text-xs text-muted-foreground">
+              Code expires in 10 minutes.
+            </p>
+          </motion.div>
+
+          <Button
+            onClick={handleVerifyOTP}
+            disabled={loading}
+            className="h-11 w-full rounded-xl border-0 bg-gradient-to-r from-blue-600 to-violet-600 text-sm font-semibold text-white shadow-lg shadow-blue-600/25 transition-all hover:shadow-blue-600/40 hover:brightness-110 active:scale-[0.99]"
+          >
+            {loading ? "Verifying..." : "Verify & continue"}
+          </Button>
+
+          <div className="flex items-center justify-center gap-4 text-sm">
+            <Button
+              variant="ghost"
+              onClick={handleResendOTP}
+              disabled={loading || isActive}
+              className="h-auto px-2 py-1 text-muted-foreground hover:text-foreground"
+            >
+              {loading ? "Sending..." : isActive ? `Resend code in ${seconds}s` : "Resend code"}
+            </Button>
+            <span className="text-border">|</span>
+            <Button
+              variant="ghost"
+              onClick={() => setStep("login")}
+              className="h-auto px-2 py-1 text-muted-foreground hover:text-foreground"
+            >
+              Back
+            </Button>
+          </div>
+        </div>
+      )}
+    </AuthShell>
   );
 }
