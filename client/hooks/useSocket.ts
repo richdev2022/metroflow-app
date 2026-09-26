@@ -62,15 +62,18 @@ function ensureSingletonSocket(userId: string, businessId: string, userName: str
     if (token) auth.token = token;
     if (singletonExtraAuth.guestToken) auth.guestToken = singletonExtraAuth.guestToken;
     const url = resolveSocketUrl();
+    // withCredentials stays false: auth travels in the handshake auth payload
+    // (auth.token), not cookies. Sending credentials makes the browser reject
+    // any wildcard/reflect-less CORS response from the server.
     const socket = url ? io(url, {
       transports: ['polling', 'websocket'],
       path: '/socket.io',
-      withCredentials: true,
+      withCredentials: false,
       auth,
     }) : io({
       transports: ['polling', 'websocket'],
       path: '/socket.io',
-      withCredentials: true,
+      withCredentials: false,
       auth,
     });
     singletonSocket = socket;
