@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, Info } from "lucide-react";
+import { AlertCircle, CheckCircle2, Info } from "lucide-react";
 
 declare global {
   interface Window {
@@ -54,6 +54,7 @@ export default function GoogleSignInButton({
   const gsiHostRef = useRef<HTMLDivElement>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const busyRef = useRef(false);
 
@@ -62,6 +63,7 @@ export default function GoogleSignInButton({
     busyRef.current = true;
     setBusy(true);
     setError(null);
+    setSuccess(null);
     try {
       const res = await api.post("/auth/google", {
         credential: response.credential,
@@ -73,10 +75,24 @@ export default function GoogleSignInButton({
         localStorage.setItem("userId", data.userId || "");
         localStorage.setItem("businessId", data.businessId || "");
         localStorage.setItem("userName", data.user?.name || data.user?.email || "");
+        if (data.user?.email) {
+          localStorage.setItem("userEmail", data.user.email);
+        }
         if (data.user?.avatarUrl) {
           localStorage.setItem("userAvatar", data.user.avatarUrl);
         }
-        setTimeout(() => navigate("/dashboard"), 600);
+
+        // The backend creates the account automatically for first-time Google
+        // users and simply logs in returning ones — tell the user which one
+        // happened before landing them on the dashboard.
+        const firstName = (data.user?.name || data.user?.email || "there")
+          .split(" ")[0];
+        setSuccess(
+          data.isNewUser
+            ? `Account created — welcome aboard, ${firstName}! Your workspace is ready. Taking you to your dashboard...`
+            : `Welcome back, ${firstName}! Taking you to your dashboard...`,
+        );
+        setTimeout(() => navigate("/dashboard"), 900);
       } else {
         setError(data?.message || "Google sign-in failed. Please try again.");
       }
@@ -176,10 +192,18 @@ export default function GoogleSignInButton({
         </button>
       )}
 
-      {busy && (
+      {busy && !success && (
         <p className="text-center text-sm text-muted-foreground">
           Signing you in with Google...
         </p>
+      )}
+      {success && (
+        <Alert className="border-emerald-200 bg-emerald-50 dark:border-emerald-900/60 dark:bg-emerald-950/40">
+          <CheckCircle2 className="h-4 w-4 text-emerald-600 dark:text-emerald-400" />
+          <AlertDescription className="text-xs leading-relaxed text-emerald-800 dark:text-emerald-300">
+            {success}
+          </AlertDescription>
+        </Alert>
       )}
       {notice && (
         <Alert className="border-blue-200 bg-blue-50 dark:border-blue-900/60 dark:bg-blue-950/40">
