@@ -90,20 +90,25 @@ export default function Team() {
 
     try {
       setInviting(true);
+      const invitedEmail = formData.email;
       const response = await api.post("/team/invite", {
         name: formData.name,
         email: formData.email,
         role: formData.role,
       });
-      const data = response.data as ApiResponse<TeamMember>;
+      const data = response.data as ApiResponse<TeamMember> & {
+        emailSent?: boolean;
+        inviteLink?: string;
+        message?: string;
+      };
 
       if (data.success && data.data) {
         // Add to team list if new, or update if exists
         setTeamMembers((prev) => {
-          const existing = prev.find((d) => d.email === formData.email);
+          const existing = prev.find((d) => d.email === invitedEmail);
           if (existing) {
             return prev.map((d) =>
-              d.email === formData.email ? data.data : d,
+              d.email === invitedEmail ? data.data : d,
             );
           }
           return [data.data, ...prev];
@@ -112,10 +117,24 @@ export default function Team() {
         setFormData({ name: "", email: "", role: "" as any });
         setIsFormOpen(false);
         setError(null);
-        toast({
-          title: "Invitation sent",
-          description: `Invitation sent to ${formData.email}`,
-        });
+
+        if (data.emailSent === false && data.inviteLink) {
+          // Email delivery failed (SMTP/Brevo outage) but the member WAS
+          // invited — hand the admin the invite link to share manually.
+          try {
+            await navigator.clipboard.writeText(data.inviteLink);
+          } catch { /* clipboard unavailable — link still shown in toast */ }
+          toast({
+            title: "Member invited — email delivery failed",
+            description: `Invite link copied to your clipboard — share it with ${invitedEmail}: ${data.inviteLink}`,
+            duration: 12000,
+          });
+        } else {
+          toast({
+            title: "Invitation sent",
+            description: `Invitation sent to ${invitedEmail}`,
+          });
+        }
       } else {
         setError(data.error || "Failed to send invitation");
       }
