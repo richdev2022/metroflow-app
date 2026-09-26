@@ -80,7 +80,7 @@ const getVideoUrl = (storageUrl?: string | null): string | null => {
     return storageUrl;
   }
 
-  const apiBase = api.defaults.baseURL || import.meta.env.VITE_API_URL || "";
+  const apiBase = api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "";
   const normalizedBase = apiBase.endsWith("/") ? apiBase.slice(0, -1) : apiBase;
   const path = storageUrl.startsWith("/") ? storageUrl : `/${storageUrl}`;
   

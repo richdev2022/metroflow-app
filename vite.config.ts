@@ -8,12 +8,13 @@ export default defineConfig(({ mode }) => ({
     host: "0.0.0.0",
     port: process.env.PORT ? parseInt(process.env.PORT) : 8080,
     proxy: {
+      // Aligns with the real backend default port (3000) used in .env
       '/api': {
-        target: 'http://localhost:8082',
+        target: 'http://localhost:3000',
         changeOrigin: true,
       },
       '/socket.io': {
-        target: 'http://localhost:8082',
+        target: 'http://localhost:3000',
         changeOrigin: true,
         ws: true,
       },

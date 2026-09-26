@@ -266,12 +266,7 @@ export default function Tasks() {
       if (data.success && data.data) {
         setTeamMembers(data.data);
       } else {
-        // Fallback mock team members for demo
-        setTeamMembers([
-          { id: "1", name: "John Doe", email: "john@example.com", role: "member", status: "active" },
-          { id: "2", name: "Jane Smith", email: "jane@example.com", role: "member", status: "active" },
-          { id: "3", name: "Bob Johnson", email: "bob@example.com", role: "manager", status: "active" },
-        ]);
+        setTeamMembers([]);
       }
     } catch (err: any) {
       console.error(err);
@@ -280,12 +275,7 @@ export default function Tasks() {
         description: err.response?.data?.error || err.response?.data?.message || "Failed to fetch team members",
         variant: "destructive",
       });
-      // Fallback mock team members
-      setTeamMembers([
-        { id: "1", name: "John Doe", email: "john@example.com", role: "member", status: "active" },
-        { id: "2", name: "Jane Smith", email: "jane@example.com", role: "member", status: "active" },
-        { id: "3", name: "Bob Johnson", email: "bob@example.com", role: "manager", status: "active" },
-      ]);
+      setTeamMembers([]);
     }
   };
 
