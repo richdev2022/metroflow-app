@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, CheckCircle } from "lucide-react";
 import { AuthResponse } from "@shared/api";
+import GoogleSignInButton from "@/components/GoogleSignInButton";
 
 type Step = "login" | "otp";
 
@@ -218,6 +219,8 @@ export default function Login() {
               >
                 Login
               </Button>
+
+              <GoogleSignInButton mode="login" />
 
               <div className="space-y-2">
                 <p className="text-sm text-center text-muted-foreground">

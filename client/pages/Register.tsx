@@ -11,6 +11,7 @@ import { AlertCircle, CheckCircle, XCircle } from "lucide-react";
 import { AuthResponse } from "@shared/api";
 import { IndustryCombobox } from "@/components/industry-combobox";
 import { useCountdown } from "@/hooks/useCountdown";
+import GoogleSignInButton from "@/components/GoogleSignInButton";
 
 type Step = "business" | "otp";
 
@@ -327,6 +328,8 @@ export default function Register() {
                   Create Account
                 </Button>
               </div>
+
+              <GoogleSignInButton mode="signup" />
 
                <p className="text-sm text-center text-muted-foreground">
                 Already have an account?{" "}
