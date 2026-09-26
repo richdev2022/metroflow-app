@@ -380,12 +380,9 @@ export default function Board() {
       }
     } catch (error) {
       console.error(error);
-      // Fallback mock team members for demo
-      setTeamMembers([
-        { id: '1', name: 'John Doe', email: 'john@example.com', role: 'member', status: 'active' },
-        { id: '2', name: 'Jane Smith', email: 'jane@example.com', role: 'member', status: 'active' },
-        { id: '3', name: 'Bob Johnson', email: 'bob@example.com', role: 'manager', status: 'active' },
-      ]);
+      // Real backend unreachable — leave the member list empty instead of
+      // showing fake demo users that could be assigned to real tasks.
+      setTeamMembers([]);
     }
   };
 

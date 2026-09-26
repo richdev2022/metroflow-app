@@ -5,14 +5,20 @@ export const api = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
 });
 
-console.log("API Configured with Base URL:", api.defaults.baseURL);
+const IS_DEV = import.meta.env.DEV;
+
+if (IS_DEV) {
+  console.log("API Configured with Base URL:", api.defaults.baseURL);
+}
 
 if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
   console.warn("VITE_API_BASE_URL is not set. API calls might fail if backend is not proxied correctly.");
 }
 
 api.interceptors.request.use((config) => {
-  console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`, config);
+  if (IS_DEV) {
+    console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
+  }
   const token = localStorage.getItem("token");
   if (token) {
     config.headers.Authorization = `Bearer ${token}`;
