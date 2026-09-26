@@ -3,15 +3,35 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Metricorex</title>
+    <title>Metricorex — Business OS</title>
     <meta
       name="description"
-      content="A comprehensive KPI tracking application for monitoring and managing key performance indicators."
+      content="Metricorex by MetriCorex — projects, meetings, payroll and business banking in one unified platform for modern teams."
     />
     <meta
       name="keywords"
-      content="KPI, tracker, performance, dashboard, metrics, analytics"
+      content="KPI, tracker, performance, dashboard, metrics, analytics, payroll, business banking"
     />
+
+    <!-- Brand -->
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="theme-color" content="#0A0E1A" />
+
+    <!-- Apply saved theme before first paint to avoid a flash -->
+    <script>
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          if (
+            t === "dark" ||
+            (!t && window.matchMedia("(prefers-color-scheme: dark)").matches)
+          ) {
+            document.documentElement.classList.add("dark");
+          }
+        } catch (e) {}
+      })();
+    </script>
   </head>
 
   <body>
