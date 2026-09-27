@@ -37,6 +37,7 @@ import Recordings from "./pages/Recordings";
 import JoinMeeting from "./pages/JoinMeeting";
 import JoinCall from "./pages/JoinCall";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
+import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
@@ -88,6 +89,7 @@ const App = () => (
       <Sonner />
       <BrowserRouter>
         <SessionTimeoutProvider>
+          <UpgradePromptProvider>
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
@@ -182,6 +184,7 @@ const App = () => (
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </UpgradePromptProvider>
         </SessionTimeoutProvider>
       </BrowserRouter>
     </QueryClientProvider>

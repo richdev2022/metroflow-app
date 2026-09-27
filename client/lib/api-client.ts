@@ -1,5 +1,6 @@
 import axios from "axios";
 import { triggerSessionTimeout } from "@/components/SessionTimeoutProvider";
+import { triggerUpgradePrompt, isPlanUpgradeError } from "@/components/UpgradePromptProvider";
 
 export const api = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
@@ -47,6 +48,10 @@ api.interceptors.response.use(
       triggerSessionTimeout();
       return Promise.reject(new Error("Invalid or expired token"));
     }
+    // Plan gate surfaced as a 200-wrapped failure: still show the upgrade modal
+    if (response.data && !response.data.success && isPlanUpgradeError(response.data)) {
+      triggerUpgradePrompt();
+    }
     return response;
   },
   (error) => {
@@ -60,6 +65,13 @@ api.interceptors.response.use(
     // Check for success: false with error: "Invalid or expired token" in error response
     if (error.response?.data && !error.response.data.success && error.response.data.error === "Invalid or expired token") {
       triggerSessionTimeout();
+      return Promise.reject(error);
+    }
+
+    // Plan gate (403 from checkFeaturePermission): surface the global
+    // upgrade modal so the user is always offered the upgrade path.
+    if (error.response?.status === 403 && isPlanUpgradeError(error.response?.data)) {
+      triggerUpgradePrompt();
       return Promise.reject(error);
     }
 
