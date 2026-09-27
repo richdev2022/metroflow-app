@@ -27,9 +27,12 @@ export default function Settings() {
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
 
-  // Account Password (SSO accounts start without one)
+  // Account Password — the card is ALWAYS visible. Users without a password
+  // (Google SSO accounts, or accounts whose stored hash was corrupt) create
+  // one; users with a password can always change it.
   const [hasPassword, setHasPassword] = useState<boolean | null>(null);
   const [authProvider, setAuthProvider] = useState<string>("local");
+  const [currentPassword, setCurrentPassword] = useState("");
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [passwordLoading, setPasswordLoading] = useState(false);
@@ -98,6 +101,8 @@ export default function Settings() {
     }
   };
 
+  const isGoogleAccount = authProvider.toLowerCase().includes("google");
+
   const handleSetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
     if (newPassword.length < 8) {
@@ -113,6 +118,7 @@ export default function Settings() {
       const response = await api.post("/auth/set-password", { password: newPassword });
       const data = assertApiSuccess(response.data, "Failed to set password");
       setHasPassword(true);
+      setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
       toast({ title: "Success", description: data.message || "Password created successfully" });
@@ -120,6 +126,43 @@ export default function Settings() {
       const message = getApiMessage(error, "Failed to set password");
       // If a password already exists (stale state), just reflect reality
       if (String(message).toLowerCase().includes("already")) setHasPassword(true);
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setPasswordLoading(false);
+    }
+  };
+
+  const handleChangePassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!currentPassword) {
+      toast({ title: "Error", description: "Please enter your current password", variant: "destructive" });
+      return;
+    }
+    if (newPassword.length < 8) {
+      toast({ title: "Error", description: "New password must be at least 8 characters", variant: "destructive" });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast({ title: "Error", description: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+    setPasswordLoading(true);
+    try {
+      const response = await api.post("/auth/change-password", {
+        currentPassword,
+        newPassword,
+      });
+      const data = assertApiSuccess(response.data, "Failed to change password");
+      setHasPassword(true);
+      setCurrentPassword("");
+      setNewPassword("");
+      setConfirmPassword("");
+      toast({ title: "Success", description: data.message || "Password updated successfully" });
+    } catch (error) {
+      const message = getApiMessage(error, "Failed to change password");
+      // Account actually has no usable password yet (e.g. corrupt legacy
+      // hash) — fall back to the create-password flow so the user recovers.
+      if (String(message).toLowerCase().includes("no password")) setHasPassword(false);
       toast({ title: "Error", description: message, variant: "destructive" });
     } finally {
       setPasswordLoading(false);
@@ -404,20 +447,69 @@ export default function Settings() {
           </TabsContent>
 
           <TabsContent value="security">
-            {hasPassword === false && (
-              <Card className="mb-4">
-                <CardHeader>
-                  <CardTitle className="flex items-center gap-2">
-                    <KeyRound className="h-5 w-5" />
-                    Account Password
-                  </CardTitle>
-                  <CardDescription>
-                    {authProvider === "google"
+            <Card className="mb-4">
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <KeyRound className="h-5 w-5" />
+                  Account Password
+                </CardTitle>
+                <CardDescription>
+                  {hasPassword
+                    ? "Update your account password. You can always change it here."
+                    : isGoogleAccount
                       ? "You signed up with Google. Create a password to also sign in with your email and password."
                       : "Your account currently has no password. Create one to enable password sign-in."}
-                  </CardDescription>
-                </CardHeader>
-                <CardContent>
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {hasPassword === null ? (
+                  // /auth/me still loading — keep the card mounted to avoid it
+                  // "disappearing" for users who have a password set.
+                  <div className="flex items-center gap-2 text-sm text-muted-foreground max-w-sm">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Checking your account security settings…
+                  </div>
+                ) : hasPassword ? (
+                  <form onSubmit={handleChangePassword} className="space-y-4 max-w-sm">
+                    <div className="space-y-2">
+                      <Label htmlFor="current-password">Current password</Label>
+                      <Input
+                        id="current-password"
+                        type="password"
+                        value={currentPassword}
+                        onChange={(e) => setCurrentPassword(e.target.value)}
+                        placeholder="Enter your current password"
+                        autoComplete="current-password"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="new-password">New password</Label>
+                      <Input
+                        id="new-password"
+                        type="password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="At least 8 characters"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="confirm-password">Confirm password</Label>
+                      <Input
+                        id="confirm-password"
+                        type="password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Re-enter your password"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <Button type="submit" disabled={passwordLoading || !currentPassword || !newPassword || !confirmPassword}>
+                      {passwordLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Update password
+                    </Button>
+                  </form>
+                ) : (
                   <form onSubmit={handleSetPassword} className="space-y-4 max-w-sm">
                     <div className="space-y-2">
                       <Label htmlFor="new-password">New password</Label>
@@ -446,9 +538,9 @@ export default function Settings() {
                       Create password
                     </Button>
                   </form>
-                </CardContent>
-              </Card>
-            )}
+                )}
+              </CardContent>
+            </Card>
 
              <Card className="mb-4">
               <CardHeader>
