@@ -27,6 +27,7 @@ import {
   AlertCircle,
   Clock,
   BellRing,
+  Timer,
 } from 'lucide-react';
 import type { Recording, TeamMember } from '@shared/api';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -349,6 +350,16 @@ export default function VideoCallRoom({
     const id = window.setInterval(() => setNowTick(Date.now()), 1000);
     return () => window.clearInterval(id);
   }, []);
+
+  // --- Elapsed time in the room (always visible, even on unlimited plans) ---
+  const joinedAtRef = useRef<number>(Date.now());
+  const elapsedDisplay = useMemo(() => {
+    const totalSec = Math.max(0, Math.floor((nowTick - joinedAtRef.current) / 1000));
+    const h = Math.floor(totalSec / 3600);
+    const m = Math.floor((totalSec % 3600) / 60);
+    const s = totalSec % 60;
+    return `${h > 0 ? `${h.toString().padStart(2, '0')}:` : ''}${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+  }, [nowTick]);
 
   // --- Derived CountdownDisplay (per Guide §5.2 useMemo) ---
   const countdownDisplay: CountdownDisplay | null = useMemo(() => {
@@ -3190,6 +3201,11 @@ export default function VideoCallRoom({
 
           {/* Center controls */}
           <div className="flex items-center gap-2">
+            {/* Elapsed time in call — always shown (plan or unlimited) */}
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 border border-white/10">
+              <Timer className="h-3.5 w-3.5 text-white/70 shrink-0" />
+              <span className="text-xs font-mono font-semibold tabular-nums text-white/90">{elapsedDisplay}</span>
+            </div>
             {/* Countdown Badge (per FRONTEND_CALL_DURATION_GUIDE.md §5.3) */}
             {durationState.status === 'waiting' && (
               <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-950/80 border border-blue-500/40">

@@ -38,6 +38,7 @@ import {
 import { useSocket } from "@/hooks/useSocket";
 import { unwrapApiData } from "@/lib/api-response";
 import { Conversation } from "@shared/api";
+import { toast as sonnerToast } from "sonner";
 import { cn } from "@/lib/utils";
 
 export default function Layout({ children }: { children: React.ReactNode }) {
@@ -55,6 +56,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [audioContextInitialized, setAudioContextInitialized] = useState(false);
 
   const [totalUnread, setTotalUnread] = useState(0);
+  const [meetingsUnread, setMeetingsUnread] = useState(0);
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const incomingCallRef = useRef<IncomingCallData | null>(null);
   const fetchedUnreadRef = useRef(false);
@@ -116,7 +118,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       // Backend `message:created` payload IS the message object; the mock's
       // `chat:new-message-notification` wraps it as { conversationId, message }.
       const msg = data?.message || data || {};
-      const currentSenderId = msg.senderId || msg.sender_id || '';
+      const currentSenderId = msg.senderId || msg.sender_id || data?.senderId || "";
       if (currentSenderId && currentSenderId !== userId) {
         setTotalUnread(prev => prev + 1);
       }
@@ -139,6 +141,59 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       off('conversation:read', handleReadUpdated);
     };
   }, [isConnected, socket, userId, on, off, fetchTotalUnread]);
+
+  // Global in-app popups: new chat messages + meeting invites (badge, sound, toast)
+  useEffect(() => {
+    if (!isConnected || !socket) return;
+
+    // Personal chat push (works anywhere in the app). The chat page handles
+    // its own sound for the open conversation, so stay quiet on /chat.
+    const handleChatPush = (data: any) => {
+      const msg = data?.message || data || {};
+      const senderId = data?.senderId || msg.senderId || msg.sender_id || "";
+      if (!senderId || senderId === userId) return;
+
+      const senderName = data?.senderName || msg.senderName || msg.sender_name || "Someone";
+      const conversationName = data?.conversationName || "";
+      const preview = (data?.content || msg.content || "").toString().slice(0, 120);
+      const hasAttachment = !!(data?.attachmentType || msg.attachmentType || msg.attachmentUrl || msg.attachment_url);
+
+      if (location.pathname !== "/chat") {
+        AudioUtils.ensureInitialized().catch(() => {});
+        AudioUtils.playNotification().catch(() => {});
+        sonnerToast(senderName + (conversationName && data?.conversationType === "group" ? ` · ${conversationName}` : ""), {
+          description: preview || (hasAttachment ? "📎 Sent an attachment" : "New message"),
+          duration: 5000,
+          action: { label: "Open", onClick: () => navigate("/chat") },
+        });
+      }
+    };
+
+    const handleMeetingCreated = (meeting: any) => {
+      if (!meeting) return;
+      if (location.pathname === "/meetings") return;
+      setMeetingsUnread((prev) => prev + 1);
+      AudioUtils.ensureInitialized().catch(() => {});
+      AudioUtils.playNotification().catch(() => {});
+      sonnerToast("New meeting invitation", {
+        description: meeting.title ? `You were invited to “${meeting.title}”` : "You were invited to a meeting",
+        duration: 6000,
+        action: { label: "View", onClick: () => navigate("/meetings") },
+      });
+    };
+
+    on("chat:new-message-notification", handleChatPush);
+    on("meeting:created", handleMeetingCreated);
+    return () => {
+      off("chat:new-message-notification", handleChatPush);
+      off("meeting:created", handleMeetingCreated);
+    };
+  }, [isConnected, socket, userId, on, off, location.pathname, navigate]);
+
+  // Clear the meetings dot whenever the user views the meetings screen
+  useEffect(() => {
+    if (location.pathname === "/meetings") setMeetingsUnread(0);
+  }, [location.pathname]);
 
   // Listen for incoming calls
   useEffect(() => {
@@ -362,8 +417,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings">
-                <Link to="/meetings">
+                <Link to="/meetings" className="relative">
                   <Calendar />
+                  {meetingsUnread > 0 && (
+                    <span className="absolute top-1.5 right-2 group-data-[collapsible=icon]:right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar" />
+                  )}
                   <span>Meetings</span>
                 </Link>
               </SidebarMenuButton>
