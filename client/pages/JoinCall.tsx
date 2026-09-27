@@ -14,7 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/use-toast';
 import { api } from '@/lib/api-client';
-import { getApiMessage, unwrapApiData } from '@/lib/api-response';
+import { getApiMessage, getApiErrorCode, unwrapApiData } from '@/lib/api-response';
 import { TeamMember, Call, ValidateAccessState } from '@shared/api';
 import { useJoinCall, useValidateCallCode } from '@/lib/meetings-chat-calls';
 import { guestValidateCall, guestJoinCall } from '@/lib/meetings-chat-calls';
@@ -224,8 +224,10 @@ const JoinCall = () => {
           toast({ title: 'Joined Call', description: 'Connecting to call room…' });
         }
       } catch (err: any) {
-        const code = err?.response?.data?.code ?? err?.response?.data?.errorCode;
-        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD') {
+        // Normalize backend error codes (errorCode/code, lower/UPPER) so the
+        // password / full / ended branches below always match.
+        const code = getApiErrorCode(err);
+        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD' || code === 'CALL_PASSWORD_REQUIRED') {
           setPasswordRequired(true);
           setPasswordError(
             code === 'INVALID_PASSWORD' ? 'Incorrect password. Please try again.' : ''
@@ -241,7 +243,7 @@ const JoinCall = () => {
           });
           return;
         }
-        if (code === 'CALL_COMPLETED' || code === 'CALL_CANCELLED' || code === 'CALL_MISSED') {
+        if (code === 'CALL_COMPLETED' || code === 'CALL_CANCELLED' || code === 'CALL_MISSED' || code === 'CALL_ENDED') {
           setErrorScreen({
             title: 'Call has Ended',
             description: 'This call is no longer active.',
@@ -535,6 +537,11 @@ const JoinCall = () => {
           userName={guestInfo.guestName}
           isHost={false}
           waitingRoomEnabled={guestInfo.call?.waitingRoomEnabled}
+          inviteDetails={{
+            code: guestInfo.call?.callCode || callCode,
+            password: null,
+            waitingRoomEnabled: guestInfo.call?.waitingRoomEnabled,
+          }}
         />
       </div>
     );
@@ -799,6 +806,11 @@ const JoinCall = () => {
           userName={localStorage.getItem('userName') || 'User'}
           isHost={effectiveIsHost}
           waitingRoomEnabled={effectiveCall.waitingRoomEnabled}
+          inviteDetails={{
+            code: effectiveCall.callCode,
+            password: effectiveIsHost ? (effectiveCall as any).password || null : null,
+            waitingRoomEnabled: effectiveCall.waitingRoomEnabled,
+          }}
           teamMembers={teamMembers}
           currentParticipantIds={currentParticipantIds}
           initialParticipants={effectiveCall.participants?.map((p: any) => ({

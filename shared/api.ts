@@ -1049,7 +1049,10 @@ export interface TakeNotificationActionInput {
 
 // Add Participants
 export interface AddParticipantsInput {
-  participantIds: string[];
+  /** Business user ids to add (team-member path) */
+  participantIds?: string[];
+  /** External emails to invite (they join as guests via the public link) */
+  emails?: string[];
 }
 
 export interface AddParticipantsResponse {
@@ -1057,5 +1060,6 @@ export interface AddParticipantsResponse {
   message: string;
   data: {
     added: string[];
+    invitedEmails?: string[];
   };
 }

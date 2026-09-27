@@ -28,6 +28,7 @@ import {
   Clock,
   BellRing,
   Timer,
+  Copy,
 } from 'lucide-react';
 import type { Recording, TeamMember } from '@shared/api';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -96,6 +97,14 @@ interface VideoCallRoomProps {
     joinedAt?: string;
     leftAt?: string;
   }>;
+  /** Info used to build the "Copy invite details" text (code/link/password) */
+  inviteDetails?: {
+    title?: string;
+    code?: string;
+    password?: string | null;
+    waitingRoomEnabled?: boolean;
+    startTime?: string;
+  } | null;
 }
 
 interface Participant {
@@ -150,6 +159,7 @@ export default function VideoCallRoom({
   onParticipantsAdded,
   onParticipantStatusChange,
   initialParticipants = [],
+  inviteDetails = null,
 }: VideoCallRoomProps) {
   // Get search params from URL for invitation flow
   const [searchParams] = useSearchParams();
@@ -215,9 +225,11 @@ export default function VideoCallRoom({
   const [passwordError, setPasswordError] = useState('');
   const [connectionError, setConnectionError] = useState('');
   const [echoWarningShown, setEchoWarningShown] = useState(false);
+  const [multiDeviceAlert, setMultiDeviceAlert] = useState<{ message: string; deviceCount: number } | null>(null);
   const [waitingForHost, setWaitingForHost] = useState(false);
   const [showAudioEnableOverlay, setShowAudioEnableOverlay] = useState(false);
   const [audioAutoplayFailCount, setAudioAutoplayFailCount] = useState(0);
+  const [copiedInvite, setCopiedInvite] = useState(false);
 
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
@@ -1739,27 +1751,75 @@ export default function VideoCallRoom({
       timestamp: new Date()
     };
 
+    // Optimistic local copy (server echoes to everyone incl. sender; the
+    // incoming handler dedupes by userId so we never render it twice).
     setChatMessages(prev => [...prev, message]);
 
-    try {
-      // Pass userName in case sendMeetingChat supports more than 2 args
-      (sendMeetingChat as any)(roomId, chatInput.trim(), exactUserName);
-    } catch {}
-
-    // Fallback: explicitly emit with userName included so server broadcasts it
-    try {
-      socket.emit('meeting-chat:send', {
-        roomId,
-        message: chatInput.trim(),
-        userId,
-        userName: exactUserName,
-        senderName: exactUserName,
-        timestamp: Date.now(),
-      });
-    } catch {}
+    // SINGLE emit. Previously this fired BOTH `meeting-chat:message`
+    // (via sendMeetingChat) AND `meeting-chat:send`; the backend handles
+    // both aliases with the same handler, so every remote participant
+    // received the message TWICE.
+    sendMeetingChat(roomId, chatInput.trim(), { userId, userName: exactUserName });
 
     setChatInput('');
   };
+
+  // ========== COPY FULL INVITE DETAILS ==========
+  // Copies EVERYTHING an invitee needs (not just the link): type, title,
+  // host, schedule, code, link, password and waiting-room note.
+  const buildInviteText = useCallback(() => {
+    const origin = typeof window !== 'undefined' ? window.location.origin : '';
+    const isMeetingRoom = Boolean(meetingId);
+    const code = inviteDetails?.code || roomId;
+    const link = `${origin}/${isMeetingRoom ? 'meetings' : 'calls'}/${code}`;
+    const kind = isMeetingRoom ? 'meeting' : callType === 'audio' ? 'audio call' : 'video call';
+    const lines: string[] = [
+      `Join my ${kind} on Metricorex!`,
+    ];
+    if (inviteDetails?.title) lines.push(`Title: ${inviteDetails.title}`);
+    lines.push(`Host: ${userName || 'Host'}`);
+    if (inviteDetails?.startTime) {
+      try {
+        lines.push(`When: ${new Date(inviteDetails.startTime).toLocaleString()}`);
+      } catch { /* invalid date - skip */ }
+    }
+    if (code) lines.push(`${isMeetingRoom ? 'Meeting' : 'Call'} code: ${code}`);
+    lines.push(`Link: ${link}`);
+    if (inviteDetails?.password) lines.push(`Password: ${inviteDetails.password}`);
+    if (inviteDetails?.waitingRoomEnabled || (!isHost && propWaitingRoomEnabled)) {
+      lines.push('Note: waiting room is enabled - the host will admit you.');
+    }
+    lines.push('', 'No account needed - open the link and join as a guest.');
+    return lines.join('\n');
+  }, [meetingId, inviteDetails, roomId, callType, userName, isHost, propWaitingRoomEnabled]);
+
+  const handleCopyInvite = useCallback(async () => {
+    const text = buildInviteText();
+    try {
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(text);
+      } else {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        document.body.appendChild(ta);
+        ta.select();
+        document.execCommand('copy');
+        document.body.removeChild(ta);
+      }
+      setCopiedInvite(true);
+      toast({
+        title: 'Invite copied',
+        description: 'Full details copied (code, link, password) - paste anywhere to share.',
+      });
+      setTimeout(() => setCopiedInvite(false), 2500);
+    } catch {
+      toast({
+        variant: 'destructive',
+        title: 'Copy failed',
+        description: 'Your browser blocked clipboard access. Long-press the link to copy manually.',
+      });
+    }
+  }, [buildInviteText, toast]);
 
   const verifyPassword = () => {
     if (!enteredPassword.trim()) {
@@ -2041,43 +2101,35 @@ export default function VideoCallRoom({
     };
   }, [endsAt]);
 
-  // Echo warning detection (improved with explicit same-user multi-device detection)
+  // Echo / multi-device warning.
+  // The SERVER is the source of truth: the backend counts sockets per room
+  // and emits `call:multi-device` when the same account joins on 2+ devices.
+  // A local heuristic (remote peer producing audio/video with the exact same
+  // display name) covers servers without that event. A single participant
+  // joining alone must NEVER trigger the warning.
   useEffect(() => {
     if (echoWarningShown) return;
 
-    const currentUserId = localStorage.getItem('userId') || '';
-    const sameUserParticipants = participants.filter(p => p.id === currentUserId);
-    const userAgentMatches = Array.from(peers.values()).filter(p => p.id && p.id === currentUserId).length;
+    const localName = (userName || '').trim().toLowerCase();
+    const duplicateNamePeer = localName
+      ? Array.from(peers.values()).some(
+          (p) =>
+            p.producers.length > 0 &&
+            (p.name || '').trim().toLowerCase() === localName
+        )
+      : false;
 
-    const uidCounts: Record<string, number> = {};
-    for (const p of participants) {
-      uidCounts[p.id] = (uidCounts[p.id] || 0) + 1;
+    if (multiDeviceAlert || duplicateNamePeer) {
+      setEchoWarningShown(true);
+      toast({
+        title: "Same Account On Multiple Devices!",
+        description: multiDeviceAlert?.message ||
+          "This account appears to be in the room on more than one device — this will cause LOUD echo. Please leave the call on all but one device, or use headphones.",
+        variant: "destructive",
+        duration: 12000,
+      });
     }
-    const sameAccountDuplicateIds = Object.entries(uidCounts).filter(([, c]) => c > 1).map(([id]) => id);
-    const hasSameAccountMultiJoin = sameAccountDuplicateIds.length > 0;
-
-    if ((sameUserParticipants.length >= 1 && currentUserId) || userAgentMatches >= 1 || participants.length >= 2 || hasSameAccountMultiJoin) {
-      const uids = new Set(participants.map(p => p.id));
-      const warnTriggered = (uids.size < participants.length + 1) ||
-        (sameUserParticipants.length && !isHost) ||
-        (participants.length > 0 && Array.from(peers.values()).some(p => p.id === currentUserId)) ||
-        hasSameAccountMultiJoin;
-
-      if (warnTriggered) {
-        setEchoWarningShown(true);
-        toast({
-          title: hasSameAccountMultiJoin ? "Same Account On Multiple Devices!" : "Echo Warning",
-          description: hasSameAccountMultiJoin
-            ? "The SAME ACCOUNT joined on MULTIPLE devices! This will cause LOUD echo. Please leave the call on all but one device and use headphones."
-            : "Multiple devices or open speakers detected. To avoid echo: (1) Wear headphones, (2) Mute mic when not speaking, (3) Keep only 1 device per person in this room.",
-          variant: hasSameAccountMultiJoin ? "destructive" : "default",
-          duration: 12000,
-        });
-      } else if (participants.length >= 2) {
-        setEchoWarningShown(true);
-      }
-    }
-  }, [participants.length, peers, participants, echoWarningShown, isHost, toast]);
+  }, [multiDeviceAlert, peers, echoWarningShown, userName, toast]);
 
   // Track remote audio autoplay failures: if we hit 2+ failures, show the giant "Tap to enable audio" overlay
   useEffect(() => {
@@ -2085,6 +2137,26 @@ export default function VideoCallRoom({
       setShowAudioEnableOverlay(true);
     }
   }, [audioAutoplayFailCount]);
+
+  // Listen for server-verified multi-device (echo risk) alerts
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleMultiDevice = (data: any) => {
+      if (!isMountedRef.current) return;
+      setMultiDeviceAlert({
+        message: data?.message || '',
+        deviceCount: Number(data?.deviceCount) || 2,
+      });
+    };
+
+    socket.on('call:multi-device', handleMultiDevice);
+    socket.on('meeting:multi-device', handleMultiDevice);
+    return () => {
+      socket.off('call:multi-device', handleMultiDevice);
+      socket.off('meeting:multi-device', handleMultiDevice);
+    };
+  }, [socket]);
 
   // Recording duration timer
   useEffect(() => {
@@ -2997,9 +3069,9 @@ export default function VideoCallRoom({
           </div>
         </div>
 
-        {/* Participants Panel */}
+        {/* Participants Panel (full-screen overlay on mobile, side panel on sm+) */}
         {showParticipants && (
-          <div className="w-80 border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col">
+          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col sm:static sm:z-auto sm:w-80 sm:max-w-none">
             <div className="p-4 border-b border-gray-800 flex items-center justify-between">
               <h3 className="font-semibold text-white">Participants ({participants.length + 1})</h3>
               <Button variant="ghost" size="sm" onClick={() => setShowParticipants(false)}>
@@ -3117,9 +3189,9 @@ export default function VideoCallRoom({
           </div>
         )}
 
-        {/* Chat Panel */}
+        {/* Chat Panel (full-screen overlay on mobile, side panel on sm+) */}
         {showChat && (
-          <div className="w-80 border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col">
+          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col sm:static sm:z-auto sm:w-80 sm:max-w-none">
             <div className="p-4 border-b border-gray-800 flex items-center justify-between">
               <h3 className="font-semibold text-white">Chat</h3>
               <Button variant="ghost" size="sm" onClick={() => setShowChat(false)}>
@@ -3167,8 +3239,8 @@ export default function VideoCallRoom({
       </div>
 
       {/* Control bar */}
-      <div className="shrink-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-4 py-3">
-        <div className="flex items-center justify-between max-w-4xl mx-auto">
+      <div className="shrink-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-2 sm:px-4 py-3">
+        <div className="flex items-center justify-between gap-2 max-w-4xl mx-auto flex-wrap sm:flex-nowrap">
           {/* Left controls */}
           <div className="flex items-center gap-2">
             <Button
@@ -3273,6 +3345,15 @@ export default function VideoCallRoom({
 
           {/* Right controls */}
           <div className="flex items-center gap-2">
+            <Button
+              variant={copiedInvite ? "default" : "secondary"}
+              size="sm"
+              onClick={handleCopyInvite}
+              className="h-10 w-10 p-0 rounded-full"
+              title="Copy full invite details (code, link, password)"
+            >
+              {copiedInvite ? <Check className="h-5 w-5 text-emerald-400" /> : <Copy className="h-5 w-5" />}
+            </Button>
             {isHost && (
               <>
                 <Button
@@ -3445,6 +3526,13 @@ export default function VideoCallRoom({
         roomType={meetingId ? 'meeting' : 'call'}
         currentParticipantIds={currentParticipantIds}
         allTeamMembers={teamMembers}
+        inviteDetails={{
+          title: inviteDetails?.title,
+          code: inviteDetails?.code || roomId,
+          password: inviteDetails?.password ?? null,
+          waitingRoomEnabled: inviteDetails?.waitingRoomEnabled ?? propWaitingRoomEnabled,
+          startTime: inviteDetails?.startTime,
+        }}
         onParticipantsAdded={(participantIds) => {
           onParticipantsAdded?.(participantIds);
           toast({

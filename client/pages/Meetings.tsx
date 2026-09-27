@@ -1018,6 +1018,49 @@ export default function Meetings() {
                     <Copy className="h-4 w-4" />
                   </Button>
                 </div>
+                <div className="flex items-center gap-2 pt-1">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    className="gap-1.5"
+                    onClick={async () => {
+                      const origin = window.location.origin;
+                      const link = `${origin}/meetings/${selectedMeeting.meetingCode}`;
+                      const lines = [
+                        `Join my meeting on Metricorex!`,
+                        `Title: ${selectedMeeting.title}`,
+                        selectedMeeting.startTime ? `When: ${formatDateTime(selectedMeeting.startTime)}` : null,
+                        `Timezone: ${selectedMeeting.timezone || 'Local'}`,
+                        `Meeting code: ${selectedMeeting.meetingCode}`,
+                        `Link: ${link}`,
+                        isCurrentUserHost(selectedMeeting) && (selectedMeeting as any).password
+                          ? `Password: ${(selectedMeeting as any).password}`
+                          : null,
+                        selectedMeeting.waitingRoomEnabled
+                          ? 'Note: waiting room is enabled - the host will admit you.'
+                          : null,
+                        '',
+                        'No account needed - open the link and join as a guest.',
+                      ].filter(Boolean);
+                      try {
+                        await navigator.clipboard.writeText(lines.join('\n'));
+                        toast({
+                          title: "Full invite copied!",
+                          description: "All meeting details (code, link, time, password) copied — paste anywhere to share.",
+                        });
+                      } catch {
+                        toast({
+                          variant: "destructive",
+                          title: "Copy failed",
+                          description: "Clipboard access was blocked by the browser.",
+                        });
+                      }
+                    }}
+                  >
+                    <Copy className="h-4 w-4" />
+                    Copy full details
+                  </Button>
+                </div>
               </div>
 
               <div className="space-y-2">
@@ -1122,6 +1165,13 @@ export default function Meetings() {
                 userName={localStorage.getItem("userName") || "User"}
                 isHost={isCurrentUserHost(selectedMeeting)}
                 waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
+                inviteDetails={{
+                  title: selectedMeeting.title,
+                  code: selectedMeeting.meetingCode,
+                  password: isCurrentUserHost(selectedMeeting) ? (selectedMeeting as any).password || null : null,
+                  waitingRoomEnabled: selectedMeeting.waitingRoomEnabled,
+                  startTime: selectedMeeting.startTime,
+                }}
                 teamMembers={teamMembers}
                 currentParticipantIds={(
                   selectedMeeting.attendees ?? []
