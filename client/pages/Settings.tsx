@@ -9,7 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard, ShieldCheck, Lock } from "lucide-react";
+import { Loader2, Building, Phone, Settings as SettingsIcon, CreditCard, ShieldCheck, Lock, KeyRound } from "lucide-react";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
@@ -26,6 +26,13 @@ export default function Settings() {
   const [fees, setFees] = useState<FeeConfig[]>([]);
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
+
+  // Account Password (SSO accounts start without one)
+  const [hasPassword, setHasPassword] = useState<boolean | null>(null);
+  const [authProvider, setAuthProvider] = useState<string>("local");
+  const [newPassword, setNewPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [passwordLoading, setPasswordLoading] = useState(false);
 
   // Contact Update States
   const [contactDialogOpen, setContactDialogOpen] = useState(false);
@@ -50,11 +57,12 @@ export default function Settings() {
   const fetchData = async () => {
     try {
       setLoading(true);
-      const [profileRes, prefRes, otpEnabledRes, feesRes] = await Promise.all([
+      const [profileRes, prefRes, otpEnabledRes, feesRes, meRes] = await Promise.all([
         api.get<{success: boolean, settings?: BusinessProfile, data?: BusinessProfile}>("/settings"),
         api.get<{success: boolean, preference?: string, data?: OtpPreferenceResponse}>("/settings/otp-preference"),
         api.get<OtpEnabledResponse>("/settings/otp-enabled"),
-        api.get<{success: boolean, data: FeeConfig[]}>("/fees")
+        api.get<{success: boolean, data: FeeConfig[]}>("/fees"),
+        api.get<{success: boolean, data?: { hasPassword?: boolean; authProvider?: string }}>("/auth/me").catch(() => null),
       ]);
 
       const profileData = assertApiSuccess(profileRes.data, "Failed to fetch settings");
@@ -74,6 +82,11 @@ export default function Settings() {
       const feesData = assertApiSuccess(feesRes.data, "Failed to fetch fees");
       setFees(feesData.data ?? []);
 
+      // /auth/me is best-effort: its only consumer here is the SSO password card
+      const meData = (meRes?.data as { data?: { hasPassword?: boolean; authProvider?: string } } | null)?.data;
+      setHasPassword(Boolean(meData?.hasPassword));
+      setAuthProvider(meData?.authProvider || "local");
+
     } catch (error) {
       toast({
         title: "Error",
@@ -82,6 +95,34 @@ export default function Settings() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSetPassword = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (newPassword.length < 8) {
+      toast({ title: "Error", description: "Password must be at least 8 characters", variant: "destructive" });
+      return;
+    }
+    if (newPassword !== confirmPassword) {
+      toast({ title: "Error", description: "Passwords do not match", variant: "destructive" });
+      return;
+    }
+    setPasswordLoading(true);
+    try {
+      const response = await api.post("/auth/set-password", { password: newPassword });
+      const data = assertApiSuccess(response.data, "Failed to set password");
+      setHasPassword(true);
+      setNewPassword("");
+      setConfirmPassword("");
+      toast({ title: "Success", description: data.message || "Password created successfully" });
+    } catch (error) {
+      const message = getApiMessage(error, "Failed to set password");
+      // If a password already exists (stale state), just reflect reality
+      if (String(message).toLowerCase().includes("already")) setHasPassword(true);
+      toast({ title: "Error", description: message, variant: "destructive" });
+    } finally {
+      setPasswordLoading(false);
     }
   };
 
@@ -363,6 +404,52 @@ export default function Settings() {
           </TabsContent>
 
           <TabsContent value="security">
+            {hasPassword === false && (
+              <Card className="mb-4">
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2">
+                    <KeyRound className="h-5 w-5" />
+                    Account Password
+                  </CardTitle>
+                  <CardDescription>
+                    {authProvider === "google"
+                      ? "You signed up with Google. Create a password to also sign in with your email and password."
+                      : "Your account currently has no password. Create one to enable password sign-in."}
+                  </CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <form onSubmit={handleSetPassword} className="space-y-4 max-w-sm">
+                    <div className="space-y-2">
+                      <Label htmlFor="new-password">New password</Label>
+                      <Input
+                        id="new-password"
+                        type="password"
+                        value={newPassword}
+                        onChange={(e) => setNewPassword(e.target.value)}
+                        placeholder="At least 8 characters"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <div className="space-y-2">
+                      <Label htmlFor="confirm-password">Confirm password</Label>
+                      <Input
+                        id="confirm-password"
+                        type="password"
+                        value={confirmPassword}
+                        onChange={(e) => setConfirmPassword(e.target.value)}
+                        placeholder="Re-enter your password"
+                        autoComplete="new-password"
+                      />
+                    </div>
+                    <Button type="submit" disabled={passwordLoading || !newPassword || !confirmPassword}>
+                      {passwordLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Create password
+                    </Button>
+                  </form>
+                </CardContent>
+              </Card>
+            )}
+
              <Card className="mb-4">
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">

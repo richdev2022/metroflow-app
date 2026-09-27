@@ -88,7 +88,9 @@ export const UpgradePromptProvider: React.FC<UpgradePromptProviderProps> = ({ ch
 
   const handleUpgrade = useCallback(() => {
     setIsOpen(false);
-    navigate('/subscription');
+    // Deep-link to the recommended tier: the Subscription page reads
+    // ?plan= and highlights + scrolls to the matching plan card.
+    navigate('/subscription?plan=pro');
   }, [navigate]);
 
   const handleLater = useCallback(() => {

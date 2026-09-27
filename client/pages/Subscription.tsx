@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { Card, CardContent, CardDescription, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -80,7 +81,44 @@ export default function Subscription() {
   const [billingCycle, setBillingCycle] = useState<"monthly" | "yearly">("monthly");
   const [selectedPlanForCheckout, setSelectedPlanForCheckout] = useState<Plan | null>(null);
 
+  // Deep-link highlighting: /subscription?plan=pro highlights the matching
+  // plan card (id or name fragment, e.g. "pro" -> "Pro Yearly") and scrolls
+  // to it. Lets the upgrade modal CTA land the user on the recommended tier.
+  const [searchParams] = useSearchParams();
+  const highlightParam = searchParams.get("plan") || "";
+  const highlightedPlanRef = useRef<HTMLDivElement | null>(null);
+  const hasScrolledToHighlightedRef = useRef(false);
+
   const { toast } = useToast();
+
+  const highlightedPlanId = useMemo(() => {
+    if (!highlightParam || plans.length === 0) return null;
+    const needle = highlightParam.trim().toLowerCase();
+    const match =
+      plans.find((p) => p.id.toLowerCase() === needle) ||
+      plans.find((p) => p.name.toLowerCase().includes(needle));
+    return match?.id ?? null;
+  }, [highlightParam, plans]);
+
+  // Switch the billing cycle to the highlighted plan's duration so yearly
+  // deep-links actually show the yearly card.
+  useEffect(() => {
+    if (!highlightedPlanId) return;
+    const plan = plans.find((p) => p.id === highlightedPlanId);
+    if (plan?.duration === "yearly" || plan?.duration === "monthly") {
+      setBillingCycle(plan.duration);
+    }
+  }, [highlightedPlanId, plans]);
+
+  useEffect(() => {
+    if (highlightedPlanId && !hasScrolledToHighlightedRef.current) {
+      hasScrolledToHighlightedRef.current = true;
+      // Wait one paint so the card exists in the DOM
+      requestAnimationFrame(() => {
+        highlightedPlanRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      });
+    }
+  }, [highlightedPlanId]);
 
   useEffect(() => {
     fetch('https://api.exchangerate-api.com/v4/latest/USD')
@@ -565,7 +603,23 @@ export default function Subscription() {
               const isLesserPlan = plan.price < currentPlanPrice;
 
               return (
-                <Card key={plan.id} className={`flex flex-col ${isCurrentPlan ? 'border-primary ring-1 ring-primary' : ''}`}>
+                <div
+                  key={plan.id}
+                  ref={plan.id === highlightedPlanId ? highlightedPlanRef : undefined}
+                  className={plan.id === highlightedPlanId ? "relative" : undefined}
+                >
+                  {plan.id === highlightedPlanId && (
+                    <Badge className="absolute -top-3 left-1/2 -translate-x-1/2 z-10 bg-gradient-to-r from-blue-600 to-purple-600 text-white border-0 shadow-lg">
+                      Recommended
+                    </Badge>
+                  )}
+                  <Card className={`flex flex-col ${
+                    plan.id === highlightedPlanId
+                      ? "border-primary ring-2 ring-primary shadow-lg"
+                      : isCurrentPlan
+                        ? "border-primary ring-1 ring-primary"
+                        : ""
+                  }`}>
                   <CardHeader>
                     <div className="flex justify-between items-start">
                       <CardTitle>{plan.name}</CardTitle>
@@ -624,7 +678,8 @@ export default function Subscription() {
                       </Button>
                     )}
                   </CardFooter>
-                </Card>
+                  </Card>
+                </div>
               );
             })}
           </div>
