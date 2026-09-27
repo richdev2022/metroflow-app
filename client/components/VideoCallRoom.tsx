@@ -260,6 +260,14 @@ export default function VideoCallRoom({
   const animationFrameRef = useRef<number | null>(null);
   const lastMuteWarning = useRef<number>(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  // Waiting-room lifecycle: request must be sent even when the waiting screen
+  // is the initial state, and never duplicated; admittedRef promotes the user
+  // from the waiting screen to the full room join.
+  const admittedRef = useRef(false);
+  const waitingRequestSentRef = useRef(false);
+  const teamMembersRef = useRef(teamMembers);
+  const videoEnabledRef = useRef(isVideoEnabled);
+  useEffect(() => { videoEnabledRef.current = isVideoEnabled; }, [isVideoEnabled]);
   
   // FIX: Refs for values needed in socket callbacks
   const recvTransportRef = useRef<types.Transport | null>(null);
@@ -267,6 +275,7 @@ export default function VideoCallRoom({
   const consumersMapRef = useRef<Map<string, types.Consumer>>(new Map());
   const isMountedRef = useRef(true);
   const hasFetchedProducers = useRef(false);
+  useEffect(() => { teamMembersRef.current = teamMembers; }, [teamMembers]);
   const hasJoinedRef = useRef(false);
   const hasJoinedRestRef = useRef(false);
   const dialBackCooldownRef = useRef<Map<string, number>>(new Map());
@@ -774,26 +783,39 @@ export default function VideoCallRoom({
     };
   }, [socket, eventPrefix, toast, onParticipantStatusChange]);
 
-  // Join meeting/call when connected and not in waiting room or password screen
+  // Join meeting/call when connected and not in waiting room or password screen.
+  // WAITING-ROOM FIX: previously this effect returned early whenever
+  // `isInWaitingRoom` was true — which is its INITIAL state for every non-host
+  // joining a room with a waiting room — so `waiting-room:request` was NEVER
+  // emitted, the host was never notified, and the participant was stuck on
+  // "Awaiting host approval" forever. The request is now emitted while waiting,
+  // and the full room join runs once the host admits the user.
   useEffect(() => {
-    if (!socket || !isConnected || !socketRoomId || isInWaitingRoom || requiresPassword || isVerifyingInvitation || hasJoinedRef.current) return;
+    if (!socket || !isConnected || !socketRoomId || requiresPassword || isVerifyingInvitation) return;
 
-    hasJoinedRef.current = true;
-
-    // Non-host with waitingRoomEnabled -> ask host to be admitted
-    if (!isHost && waitingRoomEnabled) {
+    // Non-host with waitingRoomEnabled -> ask the host for admission (once)
+    if (!isHost && waitingRoomEnabled && !admittedRef.current) {
       setIsInWaitingRoom(true);
       setWaitingForHost(true);
-      // Send request to host after a short delay (ensure socket is in room)
-      setTimeout(() => {
-        socket?.emit('waiting-room:request', {
-          roomId: socketRoomId,
-          userId: localStorage.getItem('userId') || '',
-          userName,
-        });
-        socket?.emit('waiting-room:get-queue', { roomId: socketRoomId });
-      }, 400);
+      if (!waitingRequestSentRef.current) {
+        waitingRequestSentRef.current = true;
+        // Small delay so the socket handshake state settles before requesting
+        const t = setTimeout(() => {
+          socket?.emit('waiting-room:request', {
+            roomId: socketRoomId,
+            userId: localStorage.getItem('userId') || '',
+            userName,
+          });
+          socket?.emit('waiting-room:get-queue', { roomId: socketRoomId });
+        }, 400);
+        return () => clearTimeout(t);
+      }
+      return;
     }
+
+    if (hasJoinedRef.current) return;
+
+    hasJoinedRef.current = true;
 
     const currentUserId = localStorage.getItem('userId') || '';
 
@@ -808,7 +830,7 @@ export default function VideoCallRoom({
       if (list.length > 0) {
         setParticipants(list.map((p: any) => ({
           id: p.userId || p.user_id || p.id,
-          name: p.userName || p.user_name || p.name || teamMembers?.find(m => m.id === (p.userId || p.user_id || p.id))?.name || 'Unknown',
+          name: p.userName || p.user_name || p.name || teamMembersRef.current?.find(m => m.id === (p.userId || p.user_id || p.id))?.name || 'Unknown',
           isHost: p.isHost || p.is_host || false,
           joinedAt: p.joinedAt || p.joined_at ? new Date(p.joinedAt || p.joined_at) : new Date(),
           audioEnabled: typeof p.audioEnabled === 'boolean' ? p.audioEnabled : undefined,
@@ -832,12 +854,15 @@ export default function VideoCallRoom({
       }
     };
 
+    // Read media toggles from refs: putting them in deps re-ran this effect on
+    // every mute/camera toggle, emitting call:leave + re-join churn that made
+    // participants flicker in/out of the room for everyone else.
     const joinOpts = {
       userId: currentUserId,
       userName,
       isHost,
-      audioEnabled: isAudioEnabled,
-      videoEnabled: isVideoEnabled,
+      audioEnabled: audioEnabledRef.current,
+      videoEnabled: videoEnabledRef.current,
     };
 
     // Join the room (single authoritative socket emit with ACK)
@@ -866,7 +891,7 @@ export default function VideoCallRoom({
       }
       hasJoinedRef.current = false;
     };
-  }, [socket, isConnected, socketRoomId, isInWaitingRoom, requiresPassword, isVerifyingInvitation, meetingId, joinMeeting, joinCall, emitSocketLeaveCall, leaveMeeting, userName, isHost, isAudioEnabled, isVideoEnabled, invitationToken, teamMembers]);
+  }, [socket, isConnected, socketRoomId, isInWaitingRoom, requiresPassword, isVerifyingInvitation, meetingId, joinMeeting, joinCall, emitSocketLeaveCall, leaveMeeting, userName, isHost, waitingRoomEnabled, invitationToken]);
 
   const getInitials = (name: string) => {
     const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -2175,12 +2200,17 @@ export default function VideoCallRoom({
 
     const handleWaitingRoomPending = (data: any) => {
       if (!isHost) return;
+      // Ignore queue events for other rooms (host can only be in one room tab,
+      // but the socket may still receive broadcasts from previous rooms).
+      if (data?.roomId && socketRoomId && data.roomId !== socketRoomId) return;
       const uid = data.userId || data.participantId;
       const uname = data.userName || data.participantName || data.name || uid;
       setWaitingQueue(prev => {
         if (prev.find(p => p.userId === uid)) return prev;
         return [...prev, { userId: uid, userName: uname, requestedAt: Date.now() }];
       });
+      AudioUtils.ensureInitialized().catch(() => {});
+      AudioUtils.playTone(880, 0.15, 'sine', 0.25);
       toast({
         title: "Waiting Room",
         description: `${uname} is waiting to join the call`,
@@ -2195,10 +2225,13 @@ export default function VideoCallRoom({
 
     const handleAdmitted = async (data: any) => {
       if (data && data.roomId !== socketRoomId) return;
+      admittedRef.current = true;
       setIsInWaitingRoom(false);
       setWaitingForHost(false);
 
-      if (!hasJoinedRestRef.current && (callId || meetingId)) {
+      if (!hasJoinedRestRef.current && (callId || meetingId) && localStorage.getItem('token')) {
+        // REST join is auth-only; guests (no token) join the room via the
+        // socket `call:join` above, so skip it to avoid a 401 redirect.
         hasJoinedRestRef.current = true;
         try {
           const endpoint = callId
@@ -2239,9 +2272,15 @@ export default function VideoCallRoom({
     socket.on('waiting-room:denied', handleDenied);
     socket.on('waiting-room:admit', handleAdmitted);
 
-    // Fetch current waiting queue when host arrives
+    // Fetch current waiting queue when host arrives. The backend answers via
+    // the ACK callback (it never broadcasts an event for get-queue), so the
+    // response must be read here — the previous callback-less emit was a no-op.
     if (isHost) {
-      socket.emit('waiting-room:get-queue', { roomId });
+      socket.emit('waiting-room:get-queue', { roomId }, (resp: any) => {
+        if (resp && (!resp.roomId || resp.roomId === socketRoomId)) {
+          setWaitingQueue(resp.queue || []);
+        }
+      });
     }
 
     return () => {
@@ -3239,10 +3278,11 @@ export default function VideoCallRoom({
       </div>
 
       {/* Control bar */}
-      <div className="shrink-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-2 sm:px-4 py-3">
-        <div className="flex items-center justify-between gap-2 max-w-4xl mx-auto flex-wrap sm:flex-nowrap">
+      <div className="shrink-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-2 sm:px-4 py-2 sm:py-3">
+        {/* Single horizontally-scrollable row on mobile (no multi-row wrap), centered on sm+ */}
+        <div className="flex items-center justify-between gap-2 max-w-4xl mx-auto overflow-x-auto sm:overflow-x-visible pb-1 sm:pb-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {/* Left controls */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               variant={isAudioEnabled ? "secondary" : "destructive"}
               size="sm"
@@ -3272,9 +3312,9 @@ export default function VideoCallRoom({
           </div>
 
           {/* Center controls */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             {/* Elapsed time in call — always shown (plan or unlimited) */}
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 border border-white/10">
+            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 border border-white/10 shrink-0">
               <Timer className="h-3.5 w-3.5 text-white/70 shrink-0" />
               <span className="text-xs font-mono font-semibold tabular-nums text-white/90">{elapsedDisplay}</span>
             </div>
@@ -3344,7 +3384,7 @@ export default function VideoCallRoom({
           </div>
 
           {/* Right controls */}
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 shrink-0">
             <Button
               variant={copiedInvite ? "default" : "secondary"}
               size="sm"
