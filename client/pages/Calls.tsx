@@ -54,6 +54,7 @@ import {
   Copy,
   BellRing,
   Lock,
+  Timer,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -222,6 +223,39 @@ export default function Calls() {
   const formatDateTime = (dateStr: string) => {
     return new Date(dateStr).toLocaleString();
   };
+
+  // Talk-time for history cards. Prefer the backend-computed `duration`
+  // (seconds), fall back to endedAt - durationStartedAt|startedAt.
+  // For ongoing calls, shows the live elapsed talk-time (refreshed by a ticker).
+  const formatCallDuration = (call: Call): string => {
+    let seconds: number | null = null;
+    if (typeof (call as any).duration === "number" && call.status !== "ongoing") {
+      seconds = (call as any).duration;
+    } else {
+      const start = call.durationStartedAt || call.startedAt;
+      if (call.endedAt && call.status !== "ongoing" && start) {
+        seconds = Math.max(0, Math.floor((new Date(call.endedAt).getTime() - new Date(start).getTime()) / 1000));
+      } else if (call.status === "ongoing" && start) {
+        seconds = Math.max(0, Math.floor((Date.now() - new Date(start).getTime()) / 1000));
+      }
+    }
+    if (!seconds || seconds <= 0) return "";
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    const s = seconds % 60;
+    if (h > 0) return `${h}h ${m.toString().padStart(2, "0")}m`;
+    if (m > 0) return `${m}m ${s.toString().padStart(2, "0")}s`;
+    return `${s}s`;
+  };
+
+  // Lightweight ticker so live "ongoing" durations keep updating
+  const [, setDurationTick] = useState(0);
+  useEffect(() => {
+    const hasOngoing = calls.some((c) => c.status === "ongoing");
+    if (!hasOngoing) return;
+    const id = window.setInterval(() => setDurationTick((t) => t + 1), 30_000);
+    return () => window.clearInterval(id);
+  }, [calls]);
 
   // ==========================================
   // Data Fetching
@@ -735,6 +769,23 @@ export default function Calls() {
             <Calendar className="h-4 w-4 shrink-0" />
             <span className="truncate">{formatDateTime(call.createdAt || new Date().toISOString())}</span>
           </div>
+          {(() => {
+            const dur = formatCallDuration(call);
+            if (!dur) return null;
+            return (
+              <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                <Timer className="h-4 w-4 shrink-0" />
+                {call.status === "ongoing" ? (
+                  <span className="flex items-center gap-1.5">
+                    <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+                    <span className="font-medium text-foreground">{dur}</span> live
+                  </span>
+                ) : (
+                  <span>{dur}</span>
+                )}
+              </div>
+            );
+          })()}
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             <Users className="h-4 w-4 shrink-0" />
             <span className="truncate">

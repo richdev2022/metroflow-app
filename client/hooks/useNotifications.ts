@@ -1,6 +1,9 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import { api } from '@/lib/api-client';
 import { useSocket } from './useSocket';
+import { AudioUtils } from '@/lib/audio-utils';
+import { toast as sonnerToast } from 'sonner';
 import type { Notification, GetNotificationsResponse, GetNotificationsQuery } from '@shared/api';
 
 // Helper to convert snake_case to camelCase
@@ -29,6 +32,7 @@ export function useNotifications() {
   const [notifications, setNotifications] = useState<Notification[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [isLoading, setIsLoading] = useState(false);
+  const navigate = useNavigate();
   const { socket, on } = useSocket({
     userId: localStorage.getItem('userId') || '',
     businessId: localStorage.getItem('businessId') || '',
@@ -104,7 +108,30 @@ export function useNotifications() {
     const handleNewNotification = (notification: any) => {
       const convertedNotification = convertSnakeToCamel<Notification>(notification);
       setNotifications(prev => [convertedNotification, ...prev]);
-      setUnreadCount(prev => prev + 1);
+      if (!convertedNotification.isRead) {
+        setUnreadCount(prev => prev + 1);
+
+        // In-app pop: sound + toast popup for new notifications
+        // (meetings, wallet credits...). Chat messages have their own
+        // dedicated push and calls ring via IncomingCallModal, so both are
+        // skipped here to avoid double alerts.
+        if (convertedNotification.type !== 'chat' && convertedNotification.type !== 'call') {
+          AudioUtils.ensureInitialized().catch(() => {});
+          AudioUtils.playNotification().catch(() => {});
+          sonnerToast(convertedNotification.title || 'New notification', {
+            description: convertedNotification.message || '',
+            duration: 5000,
+            action: {
+              label: 'View',
+              onClick: () => {
+                if (convertedNotification.actionUrl) {
+                  navigate(convertedNotification.actionUrl);
+                }
+              },
+            },
+          });
+        }
+      }
     };
 
     on('notification:new', handleNewNotification);

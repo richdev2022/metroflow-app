@@ -538,6 +538,17 @@ export interface Plan {
   features: string[];
   max_team_members: number;
   trial_days: number;
+  // RTC / feature limits configured from admin
+  max_meeting_duration?: number | null;
+  max_participants?: number | null;
+  max_recording_duration?: number | null;
+  max_recording_storage?: number | null;
+  waiting_room_enabled?: boolean;
+  recording_enabled?: boolean;
+  screen_sharing_enabled?: boolean;
+  breakout_rooms_enabled?: boolean;
+  virtual_backgrounds?: boolean;
+  live_captions?: boolean;
 }
 
 export interface Subscription {
@@ -551,6 +562,19 @@ export interface Subscription {
   plan_discount?: string;
   max_team_members: number;
   features: string[];
+  permissions?: string[] | null;
+  trial_days?: number | null;
+  duration?: string | null;
+  max_meeting_duration?: number | null;
+  max_participants?: number | null;
+  max_recording_duration?: number | null;
+  max_recording_storage?: number | null;
+  waiting_room_enabled?: boolean;
+  recording_enabled?: boolean;
+  screen_sharing_enabled?: boolean;
+  breakout_rooms_enabled?: boolean;
+  virtual_backgrounds?: boolean;
+  live_captions?: boolean;
   team_usage: number;
   next_due_subscription_date?: string;
 }
@@ -912,6 +936,8 @@ export interface Call {
   startedAt?: string;
   endedAt?: string;
   durationStartedAt?: string | null;
+  /** Talk-time in seconds (completed calls): endedAt - durationStartedAt|startedAt */
+  duration?: number | null;
   createdById: string;
   hostId: string;
   coHostId?: string;

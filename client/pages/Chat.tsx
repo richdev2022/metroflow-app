@@ -237,6 +237,36 @@ const isImageAttachment = (m: ChatMessage) => getAttachmentType(m).startsWith("i
 const formatTime = (dateStr: string) =>
   new Date(dateStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 
+// Compact list timestamp: 4:32 PM / Yesterday / Tue / Mar 4
+const formatListTime = (dateStr: string) => {
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return "";
+  const now = new Date();
+  const today = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  const that = new Date(d.getFullYear(), d.getMonth(), d.getDate());
+  const dayDiff = Math.floor((today.getTime() - that.getTime()) / 86_400_000);
+  if (dayDiff === 0) return formatTime(dateStr);
+  if (dayDiff === 1) return "Yesterday";
+  if (dayDiff < 7) return d.toLocaleDateString([], { weekday: "short" });
+  return d.toLocaleDateString([], { month: "short", day: "numeric" });
+};
+
+// Deterministic avatar gradient per name so every chat has a distinct hue
+const AVATAR_GRADIENTS = [
+  "from-blue-500 to-indigo-600",
+  "from-violet-500 to-purple-600",
+  "from-fuchsia-500 to-pink-600",
+  "from-rose-500 to-red-600",
+  "from-amber-500 to-orange-600",
+  "from-emerald-500 to-teal-600",
+  "from-cyan-500 to-sky-600",
+];
+const getAvatarGradient = (name: string) => {
+  let hash = 0;
+  for (let i = 0; i < name.length; i++) hash = (hash * 31 + name.charCodeAt(i)) | 0;
+  return AVATAR_GRADIENTS[Math.abs(hash) % AVATAR_GRADIENTS.length];
+};
+
 const formatDateSeparator = (dateStr: string) => {
   const date = new Date(dateStr);
   const today = new Date();
@@ -343,21 +373,20 @@ const EmojiPicker = ({ onSelect }: { onSelect: (emoji: string) => void }) => {
 };
 
 const TypingIndicator = () => (
-  <div className="flex items-center gap-1 px-4 py-2">
-    <div className="flex gap-1">
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce [animation-delay:-0.3s]" />
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce [animation-delay:-0.15s]" />
-      <span className="w-2 h-2 bg-muted-foreground/50 rounded-full animate-bounce" />
+  <div className={cn("flex justify-start px-2 sm:px-4 pb-1 animate-in fade-in duration-200")}>
+    <div className="bg-card border border-border shadow-sm rounded-2xl rounded-bl-md px-4 py-2.5 flex items-center gap-1.5">
+      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce [animation-delay:-0.3s]" />
+      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce [animation-delay:-0.15s]" />
+      <span className="w-1.5 h-1.5 bg-muted-foreground/60 rounded-full animate-bounce" />
     </div>
-    <span className="text-xs text-muted-foreground ml-2">typing...</span>
   </div>
 );
 
 const DateSeparator = ({ date }: { date: string }) => (
-  <div className="flex items-center gap-4 py-2">
-    <div className="flex-1 h-px bg-border" />
-    <span className="text-xs font-medium text-muted-foreground shrink-0">{formatDateSeparator(date)}</span>
-    <div className="flex-1 h-px bg-border" />
+  <div className="flex justify-center py-3">
+    <span className="px-3 py-1 rounded-full bg-muted/80 text-[11px] font-medium text-muted-foreground backdrop-blur-sm border border-border/60">
+      {formatDateSeparator(date)}
+    </span>
   </div>
 );
 
@@ -379,37 +408,49 @@ const MessageBubble = ({
 }) => {
   const isFailed = message.status === "failed";
   const isSending = message.status === "sending";
+  const isRead = message.status === "read";
   const attachmentUrl = getAttachmentUrl(message);
   const isImage = isImageAttachment(message);
   const isFile = !!attachmentUrl && !isImage;
 
   return (
-    <div className={cn("flex", isOwn ? "justify-end" : "justify-start", isGrouped && "mt-0.5")}>
+    <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
+      {!isOwn && (
+        <div className="w-7 shrink-0 flex items-end">
+          {!isGrouped && (
+            <Avatar className="h-7 w-7">
+              <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-[10px]", getAvatarGradient(senderName || "?"))}>
+                {getInitials(senderName || "?")}
+              </AvatarFallback>
+            </Avatar>
+          )}
+        </div>
+      )}
       <div
         className={cn(
-          "max-w-[80%] sm:max-w-[65%] rounded-2xl px-4 py-2.5 transition-all overflow-hidden",
+          "relative max-w-[82%] sm:max-w-[68%] px-3.5 py-2.5 transition-all animate-in fade-in slide-in-from-bottom-1 duration-200 overflow-hidden",
           isOwn
             ? cn(
-                "bg-gradient-to-r from-blue-600 to-purple-600 text-white shadow-lg",
-                isGrouped ? "rounded-tr-md" : "rounded-tr-2xl"
+                "bg-gradient-to-br from-blue-600 via-blue-600 to-violet-600 text-white rounded-2xl rounded-br-md shadow-md shadow-blue-600/15",
+                isGrouped && "rounded-br-2xl rounded-tr-md"
               )
             : cn(
-                "bg-card text-foreground border border-border shadow-sm",
-                isGrouped ? "rounded-tl-md" : "rounded-tl-2xl"
+                "bg-card text-foreground border border-border/80 rounded-2xl rounded-bl-md shadow-sm",
+                isGrouped && "rounded-bl-2xl rounded-tl-md"
               ),
-          isFailed && "border-red-500/50 bg-red-50 dark:bg-red-950/30"
+          isFailed && "border-red-500/60 bg-red-50 dark:bg-red-950/30"
         )}
       >
         {showSender && !isOwn && (
-          <p className="text-xs font-semibold mb-1 text-blue-500 dark:text-blue-400">{senderName}</p>
+          <p className="text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400">{senderName}</p>
         )}
 
         {isImage && (
-          <div className="mb-2 -mx-1 -mt-1">
+          <div className={cn("overflow-hidden rounded-xl", message.content ? "mb-2" : "")}>
             <img
               src={attachmentUrl}
               alt="Shared image"
-              className="max-w-full rounded-lg max-h-64 object-cover cursor-pointer hover:opacity-90 transition-opacity"
+              className="max-w-full max-h-72 object-cover cursor-pointer hover:scale-[1.02] transition-transform"
               onClick={() => window.open(attachmentUrl, "_blank")}
               loading="lazy"
             />
@@ -417,31 +458,30 @@ const MessageBubble = ({
         )}
 
         {isFile && (
-          <div className="mb-2 flex items-center gap-2 p-2 rounded-lg bg-black/10 dark:bg-white/10">
-            <CircleDot className="h-4 w-4 shrink-0 opacity-70" />
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-medium truncate opacity-90">
-                {attachmentUrl.split("/").pop()?.split("?")[0] || "File"}
-              </p>
-              <p className="text-[10px] opacity-60">Click to view</p>
+          <a
+            href={attachmentUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="mb-2 flex items-center gap-2.5 p-2.5 rounded-xl bg-black/10 dark:bg-white/10 hover:bg-black/15 dark:hover:bg-white/15 transition-colors"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center shrink-0", isOwn ? "bg-white/20" : "bg-primary/15")}>
+              <CircleDot className="h-4 w-4" />
             </div>
-            <a
-              href={attachmentUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs opacity-70 hover:opacity-100 shrink-0"
-              onClick={(e) => e.stopPropagation()}
-            >
-              Download
-            </a>
-          </div>
+            <div className="min-w-0 flex-1">
+              <p className="text-xs font-semibold truncate">
+                {attachmentUrl.split("/").pop()?.split("?")[0] || "Attachment"}
+              </p>
+              <p className="text-[10px] opacity-60">Tap to view</p>
+            </div>
+          </a>
         )}
 
         {message.content && (
           <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
         )}
 
-        <div className={cn("flex items-center gap-1.5 mt-1", isOwn ? "justify-end" : "justify-start")}>
+        <div className={cn("flex items-center gap-1 mt-0.5", isOwn ? "justify-end" : "justify-start")}>
           <p className="text-[10px] opacity-60">{formatTime(getMsgTime(message))}</p>
           {isOwn && (
             isFailed ? (
@@ -451,7 +491,7 @@ const MessageBubble = ({
             ) : isSending ? (
               <Loader2 className="h-3 w-3 animate-spin opacity-60" />
             ) : (
-              <Check className="h-3 w-3 opacity-60" />
+              <span className="opacity-60" title={isRead ? "Read" : "Sent"}><Check className={cn("h-3 w-3", isRead && "text-cyan-200")} /></span>
             )
           )}
         </div>
@@ -500,35 +540,51 @@ const ConversationListItem = ({
     );
   };
 
+  const unread = conversation.unreadCount ?? 0;
+
   return (
     <button
       onClick={onClick}
       className={cn(
-        "w-full p-3 text-left hover:bg-muted/80 transition-all duration-150 border-l-4 border-transparent",
-        isSelected && "bg-gradient-to-r from-blue-500/10 to-purple-500/10 border-l-blue-500"
+        "w-full px-3 py-2.5 mx-0 text-left transition-all duration-150 rounded-xl border border-transparent",
+        "hover:bg-muted/70",
+        isSelected
+          ? "bg-gradient-to-r from-blue-500/15 to-violet-500/15 border-blue-500/30 shadow-sm"
+          : unread > 0 && "bg-muted/40"
       )}
     >
       <div className="flex items-center gap-3">
         <div className="relative shrink-0">
-          <Avatar className="h-11 w-11">
-            <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-sm">
+          <Avatar className="h-12 w-12">
+            <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-sm shadow-sm", getAvatarGradient(name))}>
               {getInitials(name)}
             </AvatarFallback>
           </Avatar>
           {conversation.type === "direct" && (
             <span className={cn("absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-card", dotColor)} />
           )}
+          {conversation.type === "group" && (
+            <span className="absolute -bottom-0.5 -right-0.5 h-5 w-5 rounded-full bg-card border border-border flex items-center justify-center">
+              <Users className="h-3 w-3 text-muted-foreground" />
+            </span>
+          )}
         </div>
         <div className="flex-1 min-w-0">
           <div className="flex justify-between items-center gap-2">
-            <p className="font-medium truncate text-sm text-foreground">{renderName()}</p>
-            {lastTime && <span className="text-[10px] text-muted-foreground shrink-0">{formatTime(lastTime)}</span>}
+            <p className={cn("truncate text-sm text-foreground", unread > 0 ? "font-bold" : "font-medium")}>{renderName()}</p>
+            {lastTime && (
+              <span className={cn("text-[10px] shrink-0", unread > 0 ? "text-blue-600 dark:text-blue-400 font-semibold" : "text-muted-foreground")}>
+                {formatListTime(lastTime)}
+              </span>
+            )}
           </div>
           <div className="flex justify-between items-center gap-2 mt-0.5">
-            <p className="text-xs text-muted-foreground truncate">{lastMsg || "No messages yet"}</p>
-            {(conversation.unreadCount ?? 0) > 0 && (
-              <span className="shrink-0 h-5 min-w-[20px] px-1.5 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
-                {conversation.unreadCount}
+            <p className={cn("text-xs truncate", unread > 0 ? "text-foreground/80 font-medium" : "text-muted-foreground")}>
+              {lastMsg || <span className="italic opacity-70">No messages yet</span>}
+            </p>
+            {unread > 0 && (
+              <span className="shrink-0 h-5 min-w-[20px] px-1.5 rounded-full bg-gradient-to-r from-blue-600 to-violet-600 text-white text-[10px] font-bold flex items-center justify-center shadow-sm shadow-blue-600/30">
+                {unread > 99 ? "99+" : unread}
               </span>
             )}
           </div>
@@ -1104,27 +1160,20 @@ export default function Chat() {
   // ==========================================
   return (
     <Layout>
-      <div className="flex flex-col h-[calc(100vh-120px)] sm:h-[calc(100vh-80px)]">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-4">
-          <div className="flex items-center gap-3">
-            {!mobileShowSidebar && selectedConversation && (
-              <Button variant="ghost" size="icon" className="sm:hidden" onClick={() => setMobileShowSidebar(true)}>
-                <ArrowLeft className="h-5 w-5" />
-              </Button>
-            )}
+      <div className="flex flex-col h-[calc(100dvh-118px)] sm:h-[calc(100dvh-78px)] min-h-[420px]">
+        {/* Page header — compact on mobile, hidden while inside a conversation */}
+        <div className={cn("items-center justify-between mb-3 shrink-0", mobileShowSidebar || !selectedConversation ? "flex" : "hidden sm:flex")}>
+          <div className="flex items-center gap-3 min-w-0">
             <div>
-              <h1 className="text-2xl sm:text-3xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">Chat</h1>
-              <p className="text-muted-foreground text-sm mt-0.5">Communicate with your team</p>
+              <h1 className="text-xl sm:text-2xl font-bold bg-gradient-to-r from-blue-600 to-violet-600 bg-clip-text text-transparent">Chat</h1>
+              <p className="text-muted-foreground text-xs sm:text-sm mt-0.5">Communicate with your team</p>
             </div>
           </div>
 
           <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
-            <DialogTrigger asChild>
-              <Button className="rounded-xl" onClick={() => setMobileShowSidebar(false)}>
-                <Plus className="h-4 w-4 mr-2" />New Chat
-              </Button>
-            </DialogTrigger>
+            <Button className="rounded-xl shadow-sm" onClick={() => setIsCreateDialogOpen(true)}>
+              <Plus className="h-4 w-4 mr-2" />New Chat
+            </Button>
             <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>New Conversation</DialogTitle>
@@ -1163,17 +1212,34 @@ export default function Chat() {
         </div>
 
         {/* Chat Container */}
-        <div className="flex flex-1 overflow-hidden rounded-2xl border bg-card shadow-lg">
+        <div className="flex flex-1 overflow-hidden rounded-2xl border bg-card shadow-sm">
           {/* Sidebar */}
-          <div className={cn("w-full sm:w-80 border-r border-border flex flex-col bg-card/80 backdrop-blur-sm shrink-0", mobileShowSidebar ? "flex" : "hidden sm:flex")}>
-            <div className="p-3 border-b border-border">
+          <div className={cn("w-full sm:w-[340px] border-r border-border flex-col shrink-0 bg-card", mobileShowSidebar ? "flex" : "hidden sm:flex")}>
+            <div className="p-3 border-b border-border/70 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <h2 className="font-semibold text-foreground">Messages</h2>
+                  <span className="text-[10px] font-semibold px-1.5 py-0.5 rounded-full bg-muted text-muted-foreground">
+                    {sortedConversations.length}
+                  </span>
+                </div>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-sm hover:from-blue-700 hover:to-violet-700 hover:text-white"
+                  title="New conversation"
+                  onClick={() => setIsCreateDialogOpen(true)}
+                >
+                  <Plus className="h-4 w-4" />
+                </Button>
+              </div>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   placeholder="Search conversations..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-9 h-9 bg-muted/50"
+                  className="pl-9 h-9 bg-muted/50 rounded-xl border-border/70"
                 />
                 {searchQuery && (
                   <button onClick={() => setSearchQuery("")} className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground">
@@ -1185,9 +1251,9 @@ export default function Chat() {
 
             <ScrollArea className="flex-1">
               {convLoading ? (
-                <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin" /></div>
+                <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
               ) : sortedConversations.length > 0 ? (
-                <div className="divide-y divide-border/50">
+                <div className="p-2 space-y-1">
                   {sortedConversations.map((conv) => (
                     <ConversationListItem
                       key={conv.id}
@@ -1201,21 +1267,31 @@ export default function Chat() {
                   ))}
                 </div>
               ) : (
-                <div className="flex flex-col items-center justify-center p-8 text-center">
-                  <MessageSquare className="h-10 w-10 text-muted-foreground mb-3" />
-                  <p className="text-sm text-muted-foreground">{searchQuery ? "No matching conversations" : "No conversations yet"}</p>
+                <div className="flex flex-col items-center justify-center p-10 text-center">
+                  <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
+                    <MessageSquare className="h-6 w-6 text-muted-foreground/60" />
+                  </div>
+                  <p className="text-sm font-medium text-foreground/80">{searchQuery ? "No matching conversations" : "No conversations yet"}</p>
+                  {!searchQuery && (
+                    <Button variant="outline" size="sm" className="mt-3 rounded-lg" onClick={() => setIsCreateDialogOpen(true)}>
+                      <Plus className="h-3.5 w-3.5 mr-1.5" />Start one
+                    </Button>
+                  )}
                 </div>
               )}
             </ScrollArea>
           </div>
 
           {/* Chat Area */}
-          <div className="flex-1 flex flex-col min-w-0">
+          <div className={cn("flex-1 flex flex-col min-w-0", mobileShowSidebar && "hidden sm:flex")}>
             {selectedConversation ? (
               <>
                 {/* Chat Header */}
-                <div className="p-3 sm:p-4 border-b border-border flex items-center justify-between bg-card/50 backdrop-blur-sm shrink-0">
-                  <div className="flex items-center gap-3 min-w-0">
+                <div className="px-3 sm:px-4 py-2.5 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0">
+                  <div className="flex items-center gap-2.5 min-w-0">
+                    <Button variant="ghost" size="icon" className="h-8 w-8 sm:hidden shrink-0" onClick={() => setMobileShowSidebar(true)}>
+                      <ArrowLeft className="h-5 w-5" />
+                    </Button>
                     {(() => {
                       const convView = selectedConversation as ConversationView;
                       const convName = getConversationName(teamMembers, convView);
@@ -1232,18 +1308,18 @@ export default function Chat() {
                       return (
                         <>
                           <div className="relative shrink-0">
-                            <Avatar className="h-9 w-9">
-                              <AvatarFallback className="bg-gradient-to-br from-blue-500 to-purple-500 text-white font-semibold text-xs">
+                            <Avatar className="h-10 w-10">
+                              <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-xs shadow-sm", getAvatarGradient(convName))}>
                                 {getInitials(convName)}
                               </AvatarFallback>
                             </Avatar>
                             {convView.type === "direct" && headerDotColor && (
-                              <span className={cn("absolute bottom-0 right-0 block h-2.5 w-2.5 rounded-full ring-2 ring-card", headerDotColor)} />
+                              <span className={cn("absolute bottom-0 right-0 block h-3 w-3 rounded-full ring-2 ring-card", headerDotColor)} />
                             )}
                           </div>
                           <div className="min-w-0">
-                            <h3 className="font-semibold text-sm truncate">{convName}</h3>
-                            <p className="text-xs text-muted-foreground">
+                            <h3 className="font-semibold text-sm truncate text-foreground">{convName}</h3>
+                            <p className="text-[11px] text-muted-foreground truncate">
                               {convView.type === "direct"
                                 ? statusInfo?.line ?? "Offline"
                                 : `${convView.participants.length} members`}
@@ -1253,11 +1329,11 @@ export default function Chat() {
                       );
                     })()}
                   </div>
-                <div className="flex items-center gap-1">
+                <div className="flex items-center gap-0.5 shrink-0">
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 hover:bg-emerald-500/10 hover:text-emerald-500"
+                    className="h-9 w-9 rounded-xl shrink-0 hover:bg-emerald-500/10 hover:text-emerald-500"
                     title="Start audio call"
                     disabled={startingCall}
                     onClick={() => handleStartCall('audio')}
@@ -1267,17 +1343,17 @@ export default function Chat() {
                   <Button
                     variant="ghost"
                     size="icon"
-                    className="h-8 w-8 shrink-0 hover:bg-blue-500/10 hover:text-blue-500"
+                    className="h-9 w-9 rounded-xl shrink-0 hover:bg-blue-500/10 hover:text-blue-500"
                     title="Start video call"
                     disabled={startingCall}
                     onClick={() => handleStartCall('video')}
                   >
                     <Video className="h-4 w-4" />
                   </Button>
-                  {startingCall && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-1" />}
+                  {startingCall && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground ml-0.5" />}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
-                      <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0">
+                      <Button variant="ghost" size="icon" className="h-9 w-9 rounded-xl shrink-0">
                         <MoreVertical className="h-4 w-4" />
                       </Button>
                     </DropdownMenuTrigger>
@@ -1292,12 +1368,22 @@ export default function Chat() {
                 </div>
 
                 {/* Messages */}
-                <div ref={scrollContainerRef} onScroll={handleScroll} className="flex-1 overflow-y-auto p-4 sm:p-6 space-y-1 bg-gradient-to-b from-background to-muted/30">
+                <div
+                  ref={scrollContainerRef}
+                  onScroll={handleScroll}
+                  className="flex-1 overflow-y-auto px-2.5 sm:px-6 py-4 space-y-1"
+                  style={{
+                    backgroundImage: "radial-gradient(rgba(127,127,127,0.13) 1px, transparent 1px)",
+                    backgroundSize: "22px 22px",
+                  }}
+                >
                   {groupedMessages.length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-full text-center">
-                      <MessageSquare className="h-14 w-14 text-muted-foreground/30 mb-4" />
-                      <p className="text-muted-foreground">No messages yet</p>
-                      <p className="text-sm text-muted-foreground/70 mt-1">Send the first message to start</p>
+                      <div className="h-20 w-20 rounded-3xl bg-gradient-to-br from-blue-500/15 to-violet-500/15 flex items-center justify-center mb-4 rotate-3">
+                        <MessageSquare className="h-9 w-9 text-blue-500/60" />
+                      </div>
+                      <p className="font-semibold text-foreground/80">No messages yet</p>
+                      <p className="text-sm text-muted-foreground/80 mt-1">Say hello — send the first message</p>
                     </div>
                   ) : (
                     groupedMessages.map((item, idx) => {
@@ -1323,10 +1409,10 @@ export default function Chat() {
                 </div>
 
                 {/* Input Area */}
-                <div className="p-3 sm:p-4 border-t border-border bg-card/50 backdrop-blur-sm shrink-0">
-                  <div className="flex gap-2 items-end">
+                <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0">
+                  <div className="flex items-end gap-2">
                     <EmojiPicker onSelect={handleEmojiSelect} />
-                    <div className="flex-1 relative">
+                    <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                       <Textarea
                         placeholder="Type a message..."
                         value={newMessage}
@@ -1337,31 +1423,31 @@ export default function Chat() {
                             handleSendMessage();
                           }
                         }}
-                        className="flex-1 min-h-[40px] max-h-[120px] resize-none bg-muted/50 border-border rounded-xl py-2.5 px-4 text-sm focus-visible:ring-1 focus-visible:ring-blue-500 pr-12"
+                        className="flex-1 min-h-[36px] max-h-[128px] resize-none bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 py-1.5 px-0 text-sm"
                         rows={1}
                       />
                       <Button
                         onClick={handleSendMessage}
                         disabled={!hasInputContent}
                         size="icon"
-                        className="absolute right-1.5 bottom-1.5 h-8 w-8 rounded-lg bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:opacity-30"
+                        className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 shadow-sm shadow-blue-600/30 disabled:opacity-30 shrink-0 mb-0.5"
                         title="Send message"
                       >
-                        <Send className="h-3.5 w-3.5" />
+                        <Send className="h-4 w-4" />
                       </Button>
                     </div>
                   </div>
                 </div>
               </>
             ) : (
-              <div className="flex-1 flex flex-col items-center justify-center bg-gradient-to-br from-blue-500/5 to-purple-500/5 p-8">
+              <div className="flex-1 flex flex-col items-center justify-center bg-gradient-to-br from-blue-500/5 to-violet-500/5 p-8">
                 {mobileShowSidebar ? null : (
                   <>
-                    <div className="h-20 w-20 rounded-2xl bg-gradient-to-br from-blue-500/10 to-purple-500/10 flex items-center justify-center mb-4">
-                      <MessageSquare className="h-10 w-10 text-muted-foreground/50" />
+                    <div className="h-24 w-24 rounded-3xl bg-gradient-to-br from-blue-500/15 to-violet-500/15 flex items-center justify-center mb-5 rotate-3">
+                      <MessageSquare className="h-11 w-11 text-blue-500/50" />
                     </div>
-                    <h3 className="text-lg font-semibold text-muted-foreground">Select a conversation</h3>
-                    <p className="text-sm text-muted-foreground/70 mt-1 text-center">Choose a conversation or start a new one</p>
+                    <h3 className="text-lg font-semibold text-foreground/90">Select a conversation</h3>
+                    <p className="text-sm text-muted-foreground/80 mt-1 text-center">Choose a conversation or start a new one</p>
                     <Button variant="outline" className="mt-6 sm:hidden" onClick={() => setMobileShowSidebar(true)}>
                       <Menu className="h-4 w-4 mr-2" />Show Conversations
                     </Button>

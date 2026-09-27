@@ -38,11 +38,44 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { CheckCircle2, AlertTriangle, CreditCard, Users, History, Loader2, Trash2, Plus, Eye, Search, CalendarIcon, Download } from "lucide-react";
+import { CheckCircle2, AlertTriangle, CreditCard, Users, History, Loader2, Trash2, Plus, Eye, Search, CalendarIcon, Download, XCircle, Clock } from "lucide-react";
 
 import { format } from "date-fns";
 import { DateRange } from "react-day-picker";
 import { cn } from "@/lib/utils";
+
+// ---- Admin-configured plan capability helpers ----
+const formatPlanLimit = (v?: number | null, unit = "") =>
+  v == null || v > 9999 ? "Unlimited" : `${v}${unit}`;
+
+function CapabilityChips({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan> }) {
+  const caps: { label: string; enabled: boolean }[] = [
+    { label: "Recording", enabled: !!plan.recording_enabled },
+    { label: "Waiting room", enabled: !!plan.waiting_room_enabled },
+    { label: "Screen sharing", enabled: plan.screen_sharing_enabled !== false },
+    { label: "Breakout rooms", enabled: !!plan.breakout_rooms_enabled },
+    { label: "Virtual backgrounds", enabled: !!plan.virtual_backgrounds },
+    { label: "Live captions", enabled: !!plan.live_captions },
+  ];
+  return (
+    <div className="flex flex-wrap gap-1.5">
+      {caps.map((c) => (
+        <span
+          key={c.label}
+          className={cn(
+            "inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-[11px] font-medium border",
+            c.enabled
+              ? "border-green-500/30 bg-green-500/10 text-green-600 dark:text-green-400"
+              : "border-border bg-muted/50 text-muted-foreground"
+          )}
+        >
+          {c.enabled ? <CheckCircle2 className="h-3 w-3" /> : <XCircle className="h-3 w-3" />}
+          {c.label}
+        </span>
+      ))}
+    </div>
+  );
+}
 import { Calendar } from "@/components/ui/calendar";
 import {
   Popover,
@@ -485,6 +518,30 @@ export default function Subscription() {
                 </div>
               </div>
               
+              {/* Admin-configured plan capabilities & limits */}
+              <div className="pt-2 border-t">
+                <div className="text-sm font-medium mb-2">Plan capabilities</div>
+                <CapabilityChips plan={subscription as unknown as Partial<SubscriptionType> & Partial<Plan>} />
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mt-3">
+                  <div className="rounded-lg bg-muted/50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-muted-foreground text-xs"><Clock className="h-3.5 w-3.5" />Call / meeting length</div>
+                    <div className="font-semibold text-sm mt-0.5">{formatPlanLimit(subscription.max_meeting_duration, " min")}</div>
+                  </div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-muted-foreground text-xs"><Users className="h-3.5 w-3.5" />Participants</div>
+                    <div className="font-semibold text-sm mt-0.5">{formatPlanLimit(subscription.max_participants)}</div>
+                  </div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-muted-foreground text-xs"><Clock className="h-3.5 w-3.5" />Recording length</div>
+                    <div className="font-semibold text-sm mt-0.5">{formatPlanLimit(subscription.max_recording_duration, " min")}</div>
+                  </div>
+                  <div className="rounded-lg bg-muted/50 px-3 py-2">
+                    <div className="flex items-center gap-1.5 text-muted-foreground text-xs"><Clock className="h-3.5 w-3.5" />Recording storage</div>
+                    <div className="font-semibold text-sm mt-0.5">{formatPlanLimit(subscription.max_recording_storage, " MB")}</div>
+                  </div>
+                </div>
+              </div>
+
               {(subscription.subscription_status === 'cancelled' || subscription.subscription_status === 'past_due') && (
                 <div className="flex items-center gap-2 text-destructive bg-destructive/10 p-3 rounded-md">
                   <AlertTriangle className="h-5 w-5" />
@@ -651,6 +708,16 @@ export default function Subscription() {
                         <Users className="h-4 w-4 text-muted-foreground" />
                         <span>{plan.max_team_members > 9999 ? 'Unlimited' : `Up to ${plan.max_team_members}`} team members</span>
                       </li>
+                      <li className="flex items-center gap-2">
+                        <Clock className="h-4 w-4 text-muted-foreground" />
+                        <span>{formatPlanLimit(plan.max_meeting_duration, " min")} per call / meeting</span>
+                      </li>
+                      {plan.max_participants != null && (
+                        <li className="flex items-center gap-2">
+                          <Users className="h-4 w-4 text-muted-foreground" />
+                          <span>Up to {plan.max_participants} participants per call</span>
+                        </li>
+                      )}
                       {plan.features && plan.features.map((feature, i) => (
                         <li key={i} className="flex items-center gap-2">
                           <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
@@ -658,6 +725,9 @@ export default function Subscription() {
                         </li>
                       ))}
                     </ul>
+                    <div className="mt-4 pt-3 border-t">
+                      <CapabilityChips plan={plan} />
+                    </div>
                   </CardContent>
                   <CardFooter>
                     {!isLesserPlan && (
