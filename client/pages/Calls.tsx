@@ -1355,7 +1355,13 @@ export default function Calls() {
             setIsJoinDialogOpen(open);
           }}
         >
-          <DialogContent className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0">
+          <DialogContent
+            className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0"
+            onEscapeKeyDown={(e) => e.preventDefault()}
+            onPointerDownOutside={(e) => e.preventDefault()}
+            onInteractOutside={(e) => e.preventDefault()}
+            onFocusOutside={(e) => e.preventDefault()}
+          >
             <DialogTitle className="sr-only">{selectedCall.type === "video" ? "Video" : "Audio"} Call Room</DialogTitle>
             <div className="min-h-0 flex-1 h-full">
               <VideoCallRoom

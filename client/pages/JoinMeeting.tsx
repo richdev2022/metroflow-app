@@ -26,9 +26,7 @@ import {
   Loader2,
   Lock,
   Users,
-  CheckCircle2,
   Hourglass,
-  PhoneOff,
 } from 'lucide-react';
 
 const formatStartsIn = (ms: number) => {
@@ -133,10 +131,16 @@ const JoinMeeting = () => {
         setSocketAuth({ guestToken: result.guestToken });
         setGuestInfo({ guestId: result.guestId, guestName: result.guestName, meeting: result.meeting });
         setMeeting(result.meeting as any);
+        // Always mount the VideoCallRoom: it renders its own waiting-room
+        // screen AND emits `waiting-room:request` so the host actually gets
+        // the approval prompt. The old static waiting card never emitted the
+        // request, leaving guests stuck and hosts unnotified.
+        setIsJoined(true);
         if (result.meeting?.waitingRoomEnabled) {
-          setWaitingRoomScreen(true);
-        } else {
-          setIsJoined(true);
+          toast({
+            title: 'Waiting Room',
+            description: 'Please wait — the host will admit you shortly.',
+          });
         }
       } catch (err: any) {
         const code = getApiErrorCode(err);
@@ -218,14 +222,16 @@ const JoinMeeting = () => {
         });
         setMeeting(result);
 
+        // Always mount the VideoCallRoom (see guest-flow note above): its
+        // waiting-room screen emits `waiting-room:request` to the host and
+        // upgrades to the full room on `waiting-room:admitted`.
+        setIsJoined(true);
         if (result.inWaitingRoom) {
-          setWaitingRoomScreen(true);
           toast({
             title: 'Waiting Room',
             description: 'Please wait — the host will admit you shortly.',
           });
         } else {
-          setIsJoined(true);
           toast({
             title: 'Joined Meeting',
             description: 'Connecting to meeting room…',
@@ -566,33 +572,9 @@ const JoinMeeting = () => {
     );
   }
 
-  if (isGuest && waitingRoomScreen && guestInfo) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-emerald-500/20 p-3 w-fit">
-              <CheckCircle2 className="h-7 w-7 text-emerald-400 animate-pulse" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">Waiting Room</CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait — the host has been notified and will admit you shortly.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Awaiting host approval…</span>
-            </div>
-            <Button variant="outline" className="w-full" onClick={leaveGuestRoom}>
-              <PhoneOff className="h-4 w-4 mr-2" />
-              Leave Waiting Room
-            </Button>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
+  // NOTE: the old static waiting-room screens (guest + authed) were removed —
+  // they never emitted `waiting-room:request`, so hosts were never notified and
+  // participants waited forever. VideoCallRoom owns the full waiting flow now.
 
   if (accessState === 'not_started') {
     return (
@@ -674,74 +656,6 @@ const JoinMeeting = () => {
                 Back Later
               </Button>
             </div>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
-  if (waitingRoomScreen || (isJoined && effectiveInWaitingRoom)) {
-    return (
-      <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex flex-col items-center justify-center z-50 p-4">
-        <Card className="max-w-md w-full bg-gray-800/70 backdrop-blur border-0 shadow-2xl">
-          <CardHeader className="text-center">
-            <div className="mx-auto mb-3 rounded-full bg-emerald-500/20 p-3 w-fit">
-              <CheckCircle2 className="h-7 w-7 text-emerald-400 animate-pulse" />
-            </div>
-            <CardTitle className="text-2xl font-bold text-white">
-              Waiting Room
-            </CardTitle>
-            <CardDescription className="text-muted-foreground">
-              Please wait — the host has been notified and will admit you shortly.
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-4">
-            {effectiveMeeting && (
-              <div className="space-y-2 rounded-lg bg-gray-900/60 p-4 text-sm text-muted-foreground border border-white/5">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-indigo-400" />
-                  <span>
-                    {effectiveMeeting.attendees?.filter(
-                      (a) => a.status === 'accepted'
-                    )?.length ??
-                      effectiveMeeting.participants?.filter(
-                        (p) => p.status === 'joined'
-                      )?.length ??
-                      0}{' '}
-                    participant
-                    {(effectiveMeeting.attendees?.filter(
-                        (a) => a.status === 'accepted'
-                      )?.length ??
-                      effectiveMeeting.participants?.filter(
-                        (p) => p.status === 'joined'
-                      )?.length ??
-                      0) ===
-                    1
-                      ? ''
-                      : 's'}
-                    &nbsp;in meeting
-                  </span>
-                </div>
-                {hasPassword && (
-                  <div className="flex items-center gap-2">
-                    <Lock className="h-4 w-4 text-emerald-400" />
-                    <span>Password verified</span>
-                  </div>
-                )}
-              </div>
-            )}
-            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
-              <span>Awaiting host approval…</span>
-            </div>
-            <Button
-              variant="outline"
-              className="w-full"
-              onClick={() => navigate('/dashboard')}
-            >
-              <PhoneOff className="h-4 w-4 mr-2" />
-              Leave Waiting Room
-            </Button>
           </CardContent>
         </Card>
       </div>
