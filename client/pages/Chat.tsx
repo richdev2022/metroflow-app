@@ -958,7 +958,6 @@ export default function Chat() {
       }
 
       const isGroup = conv.type === 'group' || participantIds.length > 1;
-      const convName = getConversationName(teamMembers, conv);
 
       const createdCall = await createCall.mutateAsync({
         type,
@@ -967,24 +966,15 @@ export default function Chat() {
         waitingRoomEnabled: isGroup,
         recordingEnabled: false,
         participantIds,
-        name: isGroup ? `${convName} Call` : `${type === 'video' ? 'Video' : 'Audio'} Call with ${convName}`,
       } as any);
 
       const callId = createdCall.id;
       const callCode = (createdCall as any)?.callCode || (createdCall as any)?.call_code || callId;
       const roomId = callCode;
 
-      // Invite each participant via socket + ringback for caller
-      const callerName = CURRENT_USER_NAME();
-      for (const targetId of participantIds) {
-        try {
-          inviteToCall(callId, targetId, type);
-        } catch {}
-        // Fallback emit in case hook uses wrong event
-        socket?.emit('call:invite', {
-          callId, targetUserId: targetId, type, callerName, roomId, callCode, fromName: callerName,
-        });
-      }
+      // NOTE: the backend already emits `call:incoming` to every invitee inside
+      // POST /calls — emitting call:invite from the client as well caused each
+      // callee to ring multiple times. Do NOT re-invite here.
 
       // Host ringback until someone answers
       try {
