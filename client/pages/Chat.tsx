@@ -757,9 +757,10 @@ export default function Chat() {
     setLocalMessages([]);
     pendingMessageIdsRef.current.clear();
     setTypingUsers({});
-    setMobileShowSidebar(false);
 
     if (selectedConversation?.id) {
+      // Inside a conversation on mobile -> hide the list panel.
+      setMobileShowSidebar(false);
       const convId = selectedConversation.id;
       api.post(`/chat/conversations/${convId}/read`).then(() => {
         refetchConv();
@@ -767,6 +768,13 @@ export default function Chat() {
       if (socket && isConnected) {
         socket.emit('chat:mark-read', { conversationId: convId, userId: CURRENT_USER_ID() });
       }
+    } else {
+      // No conversation selected -> ALWAYS show the chat list on mobile.
+      // (Previously this effect set mobileShowSidebar(false) on mount,
+      // which hid the list behind a "back" button — the exact UX bug where
+      // opening Chat on mobile required tapping a button before seeing
+      // any conversations.)
+      setMobileShowSidebar(true);
     }
   }, [selectedConversation?.id]);
 
@@ -1262,7 +1270,11 @@ export default function Chat() {
                       members={teamMembers}
                       presence={userPresence}
                       searchQuery={searchQuery}
-                      onClick={() => setSelectedConversation(conv)}
+                      onClick={() => {
+                        setSelectedConversation(conv);
+                        // Mobile: enter the conversation immediately.
+                        setMobileShowSidebar(false);
+                      }}
                     />
                   ))}
                 </div>

@@ -14,7 +14,7 @@ import {
 import { Badge } from '@/components/ui/badge';
 import { useToast } from '@/components/ui/use-toast';
 import { api } from '@/lib/api-client';
-import { getApiMessage, unwrapApiData } from '@/lib/api-response';
+import { getApiMessage, getApiErrorCode, unwrapApiData } from '@/lib/api-response';
 import { TeamMember, Meeting, ValidateAccessState } from '@shared/api';
 import { useJoinMeeting, useValidateMeetingCode } from '@/lib/meetings-chat-calls';
 import { guestValidateMeeting, guestJoinMeeting } from '@/lib/meetings-chat-calls';
@@ -139,7 +139,7 @@ const JoinMeeting = () => {
           setIsJoined(true);
         }
       } catch (err: any) {
-        const code = err?.response?.data?.errorCode ?? err?.response?.data?.code;
+        const code = getApiErrorCode(err);
         if (code === 'PASSWORD_REQUIRED') {
           setPasswordRequired(true);
           setPasswordError('');
@@ -232,8 +232,8 @@ const JoinMeeting = () => {
           });
         }
       } catch (err: any) {
-        const code = err?.response?.data?.code ?? err?.response?.data?.errorCode;
-        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD') {
+        const code = getApiErrorCode(err);
+        if (code === 'PASSWORD_REQUIRED' || code === 'INVALID_PASSWORD' || code === 'MEETING_PASSWORD_REQUIRED') {
           setPasswordRequired(true);
           setPasswordError(
             code === 'INVALID_PASSWORD'
@@ -253,7 +253,8 @@ const JoinMeeting = () => {
         }
         if (
           code === 'MEETING_COMPLETED' ||
-          code === 'MEETING_CANCELLED'
+          code === 'MEETING_CANCELLED' ||
+          code === 'MEETING_ENDED'
         ) {
           setErrorScreen({
             title: 'Meeting has Ended',
@@ -553,6 +554,13 @@ const JoinMeeting = () => {
           userName={guestInfo.guestName}
           isHost={false}
           waitingRoomEnabled={guestInfo.meeting?.waitingRoomEnabled}
+          inviteDetails={{
+            title: guestInfo.meeting?.title,
+            code: guestInfo.meeting?.meetingCode || meetingCode,
+            password: null,
+            waitingRoomEnabled: guestInfo.meeting?.waitingRoomEnabled,
+            startTime: guestInfo.meeting?.startTime,
+          }}
         />
       </div>
     );
@@ -850,6 +858,13 @@ const JoinMeeting = () => {
           userName={localStorage.getItem('userName') || 'User'}
           isHost={effectiveIsHost}
           waitingRoomEnabled={effectiveMeeting.waitingRoomEnabled}
+          inviteDetails={{
+            title: effectiveMeeting.title,
+            code: effectiveMeeting.meetingCode,
+            password: effectiveIsHost ? (effectiveMeeting as any).password || null : null,
+            waitingRoomEnabled: effectiveMeeting.waitingRoomEnabled,
+            startTime: effectiveMeeting.startTime,
+          }}
           teamMembers={teamMembers}
           currentParticipantIds={currentParticipantIds}
           initialParticipants={(effectiveMeeting.participants ??

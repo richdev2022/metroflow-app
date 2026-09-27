@@ -30,6 +30,29 @@ export function getApiMessage(error: unknown, fallback: string) {
   return fallback;
 }
 
+/**
+ * Extract a machine-readable error code from an API error, normalized to
+ * UPPER_SNAKE_CASE. The backend has historically used either `errorCode`
+ * ('invalid_password') or `code` ('PASSWORD_REQUIRED') with inconsistent
+ * casing, which made client-side switch statements unreliable.
+ */
+export function getApiErrorCode(error: unknown): string {
+  let raw: unknown;
+  if (error instanceof AxiosError) {
+    const data = error.response?.data as Record<string, unknown> | string | undefined;
+    if (data && typeof data === "object") {
+      raw = data.errorCode ?? data.code;
+    }
+  } else if (error && typeof error === "object") {
+    const data = error as Record<string, unknown>;
+    const response = data.response as Record<string, unknown> | undefined;
+    const responseData = response?.data as Record<string, unknown> | undefined;
+    raw = responseData?.errorCode ?? responseData?.code ?? data.errorCode ?? data.code;
+  }
+  if (typeof raw !== "string") return '';
+  return raw.trim().toUpperCase();
+}
+
 export function assertApiSuccess<T extends ApiEnvelope>(
   response: T,
   fallback = "Request failed",

@@ -57,6 +57,7 @@ import {
   Timer,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
+import { getApiMessage, getApiErrorCode } from "@/lib/api-response";
 import {
   useCalls,
   useCreateCall,
@@ -68,7 +69,7 @@ import {
 } from "@/lib/meetings-chat-calls";
 import { Call, CreateCallInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
-import { getApiMessage, unwrapApiData } from "@/lib/api-response";
+import { unwrapApiData } from "@/lib/api-response";
 import {
   Popover,
   PopoverContent,
@@ -405,8 +406,10 @@ export default function Calls() {
           description: "You have joined the call",
         });
       } catch (err) {
-        const code = (err as any)?.response?.data?.code;
-        if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
+        // Backend uses inconsistent error shapes (errorCode/code, lower/UPPER).
+        // Normalize to UPPER_SNAKE so every branch below actually matches.
+        const code = getApiErrorCode(err);
+        if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD" || code === "CALL_PASSWORD_REQUIRED") {
           promptForCallPassword(
             call,
             code === "INVALID_PASSWORD" ? "Invalid password. Please try again." : ""
@@ -1370,6 +1373,13 @@ export default function Calls() {
                 onParticipantsAdded={handleParticipantsAdded}
                 onParticipantStatusChange={handleParticipantStatusChanged}
                 initialParticipants={selectedCall.participants || []}
+                inviteDetails={{
+                  title: selectedCall.name || undefined,
+                  code: selectedCall.callCode,
+                  password: isCurrentUserHost(selectedCall) ? (selectedCall as any).password || null : null,
+                  waitingRoomEnabled: selectedCall.waitingRoomEnabled,
+                  startTime: selectedCall.startedAt || undefined,
+                }}
               />
             </div>
           </DialogContent>
