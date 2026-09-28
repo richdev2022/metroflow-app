@@ -41,6 +41,10 @@ import { Conversation } from "@shared/api";
 import { toast as sonnerToast } from "sonner";
 import { cn } from "@/lib/utils";
 
+const APP_TITLE = (typeof document !== "undefined" && document.title) || "Metricorex — Business OS";
+
+type NotificationCtorOptions = NotificationOptions & { requireInteraction?: boolean };
+
 export default function Layout({ children }: { children: React.ReactNode }) {
   console.log("Layout loaded - v2");
   const location = useLocation();
@@ -60,6 +64,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const [incomingCall, setIncomingCall] = useState<IncomingCallData | null>(null);
   const incomingCallRef = useRef<IncomingCallData | null>(null);
   const fetchedUnreadRef = useRef(false);
+  const callNotificationRef = useRef<Notification | null>(null);
+  const [isHidden, setIsHidden] = useState(() => (typeof document !== "undefined" ? document.hidden : false));
 
   useEffect(() => {
     incomingCallRef.current = incomingCall;
@@ -88,6 +94,55 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       document.removeEventListener('keydown', initializeAudio);
     };
   }, [audioContextInitialized]);
+
+  // Request Web Notification permission on first user interaction (the same
+  // unlock gesture that resumes the AudioContext). Denial is ignored silently.
+  useEffect(() => {
+    if (typeof Notification === "undefined" || Notification.permission !== "default") return;
+
+    const requestPermission = () => {
+      try {
+        Promise.resolve(Notification.requestPermission()).catch(() => {});
+      } catch {}
+      document.removeEventListener('click', requestPermission);
+      document.removeEventListener('keydown', requestPermission);
+      document.removeEventListener('touchstart', requestPermission);
+    };
+
+    document.addEventListener('click', requestPermission);
+    document.addEventListener('keydown', requestPermission);
+    document.addEventListener('touchstart', requestPermission);
+
+    return () => {
+      document.removeEventListener('click', requestPermission);
+      document.removeEventListener('keydown', requestPermission);
+      document.removeEventListener('touchstart', requestPermission);
+    };
+  }, []);
+
+  // Track tab visibility for background notifications + title badges
+  useEffect(() => {
+    const onVisibility = () => setIsHidden(document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
+  const showNotification = useCallback((title: string, options?: NotificationCtorOptions): Notification | null => {
+    if (typeof Notification === "undefined" || Notification.permission !== "granted") return null;
+    try {
+      // Android Chrome only supports SW notifications; ignore that failure.
+      return new Notification(title, options);
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const closeCallNotification = useCallback(() => {
+    try {
+      callNotificationRef.current?.close();
+    } catch {}
+    callNotificationRef.current = null;
+  }, []);
 
   const fetchTotalUnread = useCallback(async () => {
     if (!userId) return;
@@ -121,6 +176,24 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       const currentSenderId = msg.senderId || msg.sender_id || data?.senderId || "";
       if (currentSenderId && currentSenderId !== userId) {
         setTotalUnread(prev => prev + 1);
+
+        // Tab hidden -> OS notification + sound (AudioContext keeps running
+        // while hidden, unlike throttled timers).
+        if (typeof document !== "undefined" && document.hidden) {
+          const senderName = data?.senderName || msg.senderName || msg.sender_name || "Someone";
+          const attachmentType = String(data?.attachmentType || msg.attachmentType || "");
+          const preview = (data?.content || msg.content || "").toString().slice(0, 120);
+          const body = preview
+            || (attachmentType.startsWith("audio") ? "🎤 Voice note" : "Sent an attachment");
+          const conversationId = data?.conversationId || msg.conversationId || msg.conversation_id || "general";
+          showNotification(`New message from ${senderName}`, {
+            body,
+            icon: "/favicon.ico",
+            tag: `chat-${conversationId}`,
+          });
+          AudioUtils.ensureInitialized().catch(() => {});
+          AudioUtils.playNotification().catch(() => {});
+        }
       }
     };
 
@@ -140,7 +213,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       off('chat:read-updated', handleReadUpdated);
       off('conversation:read', handleReadUpdated);
     };
-  }, [isConnected, socket, userId, on, off, fetchTotalUnread]);
+  }, [isConnected, socket, userId, on, off, fetchTotalUnread, showNotification]);
 
   // Global in-app popups: new chat messages + meeting invites (badge, sound, toast)
   useEffect(() => {
@@ -148,7 +221,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
     // Personal chat push (works anywhere in the app). The chat page handles
     // its own sound for the open conversation, so stay quiet on /chat.
+    // When the tab is hidden this path is covered by the OS notification
+    // above — don't double up sounds/toasts.
     const handleChatPush = (data: any) => {
+      if (typeof document !== "undefined" && document.hidden) return;
       const msg = data?.message || data || {};
       const senderId = data?.senderId || msg.senderId || msg.sender_id || "";
       if (!senderId || senderId === userId) return;
@@ -215,6 +291,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       };
       incomingCallRef.current = callData;
       setIncomingCall(callData);
+
+      // Persistent OS notification alongside the modal + ringtone so the
+      // ring is discoverable while the tab is hidden.
+      closeCallNotification();
+      callNotificationRef.current = showNotification(
+        `Incoming call from ${callData.callerName || callData.fromName || "Someone"}`,
+        {
+          body: callData.type === "audio" ? "📞 Audio call" : "🎥 Video call",
+          icon: "/favicon.ico",
+          tag: "call",
+          requireInteraction: true,
+        }
+      );
     };
 
     const handleAccepted = (data: any) => {
@@ -224,6 +313,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         setIncomingCall(null);
       }
       AudioUtils.stopAllRingtones();
+      closeCallNotification();
     };
 
     const handleRejected = (data: any) => {
@@ -233,6 +323,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         setIncomingCall(null);
       }
       AudioUtils.stopAllRingtones();
+      closeCallNotification();
     };
 
     const handleEnded = (data: any) => {
@@ -242,6 +333,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         setIncomingCall(null);
       }
       AudioUtils.stopAllRingtones();
+      closeCallNotification();
     };
 
     on('call:incoming', handleIncomingCall);
@@ -254,7 +346,38 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       off('call:rejected', handleRejected);
       off('call:ended', handleEnded);
     };
-  }, [isConnected, socket, on, off]);
+  }, [isConnected, socket, on, off, showNotification, closeCallNotification]);
+
+  // Close the persistent call notification when the call modal closes
+  useEffect(() => {
+    if (!incomingCall) closeCallNotification();
+  }, [incomingCall, closeCallNotification]);
+
+  // Document title management. Priority: incoming-call flash > unread count
+  // while hidden > normal app title.
+  useEffect(() => {
+    if (incomingCall) {
+      let showingCallTitle = true;
+      document.title = "📞 Incoming call...";
+      const interval = window.setInterval(() => {
+        showingCallTitle = !showingCallTitle;
+        document.title = showingCallTitle ? "📞 Incoming call..." : APP_TITLE;
+      }, 1000);
+      return () => {
+        window.clearInterval(interval);
+        document.title = APP_TITLE;
+      };
+    }
+
+    if (isHidden && totalUnread > 0) {
+      document.title = `(${totalUnread}) Messages`;
+      return () => {
+        document.title = APP_TITLE;
+      };
+    }
+
+    document.title = APP_TITLE;
+  }, [incomingCall, isHidden, totalUnread]);
 
   // KYC State
   const [showKycModal, setShowKycModal] = useState(false);
@@ -416,31 +539,43 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings">
-                <Link to="/meetings" className="relative">
+              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings" className="[&]:overflow-visible">
+                <Link to="/meetings" className="relative flex items-center gap-2 w-full min-w-0">
                   <Calendar />
-                  {meetingsUnread > 0 && (
-                    <span className="absolute top-1.5 right-2 group-data-[collapsible=icon]:right-1 h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar" />
-                  )}
                   <span>Meetings</span>
+                  {meetingsUnread > 0 && (
+                    <>
+                      {/* Expanded: small dot pinned to the end of the row */}
+                      <span className="ml-auto flex h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:hidden" />
+                      {/* Collapsed (icon-only): dot on the icon corner */}
+                      <span className="absolute top-1 right-1 z-10 hidden h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block" />
+                    </>
+                  )}
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat">
-                <Link to="/chat" className="relative">
+              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat" className="[&]:overflow-visible">
+                <Link to="/chat" className="relative flex items-center gap-2 w-full min-w-0">
                   <MessageSquare />
-                  {totalUnread > 0 && (
-                    <span
-                      className={cn(
-                        "absolute -top-1.5 -right-2.5 h-5 min-w-[20px] px-1.5 rounded-full bg-red-600 text-white text-[10px] font-bold flex items-center justify-center shadow-md shadow-red-500/30 ring-2 ring-sidebar z-[1]",
-                        totalUnread > 99 && "text-[9px]"
-                      )}
-                    >
-                      {totalUnread > 99 ? "99+" : totalUnread}
-                    </span>
-                  )}
                   <span>Chat</span>
+                  {totalUnread > 0 && (
+                    <>
+                      {/* Expanded: count pill inline after the label (never
+                          clipped — it lives inside the flex row, no negative
+                          offsets), styled like modern sidebar badges */}
+                      <span
+                        className={cn(
+                          "ml-auto flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-red-600 px-1.5 text-[10px] font-bold text-white shadow-md shadow-red-500/30 ring-2 ring-sidebar group-data-[collapsible=icon]:hidden",
+                          totalUnread > 99 && "text-[9px]"
+                        )}
+                      >
+                        {totalUnread > 99 ? "99+" : totalUnread}
+                      </span>
+                      {/* Collapsed (icon-only): dot on the icon corner */}
+                      <span className="absolute top-1 right-1 z-10 hidden h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block" />
+                    </>
+                  )}
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>

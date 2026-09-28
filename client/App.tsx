@@ -41,8 +41,25 @@ import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
+import { setTimezone, getTimezone } from "@/lib/datetime";
 
 const queryClient = new QueryClient();
+
+// Hydrate the app-wide business timezone as early as possible (Settings page
+// keeps it updated afterwards). Best-effort: failure just keeps the default.
+async function hydrateBusinessTimezone() {
+  try {
+    if (!localStorage.getItem("token")) return;
+    const res = await api.get("/settings");
+    const tz = res?.data?.settings?.timezone || res?.data?.timezone;
+    if (tz && typeof tz === "string" && tz !== getTimezone()) {
+      setTimezone(tz);
+    }
+  } catch {
+    /* non-fatal */
+  }
+}
+hydrateBusinessTimezone();
 
 // First: basic token protected route
 function TokenProtectedRoute({ element }: { element: JSX.Element }) {

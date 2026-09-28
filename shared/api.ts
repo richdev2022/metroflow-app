@@ -614,6 +614,8 @@ export interface BusinessProfile {
   industry: string;
   logo_url: string;
   currency: string;
+  /** IANA timezone used to render dates/times across the app (default: UTC) */
+  timezone?: string;
 }
 
 export interface UpdateBusinessProfileInput {
@@ -621,6 +623,7 @@ export interface UpdateBusinessProfileInput {
   industry?: string;
   logo_url?: string;
   currency?: "NGN" | "USD";
+  timezone?: string;
 }
 
 // 2. Contact Information Updates

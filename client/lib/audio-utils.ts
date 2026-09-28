@@ -1,10 +1,18 @@
-const SOUND_CACHE: Record<string, AudioBuffer | 'failed'> = {};
+const SOUND_CACHE: Record<string, AudioBuffer> = {};
+
+// Do NOT poison the cache with a permanent 'failed' marker: a transient
+// network error would silence the app forever. Instead remember WHEN a fetch
+// failed and retry after a short cooldown (so a missing file doesn't get
+// re-fetched on every single play call).
+const SOUND_FETCH_RETRY_MS = 30_000;
+const SOUND_FETCH_FAILED_AT: Record<string, number> = {};
 
 const AUDIO_FILE_PATHS: Record<string, string> = {
   'message-sent': '/sounds/message-sent.mp3',
   'message-received': '/sounds/message-received.mp3',
   'ringtone': '/sounds/ringtone.mp3',
   'ringback': '/sounds/ringback.mp3',
+  'call-ended': '/sounds/call-ended.mp3',
 };
 
 export const AudioUtils = {
@@ -12,7 +20,6 @@ export const AudioUtils = {
   isInitialized: false,
   activeRingtoneStop: null as (() => void) | null,
   activeRingbackStop: null as (() => void) | null,
-  audioFileFailed: false,
 
   async initAudioContext() {
     if (!this.audioContext) {
@@ -43,16 +50,19 @@ export const AudioUtils = {
   },
 
   async _loadAudioBuffer(key: string): Promise<AudioBuffer | null> {
-    if (SOUND_CACHE[key] === 'failed') return null;
     if (SOUND_CACHE[key]) return SOUND_CACHE[key];
 
     const path = AUDIO_FILE_PATHS[key];
-    if (!path || this.audioFileFailed) return null;
+    if (!path) return null;
+
+    // Retry after a cooldown instead of failing permanently.
+    const failedAt = SOUND_FETCH_FAILED_AT[key];
+    if (failedAt && Date.now() - failedAt < SOUND_FETCH_RETRY_MS) return null;
 
     try {
       const res = await fetch(path, { cache: 'force-cache' });
       if (!res.ok) {
-        SOUND_CACHE[key] = 'failed';
+        SOUND_FETCH_FAILED_AT[key] = Date.now();
         return null;
       }
       const arrayBuf = await res.arrayBuffer();
@@ -60,10 +70,10 @@ export const AudioUtils = {
       if (!this.audioContext) return null;
       const decoded = await this.audioContext.decodeAudioData(arrayBuf.slice(0));
       SOUND_CACHE[key] = decoded;
+      delete SOUND_FETCH_FAILED_AT[key];
       return decoded;
     } catch {
-      SOUND_CACHE[key] = 'failed';
-      this.audioFileFailed = true;
+      SOUND_FETCH_FAILED_AT[key] = Date.now();
       return null;
     }
   },
@@ -184,18 +194,16 @@ export const AudioUtils = {
     const buf = await this._loadAudioBuffer('ringtone');
     let stopped = false;
     let intervalId: number | null = null;
-    let timeoutId: number | null = null;
     let liveNodes: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
 
-    const playFromFile = () => {
-      if (stopped || !buf || !this.audioContext) return;
-      const res = this._playBuffer(buf, 0.85, false);
-      liveNodes = res;
-      const durMs = Math.round(buf.duration * 1000);
-      timeoutId = window.setTimeout(() => {
-        if (!stopped) intervalId = window.setTimeout(playFromFile, Math.max(800, 1700 - durMs));
-      }, durMs + 100);
-    };
+    // IMPORTANT (background ringing): browsers throttle setInterval/setTimeout
+    // to >=1s (and clamp even harder over time) in hidden tabs, so re-triggering
+    // the ring from timers dies out the moment the tab loses focus. Scheduling
+    // the WHOLE buffer as a looping source keeps the WebAudio render thread —
+    // which is NOT throttled — ringing continuously while hidden.
+    if (buf && !stopped && this.audioContext) {
+      liveNodes = this._playBuffer(buf, 0.85, true);
+    }
 
     const playTeamsStyleRing = () => {
       if (stopped || !this.audioContext) return;
@@ -313,8 +321,9 @@ export const AudioUtils = {
     };
 
     if (buf) {
-      playFromFile();
+      // Loop the asset buffer (started above); no timers involved.
     } else {
+      // Oscillator fallback (assets unavailable): keep the interval pattern.
       playTeamsStyleRing();
       intervalId = window.setInterval(playTeamsStyleRing, 2800);
     }
@@ -322,7 +331,6 @@ export const AudioUtils = {
     const stop = () => {
       stopped = true;
       if (intervalId) { clearInterval(intervalId); intervalId = null; }
-      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       if (liveNodes) {
         try { liveNodes.src.stop(); } catch {}
         try { liveNodes.gain.disconnect(); } catch {}
@@ -347,18 +355,13 @@ export const AudioUtils = {
     const buf = await this._loadAudioBuffer('ringback');
     let stopped = false;
     let intervalId: number | null = null;
-    let timeoutId: number | null = null;
     let liveNodes: { src: AudioBufferSourceNode; gain: GainNode } | null = null;
 
-    const playFromFile = () => {
-      if (stopped || !buf || !this.audioContext) return;
-      const res = this._playBuffer(buf, 0.75, false);
-      liveNodes = res;
-      const durMs = Math.round(buf.duration * 1000);
-      timeoutId = window.setTimeout(() => {
-        if (!stopped) intervalId = window.setTimeout(playFromFile, Math.max(1000, 2100 - durMs));
-      }, durMs + 100);
-    };
+    // Same background-ringing fix as playRingtone: loop the entire buffer on
+    // the AudioContext instead of re-scheduling per cycle with timers.
+    if (buf && !stopped && this.audioContext) {
+      liveNodes = this._playBuffer(buf, 0.75, true);
+    }
 
     const playProRingback = () => {
       if (stopped || !this.audioContext) return;
@@ -473,8 +476,9 @@ export const AudioUtils = {
     };
 
     if (buf) {
-      playFromFile();
+      // Loop the asset buffer (started above); no timers involved.
     } else {
+      // Oscillator fallback (assets unavailable): keep the interval pattern.
       playProRingback();
       intervalId = window.setInterval(playProRingback, 6000);
     }
@@ -482,7 +486,6 @@ export const AudioUtils = {
     const stop = () => {
       stopped = true;
       if (intervalId) { clearInterval(intervalId); intervalId = null; }
-      if (timeoutId) { clearTimeout(timeoutId); timeoutId = null; }
       if (liveNodes) {
         try { liveNodes.src.stop(); } catch {}
         try { liveNodes.gain.disconnect(); } catch {}
@@ -516,6 +519,13 @@ export const AudioUtils = {
     await this.ensureInitialized();
     const ctx = this.audioContext;
     if (!ctx) return;
+
+    // Prefer the bundled asset; fall back to the oscillator motif.
+    const buf = await this._loadAudioBuffer('call-ended');
+    if (buf) {
+      this._playBuffer(buf, 0.8);
+      return;
+    }
 
     const now = ctx.currentTime;
     const notes = [

@@ -15,6 +15,8 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Switch } from "@/components/ui/switch";
 import { IndustryCombobox } from "@/components/industry-combobox";
+import TimezoneDropdown from "@/components/TimezoneDropdown";
+import { setTimezone, formatDateTime } from "@/lib/datetime";
 import { useCountdown } from "@/hooks/useCountdown";
 
 export default function Settings() {
@@ -69,7 +71,10 @@ export default function Settings() {
       ]);
 
       const profileData = assertApiSuccess(profileRes.data, "Failed to fetch settings");
-      setProfile(profileData.settings ?? profileData.data ?? null);
+      const loadedProfile = profileData.settings ?? profileData.data ?? null;
+      setProfile(loadedProfile);
+      // Sync the app-wide display timezone with the saved business setting
+      setTimezone(loadedProfile?.timezone || "UTC");
 
       const preference = pickResponseField<string>(
         prefRes.data as Record<string, unknown>,
@@ -179,6 +184,16 @@ export default function Settings() {
     } catch (error) {
       toast({ title: "Error", description: getApiMessage(error, "Failed to update profile"), variant: "destructive" });
     }
+  };
+
+  // Timezone is applied instantly app-wide (lib/datetime) so the preview and
+  // every other screen update as soon as the user picks a value; the chosen
+  // value is persisted with the profile via the same Save handler (PUT /settings).
+  const handleTimezoneChange = (tz: string) => {
+    // The combobox emits "" when the current entry is re-picked — keep the value.
+    if (!tz) return;
+    setTimezone(tz);
+    setProfile(prev => (prev ? { ...prev, timezone: tz } : prev));
   };
 
   const handleUpdatePreference = async (val: string) => {
@@ -343,6 +358,22 @@ export default function Settings() {
                       value={profile?.industry || ""}
                       onChange={value => setProfile(prev => prev ? {...prev, industry: value} : null)}
                     />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="timezone">Timezone</Label>
+                    <TimezoneDropdown
+                      value={profile?.timezone || "UTC"}
+                      onChange={handleTimezoneChange}
+                      placeholder="Select timezone"
+                    />
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-0.5">
+                      <p className="font-medium text-foreground">
+                        Preview: {formatDateTime(new Date())}
+                      </p>
+                      <p className="text-muted-foreground">
+                        Dates and times across the app will use this timezone.
+                      </p>
+                    </div>
                   </div>
                    <div className="space-y-2">
                     <Label htmlFor="currency">Currency</Label>

@@ -2,9 +2,9 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { Task, KPISummary, ApiResponse, TeamMember, Comment, CreateCommentInput, Epic } from "@shared/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, Users, Trophy, Medal } from "lucide-react";
+import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, Users, Plus } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import {
@@ -33,6 +33,13 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import { StatCard } from "@/components/dashboard/StatCard";
+import { SectionHeader } from "@/components/dashboard/SectionHeader";
+import { CompletedTrendChart } from "@/components/dashboard/CompletedTrendChart";
+import { LeaderboardCard } from "@/components/dashboard/LeaderboardCard";
+import type { LeaderboardEntry } from "@/components/dashboard/LeaderboardCard";
+import { RecentTaskTable } from "@/components/dashboard/RecentTaskTable";
+import { formatDateLong } from "@/lib/datetime";
 
 export default function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -560,36 +567,74 @@ export default function Dashboard() {
     );
   }
 
+  // Greeting context
+  const userName = localStorage.getItem("userName") || "there";
+  const firstName = userName.trim().split(/\s+/)[0] || "there";
+  const currentHour = new Date().getHours();
+  const greeting = currentHour < 12 ? "Good morning" : currentHour < 17 ? "Good afternoon" : "Good evening";
+
+  // View mode (member filter) - mirrors the original branching
+  const isMemberView = selectedMember !== "all" && !!kpiSummary?.epics;
+
+  // Top-3 leaderboard entries (computed from all tasks, same logic as before)
+  const leaderboardEntries: LeaderboardEntry[] = teamMembers
+    .map((member) => {
+      const memberTasks = allTasks.filter((t) => t.assignedTo && t.assignedTo.includes(member.id));
+      const total = memberTasks.length;
+      const completed = memberTasks.filter((t) => t.status === "completed").length;
+      const rate = total > 0 ? (completed / total) * 100 : 0;
+      return { member, rate, completed, total };
+    })
+    .filter((stat) => stat.total > 0)
+    .sort((a, b) => b.rate - a.rate)
+    .slice(0, 3);
+
+  const copyTaskId = (displayId: string | number) => {
+    navigator.clipboard.writeText(displayId.toString());
+    toast({ title: "Copied", description: "Task ID copied to clipboard" });
+  };
+
   return (
     <Layout>
       <div className="space-y-8">
-        {/* Header */}
-        <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-          <div>
-            <h1 className="text-3xl md:text-4xl font-bold text-foreground">KPI Dashboard</h1>
-            <p className="text-muted-foreground mt-2">
-              Performance tracking summary and analytics
-            </p>
+        {/* Elegant page header */}
+        <section className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-sm md:p-8">
+          <div aria-hidden="true" className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
+          <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 -left-16 h-48 w-48 rounded-full bg-primary/5 blur-3xl" />
+          <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
+            <div className="space-y-2">
+              <p className="text-sm font-medium text-muted-foreground">{formatDateLong(new Date())}</p>
+              <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-3xl">
+                {greeting}, <span className="text-primary">{firstName}</span>
+              </h1>
+              <p className="max-w-xl text-sm text-muted-foreground">
+                Here is the pulse of your team today - KPIs, epic progress and everything in between.
+              </p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <label htmlFor="member-filter" className="sr-only">Filter by member</label>
+              <Select value={selectedMember} onValueChange={setSelectedMember}>
+                <SelectTrigger id="member-filter" className="w-[190px] bg-background">
+                  <SelectValue placeholder="Select team member" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All Members</SelectItem>
+                  {teamMembers.map((member) => (
+                    <SelectItem key={member.id} value={member.id}>
+                      {member.name}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Link to="/tasks">
+                <Button className="gap-2 shadow-sm">
+                  <Plus className="h-4 w-4" />
+                  New Task
+                </Button>
+              </Link>
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <label htmlFor="member-filter" className="text-sm font-medium">
-              Filter by Member:
-            </label>
-            <Select value={selectedMember} onValueChange={setSelectedMember}>
-              <SelectTrigger className="w-[200px]">
-                <SelectValue placeholder="Select team member" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="all">All Members</SelectItem>
-                {teamMembers.map((member) => (
-                  <SelectItem key={member.id} value={member.id}>
-                    {member.name}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        </div>
+        </section>
 
         {/* Error Alert */}
         {error && (
@@ -601,63 +646,141 @@ export default function Dashboard() {
 
         {/* Overdue Tasks Alert */}
         {kpiSummary && kpiSummary.overdueTasks.length > 0 && (
-          <Alert className="bg-orange-50 border-orange-200">
-            <Clock className="h-4 w-4 text-orange-600" />
-            <AlertDescription className="text-orange-700">
-              You have {kpiSummary.overdueTasks.length} overdue task(s). Please
-              review them!
+          <Alert className="border-amber-200 bg-gradient-to-r from-amber-50 to-orange-50 dark:border-amber-500/20 dark:from-amber-500/10 dark:to-orange-500/10">
+            <Clock className="h-4 w-4 text-amber-600" />
+            <AlertDescription className="flex flex-wrap items-center justify-between gap-2 text-amber-800 dark:text-amber-300">
+              <span>
+                You have <strong>{kpiSummary.overdueTasks.length}</strong> overdue task(s). Please review them!
+              </span>
+              <Link to="/tasks" className="text-sm font-medium underline-offset-2 hover:underline">
+                Review tasks
+              </Link>
             </AlertDescription>
           </Alert>
         )}
 
-        {/* KPI Summary Cards */}
-        {selectedMember !== "all" && kpiSummary?.epics ? (
-          <div className="space-y-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-              {/* Overall Summary for Team Member */}
-              <Card className="border border-border">
+        {/* KPI stat cards */}
+        {kpiSummary && (
+          <section className="space-y-4">
+            <SectionHeader
+              title="Key metrics"
+              subtitle={
+                isMemberView
+                  ? `Filtered by ${teamMembers.find((m) => m.id === selectedMember)?.name || "member"}`
+                  : "Across the whole team"
+              }
+            />
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+              <StatCard
+                label="Total Tasks"
+                value={kpiSummary.monthly.total}
+                icon={Target}
+                delta={`${kpiSummary.current.total} this month`}
+                deltaTone="neutral"
+              />
+              <StatCard
+                label="Completed"
+                value={kpiSummary.monthly.completed}
+                icon={Check}
+                iconClassName="bg-emerald-500/10 text-emerald-600"
+                delta={`${kpiSummary.monthly.percentageCompletion.toFixed(1)}% completion`}
+                deltaTone="up"
+                footer={`${kpiSummary.current.completed} completed this month`}
+              />
+              <StatCard
+                label="Completion Rate"
+                value={`${kpiSummary.monthly.percentageCompletion.toFixed(1)}%`}
+                icon={TrendingUp}
+                delta="all tasks"
+                deltaTone="neutral"
+                footer={
+                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-secondary">
+                    <div
+                      className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary transition-all duration-500"
+                      style={{ width: `${Math.min(100, kpiSummary.monthly.percentageCompletion)}%` }}
+                    />
+                  </div>
+                }
+              />
+              <StatCard
+                label="Overdue"
+                value={kpiSummary.overdueTasks.length}
+                icon={Clock}
+                iconClassName="bg-red-500/10 text-red-600"
+                delta={kpiSummary.overdueTasks.length > 0 ? "needs attention" : "all on track"}
+                deltaTone={kpiSummary.overdueTasks.length > 0 ? "down" : "up"}
+              />
+            </div>
+          </section>
+        )}
+
+        {/* Performance overview: trend chart + overall summary */}
+        <section className="space-y-4">
+          <SectionHeader title="Performance overview" />
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <CompletedTrendChart tasks={tasks} className="lg:col-span-2" />
+            {kpiSummary && (
+              <Card className="rounded-2xl border-0 bg-card shadow-sm ring-1 ring-border">
                 <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Target className="h-5 w-5 text-primary" />
+                  <CardTitle className="flex items-center gap-2 text-base font-semibold">
+                    <Target className="h-4 w-4 text-primary" />
                     Overall Summary
                   </CardTitle>
+                  <CardDescription>Monthly target vs accomplishment</CardDescription>
                 </CardHeader>
                 <CardContent className="space-y-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Total Tasks</p>
-                    <p className="text-3xl font-bold text-foreground">
-                      {kpiSummary.monthly.total}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Completed</p>
-                    <p className="text-2xl font-bold text-primary">
-                      {kpiSummary.monthly.completed}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground mb-2">
-                      Completion Rate
-                    </p>
-                    <div className="w-full bg-secondary rounded-full h-2">
-                      <div
-                        className="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${kpiSummary.monthly.percentageCompletion}%`,
-                        }}
-                      ></div>
+                  <div className="flex items-end justify-between">
+                    <div>
+                      <p className="text-xs text-muted-foreground">Total Tasks</p>
+                      <p className="text-3xl font-semibold tracking-tight">{kpiSummary.monthly.total}</p>
                     </div>
-                    <p className="text-sm font-semibold text-primary mt-2">
-                      {kpiSummary.monthly.percentageCompletion.toFixed(1)}%
-                    </p>
+                    <div className="text-right">
+                      <p className="text-xs text-muted-foreground">Completed</p>
+                      <p className="text-2xl font-semibold text-primary">{kpiSummary.monthly.completed}</p>
+                    </div>
+                  </div>
+                  <div>
+                    <div className="mb-2 flex items-center justify-between text-xs text-muted-foreground">
+                      <span>Completion rate</span>
+                      <span className="font-semibold text-primary">
+                        {kpiSummary.monthly.percentageCompletion.toFixed(1)}%
+                      </span>
+                    </div>
+                    <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                      <div
+                        className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary transition-all duration-500"
+                        style={{ width: `${Math.min(100, kpiSummary.monthly.percentageCompletion)}%` }}
+                      />
+                    </div>
+                  </div>
+                  <div className="space-y-2 border-t border-border pt-3 text-sm">
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Target</span>
+                      <span className="font-semibold">
+                        {kpiSummary.monthly.targetVsAccomplishment.target.toFixed(1)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between">
+                      <span className="text-muted-foreground">Accomplished</span>
+                      <span className="font-semibold text-primary">
+                        {kpiSummary.monthly.targetVsAccomplishment.accomplished.toFixed(1)}
+                      </span>
+                    </div>
                   </div>
                 </CardContent>
               </Card>
+            )}
+          </div>
+        </section>
 
-              {/* Epic Summaries */}
+        {/* Epic breakdown (member view) */}
+        {isMemberView && kpiSummary?.epics && (
+          <section className="space-y-4">
+            <SectionHeader title="Epic breakdown" subtitle="Progress for each epic assigned to this member" />
+            <div className="grid grid-cols-1 gap-6 md:grid-cols-2 xl:grid-cols-3">
               {Object.entries(kpiSummary.epics).map(([epicName, epicData]) => {
                 const assignedNames = epicData.assignedTo
-                  ?.map((id: string) => teamMembers.find(d => d.id === id)?.name)
+                  ?.map((id: string) => teamMembers.find((d) => d.id === id)?.name)
                   .filter(Boolean)
                   .join(", ");
 
@@ -674,430 +797,161 @@ export default function Dashboard() {
                 }
 
                 return (
-                  <Card key={epicName} className="border border-border">
+                  <Card
+                    key={epicName}
+                    className="group relative overflow-hidden rounded-2xl border-0 bg-card shadow-sm ring-1 ring-border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
+                  >
                     <CardHeader className="pb-3">
-                      <CardTitle className="text-lg flex items-center justify-between">
-                      <div className="flex items-center gap-2">
-                        <TrendingUp className="h-5 w-5 text-primary" />
-                        {epicName}
-                      </div>
-                      <Button
-                        variant="ghost"
-                        size="sm"
-                        onClick={() => openEpicEditModal(epicName)}
-                        className="gap-1 h-6"
-                      >
-                        <Edit className="h-3 w-3" />
-                        Edit
-                      </Button>
-                    </CardTitle>
-                      <div className="flex flex-col gap-1 mt-2">
-                        {assignedNames && (
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <Users className="h-4 w-4" />
-                            <span>{assignedNames}</span>
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="flex min-w-0 items-center gap-2.5">
+                          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-primary/10 text-primary">
+                            <TrendingUp className="h-4 w-4" />
                           </div>
-                        )}
-                        {epicData.startDate && epicData.endDate && (
-                          <p className="text-xs text-muted-foreground">
-                            {new Date(epicData.startDate).toLocaleDateString()} -{" "}
-                            {new Date(epicData.endDate).toLocaleDateString()}
-                          </p>
+                          <div className="min-w-0">
+                            <CardTitle className="truncate text-base font-semibold">{epicName}</CardTitle>
+                            {epicData.startDate && epicData.endDate && (
+                              <p className="text-xs text-muted-foreground">
+                                {new Date(epicData.startDate).toLocaleDateString()} -{" "}
+                                {new Date(epicData.endDate).toLocaleDateString()}
+                              </p>
+                            )}
+                          </div>
+                        </div>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => openEpicEditModal(epicName)}
+                          className="h-7 gap-1 opacity-0 transition-opacity focus:opacity-100 group-hover:opacity-100"
+                        >
+                          <Edit className="h-3 w-3" />
+                          Edit
+                        </Button>
+                      </div>
+                      <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+                        {assignedNames && (
+                          <span className="inline-flex items-center gap-1">
+                            <Users className="h-3 w-3" />
+                            {assignedNames}
+                          </span>
                         )}
                         {epicData.endDate && (
-                          <div className={`text-sm font-medium ${isOverdue ? "text-red-500" : "text-green-500"}`}>
-                            {diffDays > 0 ? `days left +${diffDays}` : `days overdue ${diffDays}`}
-                          </div>
+                          <span className={isOverdue ? "font-medium text-red-500" : "font-medium text-emerald-600"}>
+                            {diffDays > 0 ? `${diffDays} days left` : `${Math.abs(diffDays)} days overdue`}
+                          </span>
                         )}
                       </div>
                     </CardHeader>
-                    <CardContent className="space-y-4">
-                      <div>
-                        <p className="text-sm text-muted-foreground">
-                          Total Tasks
-                        </p>
-                        <p className="text-3xl font-bold text-foreground">
-                          {epicData.total}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground">Completed</p>
-                        <p className="text-2xl font-bold text-primary">
-                          {epicData.completed}
-                        </p>
-                      </div>
-                      <div>
-                        <p className="text-sm text-muted-foreground mb-2">
-                          Completion Rate
-                        </p>
-                        <div className="w-full bg-secondary rounded-full h-2">
-                          <div
-                            className="bg-primary h-2 rounded-full transition-all duration-300"
-                            style={{
-                              width: `${epicData.percentageCompletion}%`,
-                            }}
-                          ></div>
+                    <CardContent className="space-y-3">
+                      <div className="flex items-end justify-between">
+                        <div>
+                          <p className="text-xs text-muted-foreground">Completed</p>
+                          <p className="text-2xl font-semibold tracking-tight">
+                            {epicData.completed}
+                            <span className="text-base font-normal text-muted-foreground">
+                              /{epicData.total}
+                            </span>
+                          </p>
                         </div>
-                        <p className="text-sm font-semibold text-primary mt-2">
+                        <p className="text-sm font-semibold text-primary">
                           {epicData.percentageCompletion.toFixed(1)}%
                         </p>
+                      </div>
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-secondary">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-primary/70 to-primary transition-all duration-500"
+                          style={{ width: `${epicData.percentageCompletion}%` }}
+                        />
                       </div>
                     </CardContent>
                   </Card>
                 );
               })}
             </div>
-          </div>
-        ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            {/* Top 3 Members */}
-            <Card className="border border-border">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-lg flex items-center gap-2">
-                  <Trophy className="h-5 w-5 text-yellow-500" />
-                  Top 3 Members
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                {(() => {
-                  const memberStats = teamMembers.map(member => {
-                    const memberTasks = allTasks.filter(t => t.assignedTo && t.assignedTo.includes(member.id));
-                    const total = memberTasks.length;
-                    const completed = memberTasks.filter(t => t.status === "completed").length;
-                    const rate = total > 0 ? (completed / total) * 100 : 0;
-                    return { member, rate, completed, total };
-                  });
-                  
-                  const top3 = memberStats
-                    .filter(stat => stat.total > 0) // Only include members with tasks
-                    .sort((a, b) => b.rate - a.rate)
-                    .slice(0, 3);
-
-                  if (top3.length === 0) {
-                     return <p className="text-sm text-muted-foreground">No data available</p>;
-                  }
-
-                  return (
-                    <div className="space-y-4">
-                      {top3.map((stat, index) => (
-                        <div key={stat.member.id} className="flex items-center justify-between p-3 rounded-lg bg-secondary/20">
-                          <div className="flex items-center gap-3">
-                             <div className="flex items-center justify-center w-6">
-                                {index === 0 && <Trophy className="h-5 w-5 text-yellow-500" />}
-                                {index === 1 && <Medal className="h-5 w-5 text-gray-400" />}
-                                {index === 2 && <Medal className="h-5 w-5 text-amber-600" />}
-                             </div>
-                             <Avatar className="h-9 w-9 border border-border">
-                                <AvatarFallback className="text-xs font-bold">
-                                  {stat.member.name.substring(0, 2).toUpperCase()}
-                                </AvatarFallback>
-                             </Avatar>
-                             <div>
-                               <p className="text-sm font-bold">{stat.member.name}</p>
-                               <div className="flex items-center gap-2">
-                                  <div className="w-16 bg-secondary rounded-full h-1.5 mt-1">
-                                    <div 
-                                      className="bg-primary h-1.5 rounded-full" 
-                                      style={{ width: `${stat.rate}%` }}
-                                    />
-                                  </div>
-                                  <p className="text-xs text-muted-foreground mt-0.5">{stat.rate.toFixed(0)}%</p>
-                               </div>
-                             </div>
-                          </div>
-                          <div className="text-right">
-                            <Badge variant="outline" className="text-xs">
-                              {stat.completed}/{stat.total} Tasks
-                            </Badge>
-                          </div>
-                        </div>
-                      ))}
-                      <div className="pt-2">
-                        <Link to="/ranking" className="flex items-center justify-center text-sm text-primary font-medium hover:underline gap-1">
-                          View Full Ranking <ArrowRight className="h-3 w-3" />
-                        </Link>
-                      </div>
-                    </div>
-                  );
-                })()}
-              </CardContent>
-            </Card>
-
-            {/* Monthly KPI */}
-            {kpiSummary && (
-              <Card className="border border-border">
-                <CardHeader className="pb-3">
-                  <CardTitle className="text-lg flex items-center gap-2">
-                    <Target className="h-5 w-5 text-primary" />
-                    Overall Summary
-                  </CardTitle>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div>
-                    <p className="text-sm text-muted-foreground">Total Tasks</p>
-                    <p className="text-3xl font-bold text-foreground">
-                      {kpiSummary.monthly.total}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground">Completed</p>
-                    <p className="text-2xl font-bold text-primary">
-                      {kpiSummary.monthly.completed}
-                    </p>
-                  </div>
-                  <div>
-                    <p className="text-sm text-muted-foreground mb-2">
-                      Completion Rate
-                    </p>
-                    <div className="w-full bg-secondary rounded-full h-2">
-                      <div
-                        className="bg-primary h-2 rounded-full transition-all duration-300"
-                        style={{
-                          width: `${kpiSummary.monthly.percentageCompletion}%`,
-                        }}
-                      ></div>
-                    </div>
-                    <p className="text-sm font-semibold text-primary mt-2">
-                      {kpiSummary.monthly.percentageCompletion.toFixed(1)}%
-                    </p>
-                  </div>
-                  <div className="pt-2 border-t border-border">
-                    <div className="flex justify-between mb-2">
-                      <span className="text-sm text-muted-foreground">
-                        Target
-                      </span>
-                      <span className="font-semibold">
-                        {kpiSummary.monthly.targetVsAccomplishment.target.toFixed(
-                          1,
-                        )}
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-sm text-muted-foreground">
-                        Accomplished
-                      </span>
-                      <span className="font-semibold text-primary">
-                        {kpiSummary.monthly.targetVsAccomplishment.accomplished.toFixed(
-                          1,
-                        )}
-                      </span>
-                    </div>
-                  </div>
-                </CardContent>
-              </Card>
-            )}
-          </div>
+          </section>
         )}
 
-        {/* Recent Tasks */}
-        <div className="space-y-6">
-          {selectedMember !== "all" && kpiSummary?.epics ? (
-            Object.entries(kpiSummary.epics).map(([epicName, epicData]) => {
-              const epicTasks = tasks
-                .filter((t) => (t.epic || "No Epic") === epicName)
-                .slice(0, 5);
+        {/* Leaderboard (all-members view) */}
+        {!isMemberView && (
+          <section className="space-y-4">
+            <SectionHeader title="Leaderboard" subtitle="Top 3 members by completion rate" />
+            <LeaderboardCard entries={leaderboardEntries} />
+          </section>
+        )}
 
-              if (epicTasks.length === 0) return null;
+        {/* Recent tasks */}
+        <section className="space-y-4">
+          <SectionHeader
+            title="Recent tasks"
+            action={
+              <Link to="/tasks" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                View all <ArrowRight className="h-3 w-3" />
+              </Link>
+            }
+          />
+          {isMemberView && kpiSummary?.epics ? (
+            <div className="space-y-6">
+              {Object.entries(kpiSummary.epics).map(([epicName]) => {
+                const epicTasks = tasks
+                  .filter((t) => (t.epic || "No Epic") === epicName)
+                  .slice(0, 5);
 
-              return (
-                <Card key={epicName} className="border border-border">
-                  <CardHeader>
-                    <CardTitle>{epicName} - Recent Tasks</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <div className="overflow-x-auto">
-                      <table className="w-full text-sm min-w-[800px]">
-                        <thead>
-                          <tr className="border-b border-border">
-                            <th className="text-left py-3 px-4 font-semibold w-[100px]">
-                              ID
-                            </th>
-                            <th className="text-left py-3 px-4 font-semibold">
-                              Title
-                            </th>
-                            <th className="text-left py-3 px-4 font-semibold">
-                              Assigned To
-                            </th>
-                            <th className="text-left py-3 px-4 font-semibold">
-                              Status
-                            </th>
-                            <th className="text-left py-3 px-4 font-semibold">
-                              Overdue
-                            </th>
-                          </tr>
-                        </thead>
-                        <tbody>
-                          {epicTasks.map((task) => (
-                            <tr key={task.id} className="border-b border-border hover:bg-muted/50 cursor-pointer" onClick={() => openTaskDetail(task)}>
-                              <td className="py-3 px-4">
-                                <div className="flex items-center gap-2 group">
-                                  <span className="font-mono text-muted-foreground">#{(task as any).displayId}</span>
-                                  <Button
-                                    variant="ghost"
-                                    size="icon"
-                                    className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                    onClick={(e) => {
-                                      e.stopPropagation();
-                                      navigator.clipboard.writeText((task as any).displayId.toString());
-                                      toast({ title: "Copied", description: "Task ID copied to clipboard" });
-                                    }}
-                                  >
-                                    <Copy className="h-3 w-3" />
-                                  </Button>
-                                </div>
-                              </td>
-                              <td className="py-3 px-4 font-medium max-w-[200px]">
-                                <div className="break-words whitespace-normal" title={task.title}>
-                                  {task.title}
-                                </div>
-                              </td>
-                              <td className="py-3 px-4">
-                                {task.assignedTo?.map(id => teamMembers.find(d => d.id === id)?.name).join(", ") || "-"}
-                              </td>
-                              <td className="py-3 px-4">
-                                <Badge
-                                  variant={
-                                    task.status === "completed"
-                                      ? "default"
-                                      : "secondary"
-                                  }
-                                >
-                                  {task.status}
-                                </Badge>
-                              </td>
-                              <td className="py-3 px-4">
-                                {task.isOverdue &&
-                                task.status !== "completed" ? (
-                                  <span className="text-destructive flex items-center gap-1">
-                                    <AlertCircle className="h-4 w-4" />
-                                    Overdue
-                                  </span>
-                                ) : (
-                                  <span className="text-muted-foreground">
-                                    -
-                                  </span>
-                                )}
-                              </td>
-                            </tr>
-                          ))}
-                        </tbody>
-                      </table>
-                    </div>
-                  </CardContent>
-                </Card>
-              );
-            })
+                if (epicTasks.length === 0) return null;
+
+                return (
+                  <Card key={epicName} className="rounded-2xl border-0 bg-card shadow-sm ring-1 ring-border">
+                    <CardHeader className="pb-4">
+                      <CardTitle className="text-base font-semibold">{epicName}</CardTitle>
+                      <CardDescription>Latest {epicTasks.length} task(s) in this epic</CardDescription>
+                    </CardHeader>
+                    <CardContent className="px-3 pb-3">
+                      <RecentTaskTable
+                        tasks={epicTasks}
+                        teamMembers={teamMembers}
+                        onOpenTask={openTaskDetail}
+                        onCopyId={copyTaskId}
+                      />
+                    </CardContent>
+                  </Card>
+                );
+              })}
+            </div>
           ) : (
-            <Card className="border border-border">
-              <CardHeader>
-                <CardTitle>Recent Tasks</CardTitle>
+            <Card className="rounded-2xl border-0 bg-card shadow-sm ring-1 ring-border">
+              <CardHeader className="pb-4">
+                <CardTitle className="text-base font-semibold">Recent Tasks</CardTitle>
+                <CardDescription>Latest 10 tasks across all epics</CardDescription>
               </CardHeader>
-              <CardContent>
+              <CardContent className="px-3 pb-3">
                 {!tasks || tasks.length === 0 ? (
-                  <div className="text-center py-8">
-                    <p className="text-muted-foreground">No tasks found</p>
-                    <p className="text-sm text-muted-foreground mt-1">
+                  <div className="flex flex-col items-center justify-center rounded-xl border border-dashed py-12 text-center">
+                    <Target className="mb-3 h-10 w-10 text-muted-foreground/40" />
+                    <p className="font-medium">No tasks yet</p>
+                    <p className="mt-1 text-sm text-muted-foreground">
                       Create tasks to see them here
                     </p>
                   </div>
                 ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm min-w-[800px]">
-                      <thead>
-                        <tr className="border-b border-border">
-                          <th className="text-left py-3 px-4 font-semibold w-[100px]">
-                            ID
-                          </th>
-                          <th className="text-left py-3 px-4 font-semibold">
-                            Title
-                          </th>
-                          <th className="text-left py-3 px-4 font-semibold">
-                            Epic
-                          </th>
-                          <th className="text-left py-3 px-4 font-semibold">
-                            Assigned To
-                          </th>
-                          <th className="text-left py-3 px-4 font-semibold">
-                            Status
-                          </th>
-                          <th className="text-left py-3 px-4 font-semibold">
-                            Overdue
-                          </th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {tasks.slice(0, 10).map((task) => (
-                          <tr key={task.id} className="border-b border-border hover:bg-muted/50 cursor-pointer" onClick={() => openTaskDetail(task)}>
-                            <td className="py-3 px-4">
-                              <div className="flex items-center gap-2 group">
-                                <span className="font-mono text-muted-foreground">#{(task as any).displayId}</span>
-                                <Button
-                                  variant="ghost"
-                                  size="icon"
-                                  className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigator.clipboard.writeText((task as any).displayId.toString());
-                                    toast({ title: "Copied", description: "Task ID copied to clipboard" });
-                                  }}
-                                >
-                                  <Copy className="h-3 w-3" />
-                                </Button>
-                              </div>
-                            </td>
-                            <td className="py-3 px-4 font-medium max-w-[200px]">
-                              <div className="truncate" title={task.title}>
-                                {task.title}
-                              </div>
-                            </td>
-                            <td className="py-3 px-4">
-                              {epicsList.find(e => e.id === task.epicId)?.name || "-"}
-                            </td>
-                            <td className="py-3 px-4">
-                              {task.assignedTo?.map(id => teamMembers.find(d => d.id === id)?.name).join(", ") || "-"}
-                            </td>
-                            <td className="py-3 px-4">
-                              <Badge
-                                variant={
-                                  task.status === "completed"
-                                    ? "default"
-                                    : "secondary"
-                                }
-                              >
-                                {task.status}
-                              </Badge>
-                            </td>
-                            <td className="py-3 px-4">
-                              {task.isOverdue &&
-                              task.status !== "completed" ? (
-                                <span className="text-destructive flex items-center gap-1">
-                                  <AlertCircle className="h-4 w-4" />
-                                  Overdue
-                                </span>
-                              ) : (
-                                <span className="text-muted-foreground">
-                                  -
-                                </span>
-                              )}
-                            </td>
-                          </tr>
-                        ))}
-                      </tbody>
-                    </table>
-                  </div>
+                  <RecentTaskTable
+                    tasks={tasks.slice(0, 10)}
+                    teamMembers={teamMembers}
+                    epicsList={epicsList}
+                    showEpicColumn
+                    onOpenTask={openTaskDetail}
+                    onCopyId={copyTaskId}
+                  />
                 )}
               </CardContent>
             </Card>
           )}
 
-          <div className="flex justify-center mt-6">
+          <div className="flex justify-center pt-2">
             <Link to="/tasks">
               <Button variant="outline" className="gap-2">
                 View All Tasks <ArrowRight className="h-4 w-4" />
               </Button>
             </Link>
           </div>
-        </div>
+        </section>
 
         {/* Edit Epic Modal */}
         <Dialog open={showEpicEditModal} onOpenChange={setShowEpicEditModal}>

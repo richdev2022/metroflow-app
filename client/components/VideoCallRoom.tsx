@@ -863,13 +863,40 @@ export default function VideoCallRoom({
       isHost,
       audioEnabled: audioEnabledRef.current,
       videoEnabled: videoEnabledRef.current,
+      // Advertise waiting-room protocol support: the server then ENFORCES the
+      // waiting room for this client (queues the join + waits for admission)
+      // instead of letting the participant walk straight into the room.
+      waitingRoomSupport: true,
     };
 
-    // Join the room (single authoritative socket emit with ACK)
+    // Join the room (single authoritative socket emit with ACK).
+    // The ACK may report { waitingRoom: true } when the room enforces its
+    // waiting room - in that case keep showing the waiting screen until the
+    // host admits this participant (the `waiting-room:admitted` handler below
+    // re-runs the join).
+    const handleJoinAck = (response: any) => {
+      if (response && response.waitingRoom) {
+        setIsInWaitingRoom(true);
+        setWaitingForHost(true);
+        hasJoinedRef.current = false;
+        if (!waitingRequestSentRef.current) {
+          waitingRequestSentRef.current = true;
+          socket?.emit('waiting-room:request', {
+            roomId: socketRoomId,
+            userId: currentUserId,
+            userName,
+          });
+          socket?.emit('waiting-room:get-queue', { roomId: socketRoomId });
+        }
+        return;
+      }
+      applyJoinAck(response);
+    };
+
     if (meetingId) {
-      joinMeeting(socketRoomId, joinOpts, applyJoinAck);
+      joinMeeting(socketRoomId, joinOpts, handleJoinAck);
     } else {
-      joinCall(socketRoomId, joinOpts, applyJoinAck);
+      joinCall(socketRoomId, joinOpts, handleJoinAck);
     }
 
     // If we came from an invitation, notify others
@@ -1871,19 +1898,39 @@ export default function VideoCallRoom({
 
   const admitParticipant = (participantId: string) => {
     if (!socket || !roomId) return;
-    socket.emit('waiting-room:admit', { roomId, meetingId: roomId, participantId });
+    // ACK closes the loop: if the participant is no longer queued (dropped
+    // connection / already admitted via another worker), the server answers
+    // success:false and the authoritative `waiting-room:queue` broadcast
+    // refreshes the list.
+    socket.emit('waiting-room:admit', { roomId, meetingId: roomId, participantId }, (resp: any) => {
+      if (resp && resp.success === false) {
+        toast({
+          title: 'Unavailable',
+          description: resp.error || 'Participant is no longer waiting',
+          duration: 4000,
+        });
+      }
+    });
     setWaitingQueue(prev => prev.filter(p => p.userId !== participantId));
   };
 
   const denyParticipant = (participantId: string) => {
     if (!socket || !roomId) return;
-    socket.emit('waiting-room:deny', { roomId, meetingId: roomId, participantId });
+    socket.emit('waiting-room:deny', { roomId, meetingId: roomId, participantId }, (resp: any) => {
+      if (resp && resp.success === false) {
+        toast({
+          title: 'Unavailable',
+          description: resp.error || 'Participant is no longer waiting',
+          duration: 4000,
+        });
+      }
+    });
     setWaitingQueue(prev => prev.filter(p => p.userId !== participantId));
   };
 
   const admitAll = () => {
     if (!socket || !roomId) return;
-    socket.emit('waiting-room:admit-all', { roomId, meetingId: roomId });
+    socket.emit('waiting-room:admit-all', { roomId, meetingId: roomId }, () => {});
     setWaitingQueue([]);
   };
 
@@ -2202,7 +2249,8 @@ export default function VideoCallRoom({
       if (!isHost) return;
       // Ignore queue events for other rooms (host can only be in one room tab,
       // but the socket may still receive broadcasts from previous rooms).
-      if (data?.roomId && socketRoomId && data.roomId !== socketRoomId) return;
+      // Accept either the resolved DB id or the code the client joined with.
+      if (data?.roomId && socketRoomId && data.roomId !== socketRoomId && data.roomId !== roomId && data.roomId !== callId && data.roomId !== meetingId) return;
       const uid = data.userId || data.participantId;
       const uname = data.userName || data.participantName || data.name || uid;
       setWaitingQueue(prev => {
@@ -2219,12 +2267,18 @@ export default function VideoCallRoom({
     };
 
     const handleWaitingRoomQueue = (data: any) => {
-      if (data && data.roomId !== socketRoomId) return;
+      // Broadcast event: the server echoes the RESOLVED room id while this
+      // client may know the room by its code - accept either shape.
+      if (data && data.roomId && data.roomId !== socketRoomId && data.roomId !== roomId && data.roomId !== callId && data.roomId !== meetingId) return;
       setWaitingQueue(data.queue || []);
     };
 
     const handleAdmitted = async (data: any) => {
-      if (data && data.roomId !== socketRoomId) return;
+      // `waiting-room:admitted` is emitted UNICAST to this participant's socket
+      // (io.to(entry.socketId)). Do NOT filter by roomId here: the server
+      // echoes the resolved DB UUID while this client may have joined via a
+      // call code / meeting code, and a strict equality check silently dropped
+      // the admission -> "host approved but participant still stuck waiting".
       admittedRef.current = true;
       setIsInWaitingRoom(false);
       setWaitingForHost(false);
@@ -2252,7 +2306,7 @@ export default function VideoCallRoom({
     };
 
     const handleDenied = (data: any) => {
-      if (data && data.roomId !== socketRoomId) return;
+      // Unicast event - see handleAdmitted note on why roomId is not filtered.
       setWaitingForHost(false);
       setIsInWaitingRoom(false);
       toast({
@@ -2293,6 +2347,33 @@ export default function VideoCallRoom({
       socket.off('waiting-room:admit', handleAdmitted);
     };
   }, [socket, isHost, roomId, toast, onLeave]);
+
+  // Re-request admission after a socket reconnection while still waiting.
+  // The old socket id died with the disconnect; the queue entry is rebound
+  // server-side on the next request (upsert by participantId).
+  useEffect(() => {
+    if (!socket) return;
+    let reconnectTimer: number | null = null;
+    const handleReconnect = () => {
+      if (admittedRef.current || hasJoinedRef.current) return;
+      if (!isHost && waitingRoomEnabled) {
+        if (reconnectTimer) window.clearTimeout(reconnectTimer);
+        reconnectTimer = window.setTimeout(() => {
+          socket.emit('waiting-room:request', {
+            roomId: socketRoomId,
+            userId: localStorage.getItem('userId') || '',
+            userName,
+          });
+          socket.emit('waiting-room:get-queue', { roomId: socketRoomId });
+        }, 600);
+      }
+    };
+    socket.on('connect', handleReconnect);
+    return () => {
+      socket.off('connect', handleReconnect);
+      if (reconnectTimer) window.clearTimeout(reconnectTimer);
+    };
+  }, [socket, isHost, waitingRoomEnabled, socketRoomId, userName]);
 
   // Listen for screen share and media state events
   useEffect(() => {
@@ -2679,14 +2760,14 @@ export default function VideoCallRoom({
   const renderInvitationError = () => {
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
-        <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-5 text-center space-y-6 sm:p-8">
           <div className="space-y-2">
             <AlertCircle className="h-12 w-12 text-red-500 mx-auto" />
             <h1 className="text-2xl font-bold text-white">Invitation Error</h1>
             <p className="text-gray-300">{invitationError}</p>
           </div>
           <div className="border-t border-gray-700 pt-4">
-            <Button onClick={onLeave} variant="outline" className="w-full">
+            <Button onClick={onLeave} variant="outline" className="h-11 w-full sm:h-9">
               Go Back
             </Button>
           </div>
@@ -2699,7 +2780,7 @@ export default function VideoCallRoom({
   const renderInvitationVerifying = () => {
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
-        <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-5 text-center space-y-6 sm:p-8">
           <div className="space-y-2">
             <Loader2 className="h-12 w-12 text-blue-500 mx-auto animate-spin" />
             <h1 className="text-2xl font-bold text-white">Verifying Invitation</h1>
@@ -2714,14 +2795,14 @@ export default function VideoCallRoom({
   const renderMissingRoomError = () => {
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
-        <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-5 text-center space-y-6 sm:p-8">
           <div className="space-y-2">
             <AlertCircle className="h-12 w-12 text-red-500 mx-auto" />
             <h1 className="text-2xl font-bold text-white">Invalid Link</h1>
             <p className="text-gray-300">This invitation link is missing the room ID. Please request a new invitation.</p>
           </div>
           <div className="border-t border-gray-700 pt-4">
-            <Button onClick={onLeave} variant="outline" className="w-full">
+            <Button onClick={onLeave} variant="outline" className="h-11 w-full sm:h-9">
               Go Back
             </Button>
           </div>
@@ -2747,7 +2828,7 @@ export default function VideoCallRoom({
   if (requiresPassword) {
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
-        <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-5 text-center space-y-6 sm:p-8">
           <div className="space-y-2">
             <h1 className="text-2xl font-bold text-white">Meeting Password Required</h1>
             <p className="text-gray-300">This meeting is password protected</p>
@@ -2764,17 +2845,17 @@ export default function VideoCallRoom({
               onKeyDown={(e) => {
                 if (e.key === 'Enter') verifyPassword();
               }}
-              className="w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500"
+              className="min-h-11 w-full px-4 py-2 bg-gray-700 border border-gray-600 rounded-lg text-white placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-blue-500 sm:min-h-9"
             />
             {passwordError && (
               <p className="text-red-400 text-sm">{passwordError}</p>
             )}
-            <Button onClick={verifyPassword} className="w-full">
+            <Button onClick={verifyPassword} className="h-11 w-full sm:h-9">
               Enter Meeting
             </Button>
           </div>
           <div className="border-t border-gray-700 pt-4">
-            <Button onClick={leaveCall} variant="outline" className="w-full">
+            <Button onClick={leaveCall} variant="outline" className="h-11 w-full sm:h-9">
               Leave
             </Button>
           </div>
@@ -2792,7 +2873,7 @@ export default function VideoCallRoom({
 
     return (
       <div className="flex flex-col h-full bg-gradient-to-b from-gray-900 to-black items-center justify-center p-4">
-        <div className="max-w-md w-full bg-gray-800 rounded-lg p-8 text-center space-y-6">
+        <div className="max-w-md w-full bg-gray-800 rounded-lg p-5 text-center space-y-6 sm:p-8">
           <div className="space-y-2">
             <h1 className="text-2xl font-bold text-white">Waiting Room</h1>
             {localIsHostPresent ? (
@@ -2828,16 +2909,16 @@ export default function VideoCallRoom({
           <div className="space-y-3 text-left">
             <p className="text-sm text-gray-400">Video & audio:</p>
             <div className="flex gap-2">
-              <Button onClick={toggleAudio} variant="secondary" className="flex-1" size="sm">
+              <Button onClick={toggleAudio} variant="secondary" size="sm" className="h-11 flex-1 sm:h-8">
                 {isAudioEnabled ? '🎤 Microphone On' : '🔇 Microphone Off'}
               </Button>
-              <Button onClick={toggleVideo} variant="secondary" className="flex-1" size="sm">
+              <Button onClick={toggleVideo} variant="secondary" size="sm" className="h-11 flex-1 sm:h-8">
                 {isVideoEnabled ? '📹 Camera On' : '📷 Camera Off'}
               </Button>
             </div>
           </div>
           <div className="border-t border-gray-700 pt-4">
-            <Button onClick={leaveCall} variant="outline" className="w-full">
+            <Button onClick={leaveCall} variant="outline" className="h-11 w-full sm:h-9">
               Leave
             </Button>
           </div>
@@ -2876,6 +2957,11 @@ export default function VideoCallRoom({
 
   const participantGridClass = `min-h-0 flex-1 overflow-y-auto grid ${getGridCols()} gap-3 content-start p-3`;
   const participantTileClass = 'relative min-h-[150px] sm:min-h-[190px] bg-zinc-900 rounded-lg overflow-hidden aspect-video border border-white/10';
+  // Self-view: on mobile (<sm) the local tile floats as a small
+  // picture-in-picture overlay whenever remote participants are present;
+  // sm+ (desktop) always keeps the original in-grid tile.
+  const localTilePipClass = 'absolute bottom-3 right-3 z-30 w-32 max-w-[45%] min-h-0 aspect-video bg-zinc-900 rounded-lg overflow-hidden border border-white/20 shadow-lg shadow-black/40 sm:static sm:z-auto sm:w-auto sm:max-w-none sm:min-h-[190px] sm:border-white/10 sm:shadow-none';
+  const localTileClass = numPeers > 0 ? localTilePipClass : participantTileClass;
   const screenTileClass = hasScreenShare && isScreenShareExpanded
     ? 'relative min-h-[250px] sm:min-h-[320px] h-full bg-zinc-950 rounded-lg overflow-hidden border border-white/10'
     : 'relative min-h-[200px] sm:min-h-[220px] bg-zinc-950 rounded-lg overflow-hidden aspect-video border border-white/10';
@@ -2885,9 +2971,9 @@ export default function VideoCallRoom({
     <div className="relative flex h-full min-h-0 flex-col bg-black">
       {/* Connection Error Banner */}
       {connectionError && (
-        <div className="shrink-0 z-50 bg-red-900/90 text-white px-4 py-2 text-sm flex items-center gap-2">
+        <div className="shrink-0 z-50 flex items-center gap-2 bg-red-900/90 px-3 py-2 text-xs text-white sm:gap-2 sm:px-4 sm:text-sm">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          <span className="flex-1">{connectionError}</span>
+          <span className="min-w-0 flex-1">{connectionError}</span>
           <Button
             variant="ghost"
             size="sm"
@@ -2901,22 +2987,22 @@ export default function VideoCallRoom({
 
       {/* Waiting for participants banner (duration state = waiting — Guide §3.2 / §4) */}
       {durationState.status === 'waiting' && durationState.maxMeetingDurationMinutes !== null && (
-        <div className="shrink-0 z-40 bg-gradient-to-r from-blue-950/95 to-indigo-950/95 backdrop-blur text-blue-50 px-4 py-2 text-sm flex items-center gap-3 border-b border-blue-500/30">
+        <div className="shrink-0 z-40 flex items-center gap-2 border-b border-blue-500/30 bg-gradient-to-r from-blue-950/95 to-indigo-950/95 px-3 py-2 text-xs text-blue-50 backdrop-blur sm:gap-3 sm:px-4 sm:text-sm">
           <div className="h-2 w-2 rounded-full bg-blue-400 animate-pulse shrink-0" />
           <Clock className="h-4 w-4 shrink-0 text-blue-300" />
-          <span className="flex-1">
+          <span className="min-w-0 flex-1">
             <span className="font-semibold text-blue-100">Waiting for more participants.</span>{' '}
             The {durationState.maxMeetingDurationMinutes}-minute timer will start when 2+ people join the call.
           </span>
-          <Badge variant="outline" className="text-[11px] border-blue-400/40 text-blue-200 bg-blue-900/40">
+          <Badge variant="outline" className="hidden text-[11px] border-blue-400/40 text-blue-200 bg-blue-900/40 sm:inline-flex">
             ⏳ {durationState.maxMeetingDurationMinutes} min cap
           </Badge>
         </div>
       )}
       {durationState.status === 'waiting' && durationState.maxMeetingDurationMinutes === null && (
-        <div className="shrink-0 z-40 bg-gray-900/95 text-gray-100 px-4 py-2 text-sm flex items-center gap-3 border-b border-gray-700">
+        <div className="shrink-0 z-40 flex items-center gap-2 border-b border-gray-700 bg-gray-900/95 px-3 py-2 text-xs text-gray-100 sm:gap-3 sm:px-4 sm:text-sm">
           <div className="h-2 w-2 rounded-full bg-gray-400 animate-pulse shrink-0" />
-          <span className="flex-1">
+          <span className="min-w-0 flex-1">
             Waiting for more participants to join before call begins.
           </span>
         </div>
@@ -2924,12 +3010,12 @@ export default function VideoCallRoom({
 
       {/* Sticky 1-minute remaining banner (Guide §7 — sticky red) */}
       {showOneMinuteBanner && countdownDisplay && (
-        <div className="shrink-0 z-[60] bg-gradient-to-r from-red-900 via-rose-900 to-red-950 text-white px-4 py-3 text-sm flex items-center gap-3 border-b-2 border-red-500/80 shadow-lg shadow-red-950/40 animate-in slide-in-from-top">
+        <div className="shrink-0 z-[60] flex items-center gap-2 border-b-2 border-red-500/80 bg-gradient-to-r from-red-900 via-rose-900 to-red-950 px-3 py-2 text-xs text-white shadow-lg shadow-red-950/40 animate-in slide-in-from-top sm:gap-3 sm:px-4 sm:py-3 sm:text-sm">
           <AlertCircle className="h-5 w-5 shrink-0 text-red-200 animate-pulse" />
-          <span className="flex-1 font-semibold text-white">
+          <span className="min-w-0 flex-1 font-semibold text-white">
             ⚠ 1 minute remaining. This call will auto-end shortly — please wrap up.
           </span>
-          <Badge variant="destructive" className="animate-pulse border-red-300 text-[11px] h-6">
+          <Badge variant="destructive" className="h-6 shrink-0 animate-pulse border-red-300 text-[11px]">
             <Clock className="h-3 w-3 mr-1" />
             {timeRemaining || '00:00'}
           </Badge>
@@ -2948,7 +3034,13 @@ export default function VideoCallRoom({
       {/* Main content area */}
       <div className="flex-1 flex min-h-0">
         {/* Video grid area */}
-        <div className="flex-1 flex flex-col min-h-0 min-w-0">
+        <div className="relative flex min-h-0 min-w-0 flex-1 select-none flex-col touch-manipulation">
+          {/* Mobile-only room header — desktop (sm+) keeps its original chrome */}
+          <div className="flex shrink-0 select-none items-center gap-2 border-b border-white/10 bg-black/70 px-3 py-2 sm:hidden">
+            <span className="min-w-0 flex-1 truncate text-xs font-medium text-white/90">
+              {inviteDetails?.title || 'Metricorex Call'}
+            </span>
+          </div>
           {/* Screen share area if expanded */}
           {hasScreenShare && isScreenShareExpanded && (
             <div className="flex-1 min-h-0 p-3 pb-0">
@@ -2988,7 +3080,7 @@ export default function VideoCallRoom({
                   <Button
                     variant="ghost"
                     size="sm"
-                    className="absolute top-2 right-2 bg-black/60 text-white hover:bg-black/80 h-8 w-8 p-0"
+                    className="absolute top-2 right-2 bg-black/60 text-white hover:bg-black/80 h-10 w-10 p-0 sm:h-8 sm:w-8"
                     onClick={() => setIsScreenShareExpanded(false)}
                   >
                     <Minimize2 className="h-4 w-4" />
@@ -3001,7 +3093,7 @@ export default function VideoCallRoom({
           {/* Participant video grid */}
           <div className={participantGridClass}>
             {/* Local video */}
-            <div className={participantTileClass}>
+            <div className={localTileClass}>
               <video
                 ref={localVideoRef}
                 autoPlay
@@ -3018,8 +3110,8 @@ export default function VideoCallRoom({
                   </Avatar>
                 )}
               </div>
-              <div className="absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white flex items-center gap-1">
-                <span>{userName} (You)</span>
+              <div className="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] bg-black/60 px-2 py-1 rounded text-xs text-white flex items-center gap-1">
+                <span className="truncate">{userName} (You)</span>
                 {!isAudioEnabled && <MicOff className="h-3 w-3 text-red-400" />}
                 {isHost && <span className="text-blue-400 text-[10px]">HOST</span>}
               </div>
@@ -3054,7 +3146,7 @@ export default function VideoCallRoom({
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="absolute top-2 right-2 bg-black/60 text-white hover:bg-black/80 h-8 w-8 p-0"
+                      className="absolute top-2 right-2 bg-black/60 text-white hover:bg-black/80 h-10 w-10 p-0 sm:h-8 sm:w-8"
                       onClick={() => setIsScreenShareExpanded(true)}
                     >
                       <Maximize2 className="h-4 w-4" />
@@ -3097,8 +3189,8 @@ export default function VideoCallRoom({
                       </Avatar>
                     )}
                   </div>
-                  <div className="absolute bottom-2 left-2 bg-black/60 px-2 py-1 rounded text-xs text-white flex items-center gap-1">
-                    <span>{peer.name || 'Participant'}</span>
+                  <div className="absolute bottom-2 left-2 max-w-[calc(100%-1rem)] bg-black/60 px-2 py-1 rounded text-xs text-white flex items-center gap-1">
+                    <span className="truncate">{peer.name || 'Participant'}</span>
                     {peer.audioEnabled === false && <MicOff className="h-3 w-3 text-red-400" />}
                     {peer.videoEnabled === false && <VideoOff className="h-3 w-3 text-red-400" />}
                   </div>
@@ -3110,14 +3202,14 @@ export default function VideoCallRoom({
 
         {/* Participants Panel (full-screen overlay on mobile, side panel on sm+) */}
         {showParticipants && (
-          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col sm:static sm:z-auto sm:w-80 sm:max-w-none">
-            <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+          <div className="fixed inset-y-0 right-0 z-40 flex h-[100dvh] w-full max-w-sm flex-col border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm sm:static sm:z-auto sm:h-auto sm:w-80 sm:max-w-none">
+            <div className="flex items-center justify-between gap-2 border-b border-gray-800 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <h3 className="font-semibold text-white">Participants ({participants.length + 1})</h3>
-              <Button variant="ghost" size="sm" onClick={() => setShowParticipants(false)}>
+              <Button variant="ghost" size="sm" className="h-10 w-10 shrink-0 p-0 sm:h-8 sm:w-auto sm:px-3" onClick={() => setShowParticipants(false)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <ScrollArea className="flex-1">
+            <ScrollArea className="min-h-0 flex-1">
               <div className="p-4 space-y-4">
                 {/* Echo Warning */}
                 {echoWarningShown && (
@@ -3143,7 +3235,7 @@ export default function VideoCallRoom({
                         type="button"
                         size="sm"
                         variant="secondary"
-                        className="h-7 text-[11px] px-2"
+                        className="h-9 px-2 text-[11px] sm:h-7"
                         onClick={() => {
                           socket?.emit('waiting-room:admit-all', { roomId });
                           setWaitingQueue([]);
@@ -3171,7 +3263,7 @@ export default function VideoCallRoom({
                               type="button"
                               size="icon"
                               variant="outline"
-                              className="h-7 w-7 rounded-full bg-green-600/20 border-green-600/40 text-green-400 hover:bg-green-600/30"
+                              className="h-9 w-9 rounded-full bg-green-600/20 border-green-600/40 text-green-400 hover:bg-green-600/30 sm:h-7 sm:w-7"
                               onClick={() => {
                                 socket?.emit('waiting-room:admit', {
                                   roomId,
@@ -3187,7 +3279,7 @@ export default function VideoCallRoom({
                               type="button"
                               size="icon"
                               variant="outline"
-                              className="h-7 w-7 rounded-full bg-red-600/20 border-red-600/40 text-red-400 hover:bg-red-600/30"
+                              className="h-9 w-9 rounded-full bg-red-600/20 border-red-600/40 text-red-400 hover:bg-red-600/30 sm:h-7 sm:w-7"
                               onClick={() => {
                                 socket?.emit('waiting-room:deny', {
                                   roomId,
@@ -3214,11 +3306,11 @@ export default function VideoCallRoom({
               </div>
             </ScrollArea>
             {isHost && (
-              <div className="p-4 border-t border-gray-800">
+              <div className="border-t border-gray-800 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
                 <Button 
                   onClick={() => setShowAddParticipantsModal(true)} 
                   variant="outline" 
-                  className="w-full"
+                  className="h-11 w-full sm:h-9"
                 >
                   <UserPlus className="h-4 w-4 mr-2" />
                   Add Participants
@@ -3230,14 +3322,14 @@ export default function VideoCallRoom({
 
         {/* Chat Panel (full-screen overlay on mobile, side panel on sm+) */}
         {showChat && (
-          <div className="fixed inset-y-0 right-0 z-40 w-full max-w-sm border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm flex flex-col sm:static sm:z-auto sm:w-80 sm:max-w-none">
-            <div className="p-4 border-b border-gray-800 flex items-center justify-between">
+          <div className="fixed inset-y-0 right-0 z-40 flex h-[100dvh] w-full max-w-sm flex-col border-l border-gray-800 bg-gray-900/95 backdrop-blur-sm sm:static sm:z-auto sm:h-auto sm:w-80 sm:max-w-none">
+            <div className="flex items-center justify-between gap-2 border-b border-gray-800 p-4 pt-[max(1rem,env(safe-area-inset-top))]">
               <h3 className="font-semibold text-white">Chat</h3>
-              <Button variant="ghost" size="sm" onClick={() => setShowChat(false)}>
+              <Button variant="ghost" size="sm" className="h-10 w-10 shrink-0 p-0 sm:h-8 sm:w-auto sm:px-3" onClick={() => setShowChat(false)}>
                 <X className="h-4 w-4" />
               </Button>
             </div>
-            <ScrollArea className="flex-1">
+            <ScrollArea className="min-h-0 flex-1">
               <div className="p-4 space-y-3">
                 {chatMessages.length === 0 && (
                   <p className="text-gray-400 text-sm text-center">No messages yet</p>
@@ -3254,7 +3346,7 @@ export default function VideoCallRoom({
                 <div ref={chatEndRef} />
               </div>
             </ScrollArea>
-            <div className="p-4 border-t border-gray-800">
+            <div className="border-t border-gray-800 p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               <div className="flex gap-2">
                 <Input
                   value={chatInput}
@@ -3266,9 +3358,9 @@ export default function VideoCallRoom({
                     }
                   }}
                   placeholder="Type a message..."
-                  className="flex-1"
+                  className="h-10 min-w-0 flex-1 sm:h-9"
                 />
-                <Button onClick={sendChatMessage} size="sm">
+                <Button onClick={sendChatMessage} size="sm" className="h-10 shrink-0 px-4 sm:h-8 sm:px-3">
                   Send
                 </Button>
               </div>
@@ -3278,15 +3370,17 @@ export default function VideoCallRoom({
       </div>
 
       {/* Control bar */}
-      <div className="shrink-0 bg-gray-900/95 backdrop-blur-sm border-t border-gray-800 px-2 sm:px-4 py-2 sm:py-3">
-        {/* Single horizontally-scrollable row on mobile (no multi-row wrap), centered on sm+ */}
-        <div className="flex items-center justify-between gap-2 max-w-4xl mx-auto overflow-x-auto sm:overflow-x-visible pb-1 sm:pb-0 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="shrink-0 touch-manipulation select-none border-t border-gray-800 bg-gray-900/95 px-2 py-2 backdrop-blur-sm sm:px-4 sm:py-3">
+        {/* Mobile: compact wrapping rows (nothing clipped, all buttons fully tappable,
+            end-call always on the first row). sm+: original single centered row. */}
+        <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-center gap-x-1.5 gap-y-2 sm:flex-nowrap sm:justify-between sm:gap-2">
           {/* Left controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="order-2 flex shrink-0 items-center gap-1.5 sm:order-none sm:gap-2">
             <Button
               variant={isAudioEnabled ? "secondary" : "destructive"}
               size="sm"
               onClick={toggleAudio}
+              title={isAudioEnabled ? "Mute microphone" : "Unmute microphone"}
               className="h-10 w-10 p-0 rounded-full"
             >
               {isAudioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />}
@@ -3296,6 +3390,7 @@ export default function VideoCallRoom({
                 variant={isVideoEnabled ? "secondary" : "destructive"}
                 size="sm"
                 onClick={toggleVideo}
+                title={isVideoEnabled ? "Turn camera off" : "Turn camera on"}
                 className="h-10 w-10 p-0 rounded-full"
               >
                 {isVideoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />}
@@ -3305,29 +3400,30 @@ export default function VideoCallRoom({
               variant={isScreenSharing ? "default" : "secondary"}
               size="sm"
               onClick={isScreenSharing ? stopScreenShare : startScreenShare}
+              title={isScreenSharing ? "Stop screen share" : "Share your screen"}
               className="h-10 w-10 p-0 rounded-full"
             >
               {isScreenSharing ? <ScreenShareOff className="h-5 w-5" /> : <ScreenShare className="h-5 w-5" />}
             </Button>
           </div>
 
-          {/* Center controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          {/* Status + end call: full-width row on mobile, inline center group on sm+ */}
+          <div className="order-1 flex w-full shrink-0 basis-full flex-wrap items-center justify-center gap-x-2 gap-y-1.5 sm:order-none sm:w-auto sm:basis-auto sm:flex-nowrap sm:gap-2">
             {/* Elapsed time in call — always shown (plan or unlimited) */}
-            <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-black/40 border border-white/10 shrink-0">
-              <Timer className="h-3.5 w-3.5 text-white/70 shrink-0" />
+            <div className="flex shrink-0 items-center gap-1.5 rounded-full border border-white/10 bg-black/40 px-3 py-1.5">
+              <Timer className="h-3.5 w-3.5 shrink-0 text-white/70" />
               <span className="text-xs font-mono font-semibold tabular-nums text-white/90">{elapsedDisplay}</span>
             </div>
             {/* Countdown Badge (per FRONTEND_CALL_DURATION_GUIDE.md §5.3) */}
             {durationState.status === 'waiting' && (
-              <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-blue-950/80 border border-blue-500/40">
+              <div className="hidden shrink-0 items-center gap-2 rounded-full border border-blue-500/40 bg-blue-950/80 px-3 py-1.5 sm:flex">
                 <Clock className="h-4 w-4 text-blue-300" />
                 <span className="text-xs font-semibold text-blue-200">Waiting · Timer paused</span>
               </div>
             )}
             {countdownDisplay && (
               <div className={cn(
-                "flex items-center gap-2 px-3 py-1.5 rounded-full border transition-colors",
+                "flex shrink-0 items-center gap-2 rounded-full border px-3 py-1.5 transition-colors",
                 countdownDisplay.isUrgent
                   ? "bg-red-950/90 border-red-500/60 shadow-lg shadow-red-950/50"
                   : countdownDisplay.isWarning
@@ -3340,8 +3436,8 @@ export default function VideoCallRoom({
                   countdownDisplay.isWarning && !countdownDisplay.isUrgent && "text-amber-300",
                   !countdownDisplay.isWarning && !countdownDisplay.isUrgent && "text-emerald-300"
                 )} />
-                {/* Progress bar (percent-used bar) */}
-                <div className="w-20 h-1.5 bg-black/40 rounded-full overflow-hidden shrink-0">
+                {/* Progress bar (percent-used bar) — hidden on mobile so the timer shrinks */}
+                <div className="hidden h-1.5 w-20 shrink-0 overflow-hidden rounded-full bg-black/40 sm:block">
                   <div
                     className={cn(
                       "h-full rounded-full transition-all duration-500",
@@ -3367,7 +3463,7 @@ export default function VideoCallRoom({
               </div>
             )}
             {isRecording && (
-              <div className="flex items-center gap-2 text-red-400">
+              <div className="flex shrink-0 items-center gap-2 text-red-400">
                 <Radio className="h-4 w-4 animate-pulse" />
                 <span className="text-sm font-mono">{formatDuration(recordingDuration)}</span>
               </div>
@@ -3376,15 +3472,17 @@ export default function VideoCallRoom({
               variant="destructive"
               size="sm"
               onClick={leaveCall}
-              className="h-12 px-6 rounded-full"
+              title="Leave call"
+              aria-label="Leave call"
+              className="order-first h-12 w-12 rounded-full p-0 sm:order-none sm:w-auto sm:px-6"
             >
-              <PhoneOff className="h-5 w-5 mr-2" />
-              Leave
+              <PhoneOff className="h-5 w-5 sm:mr-2" />
+              <span className="hidden sm:inline">Leave</span>
             </Button>
           </div>
 
           {/* Right controls */}
-          <div className="flex items-center gap-2 shrink-0">
+          <div className="order-3 flex shrink-0 items-center gap-1.5 sm:order-none sm:gap-2">
             <Button
               variant={copiedInvite ? "default" : "secondary"}
               size="sm"
@@ -3459,7 +3557,7 @@ export default function VideoCallRoom({
 
       {/* Waiting room notifications for host (floating alert) */}
       {isHost && waitingQueue.length > 0 && (
-        <div className="absolute top-4 right-4 w-80 bg-gradient-to-br from-blue-950/95 to-gray-900/95 backdrop-blur-xl border border-blue-500/40 rounded-xl shadow-2xl animate-in slide-in-from-top-4 fade-in duration-300">
+        <div className="absolute right-4 top-4 w-80 max-w-[calc(100vw-2rem)] bg-gradient-to-br from-blue-950/95 to-gray-900/95 backdrop-blur-xl border border-blue-500/40 rounded-xl shadow-2xl animate-in slide-in-from-top-4 fade-in duration-300">
           <div className="p-3 border-b border-blue-500/30 flex items-center justify-between">
             <div className="flex items-center gap-2">
               <span className="relative flex h-2.5 w-2.5">
@@ -3471,14 +3569,14 @@ export default function VideoCallRoom({
             <Button
               variant="ghost"
               size="sm"
-              className="h-7 px-2.5 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/30 font-medium"
+              className="h-9 px-2.5 text-xs text-emerald-400 hover:text-emerald-300 hover:bg-emerald-900/30 font-medium sm:h-7"
               onClick={admitAll}
             >
               <Check className="h-3.5 w-3.5 mr-1" />
               Admit All
             </Button>
           </div>
-          <ScrollArea className="max-h-72">
+          <ScrollArea className="max-h-[45vh] sm:max-h-72">
             <div className="p-2.5 space-y-2">
               {waitingQueue.map(participant => (
                 <div key={participant.userId} className="flex items-center justify-between p-2.5 bg-gray-800/70 rounded-lg border border-gray-700/60 hover:bg-gray-800 transition-colors">
@@ -3525,7 +3623,7 @@ export default function VideoCallRoom({
       {/* Tap-to-enable-audio fullscreen overlay (when autoplay is blocked 2+ times) */}
       {showAudioEnableOverlay && (
         <div className="absolute inset-0 z-[9999] bg-black/85 backdrop-blur-md flex flex-col items-center justify-center p-6 animate-in fade-in duration-300">
-          <div className="max-w-md w-full bg-gradient-to-br from-indigo-950 to-gray-900 border border-indigo-500/40 rounded-2xl p-8 shadow-2xl text-center space-y-6">
+          <div className="max-w-md w-full bg-gradient-to-br from-indigo-950 to-gray-900 border border-indigo-500/40 rounded-2xl p-5 shadow-2xl text-center space-y-6 sm:p-8">
             <div className="mx-auto h-20 w-20 rounded-full bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center ring-4 ring-blue-500/30 shadow-lg shadow-blue-500/30 animate-pulse">
               <svg xmlns="http://www.w3.org/2000/svg" className="h-10 w-10 text-white" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M11 5 6 9H2v6h4l5 4V5z"></path>
