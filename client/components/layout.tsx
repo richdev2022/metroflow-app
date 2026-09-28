@@ -2,6 +2,7 @@ import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
 import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic, Phone } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
+import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
@@ -696,6 +697,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <NotificationBell />
           </div>
         </header>
+        {/* Announcement bar (polls /public/app-config; renders nothing when
+            there is no active announcement or it was dismissed) */}
+        <AnnouncementTicker />
         <div className="flex-1 space-y-4 p-4 md:p-8 pt-6 overflow-x-hidden">
           {children}
         </div>

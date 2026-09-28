@@ -29,6 +29,9 @@ import {
   BellRing,
   Timer,
   Copy,
+  Hand,
+  Volume2,
+  GripHorizontal,
 } from 'lucide-react';
 import type { Recording, TeamMember } from '@shared/api';
 import { Avatar, AvatarFallback } from './ui/avatar';
@@ -58,10 +61,18 @@ import {
 import { Badge } from './ui/badge';
 import { ScrollArea } from './ui/scroll-area';
 import { Input } from './ui/input';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from './ui/tooltip';
+import { Panel, PanelGroup, PanelResizeHandle } from 'react-resizable-panels';
 import { cn } from '@/lib/utils';
 import { formatDistanceToNow } from 'date-fns';
 
 type ParticipantStatus = 'invited' | 'joined' | 'left';
+
+/** Room chrome palette — dark, calm, glassy. */
+const ROOM_BG = 'bg-[#0B0F1A]';
+const ROOM_GLASS = 'border border-white/10 bg-[#141B2E]/80 backdrop-blur-xl';
+
+type NetworkQuality = 'unknown' | 'good' | 'fair' | 'poor';
 
 type DurationState =
   | { status: 'idle' }
@@ -144,6 +155,152 @@ const createPeer = (id: string, name?: string): Peer => ({
   producers: [],
   name,
 });
+
+/**
+ * Tracks viewport width for the JS-driven responsive layout (grid columns,
+ * draggable PiP, bottom sheets). 0 = not measured yet (first render).
+ */
+function useViewportWidth(): number {
+  const [width, setWidth] = useState(0);
+  useEffect(() => {
+    const update = () => setWidth(window.innerWidth);
+    update();
+    window.addEventListener('resize', update);
+    window.addEventListener('orientationchange', update);
+    return () => {
+      window.removeEventListener('resize', update);
+      window.removeEventListener('orientationchange', update);
+    };
+  }, []);
+  return width;
+}
+
+/**
+ * Grid columns from tile count + viewport width, so nothing is ever cut off:
+ * mobile stacks/wraps, tablet 2-3, desktop 2/3/4 (3x3 for nine people).
+ */
+function getGridColumns(tileCount: number, width: number): number {
+  if (width < 768) return tileCount <= 1 ? 1 : 2;
+  if (width < 1024) return tileCount <= 1 ? 1 : tileCount <= 4 ? 2 : 3;
+  if (width < 1280) return tileCount <= 4 ? 2 : 3;
+  return tileCount <= 4 ? 2 : tileCount <= 9 ? 3 : 4;
+}
+
+/** Full-bleed dark shell with a centered glass card used by every pre-join screen. */
+function RoomShellScreen({
+  children,
+  contentClassName,
+}: {
+  children: React.ReactNode;
+  contentClassName?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        'flex h-full min-h-0 w-full flex-col overflow-y-auto px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-[max(1rem,env(safe-area-inset-top))] text-white',
+        ROOM_BG,
+        'custom-scrollbar'
+      )}
+    >
+      <div className="m-auto flex w-full max-w-md flex-1 flex-col items-center justify-center py-4">
+        <div
+          className={cn(
+            'w-full rounded-2xl border border-white/10 bg-white/[0.06] p-5 text-center shadow-2xl shadow-black/50 backdrop-blur-xl sm:p-8',
+            contentClassName
+          )}
+        >
+          {children}
+        </div>
+        <p className="mt-4 shrink-0 text-[11px] text-white/35">Metricorex — Business OS</p>
+      </div>
+    </div>
+  );
+}
+
+/** Tiny 3-bar live network indicator for the top bar. */
+function NetworkQualityIndicator({ quality }: { quality: NetworkQuality }) {
+  const bars =
+    quality === 'good' ? 3 : quality === 'fair' ? 2 : quality === 'poor' ? 1 : 0;
+  const color =
+    quality === 'good'
+      ? 'bg-emerald-400'
+      : quality === 'fair'
+        ? 'bg-amber-400'
+        : quality === 'poor'
+          ? 'bg-red-400'
+          : 'bg-white/40';
+  const label =
+    quality === 'good'
+      ? 'Excellent connection'
+      : quality === 'fair'
+        ? 'Fair connection'
+        : quality === 'poor'
+          ? 'Poor connection'
+          : 'Checking connection…';
+  return (
+    <span className="flex items-end gap-[2px]" role="img" aria-label={label} title={label}>
+      {[4, 7, 10].map((h, i) => (
+        <span
+          key={h}
+          className={cn('w-[3px] rounded-full transition-colors', i < bars ? color : 'bg-white/20')}
+          style={{ height: h }}
+        />
+      ))}
+    </span>
+  );
+}
+
+/**
+ * Circular 44px control-bar button. Tooltips render on desktop pointers only
+ * (mobile keeps the clean icon + aria-label).
+ */
+function RoomControlButton({
+  title,
+  onClick,
+  className,
+  ariaLabel,
+  children,
+  showTooltip,
+  badge,
+  disabled,
+}: {
+  title: string;
+  onClick?: () => void;
+  className?: string;
+  ariaLabel?: string;
+  children: React.ReactNode;
+  showTooltip: boolean;
+  badge?: React.ReactNode;
+  disabled?: boolean;
+}) {
+  const button = (
+    <Button
+      variant="ghost"
+      size="sm"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={ariaLabel || title}
+      className={cn(
+        'relative h-11 w-11 shrink-0 rounded-full p-0 transition-all duration-200 active:scale-95 sm:h-11 sm:w-11',
+        className
+      )}
+    >
+      {children}
+      {badge}
+    </Button>
+  );
+  if (!showTooltip) return button;
+  return (
+    <TooltipProvider delayDuration={250}>
+      <Tooltip>
+        <TooltipTrigger asChild>{button}</TooltipTrigger>
+        <TooltipContent side="top" className="text-xs">
+          {title}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 export default function VideoCallRoom({
   roomId: propRoomId,
@@ -231,6 +388,18 @@ export default function VideoCallRoom({
   const [audioAutoplayFailCount, setAudioAutoplayFailCount] = useState(0);
   const [copiedInvite, setCopiedInvite] = useState(false);
 
+  // Revamped-UI state: raise hand, network quality, draggable self-view PiP
+  // and the one-tap audio troubleshooting hint.
+  const [isHandRaised, setIsHandRaised] = useState(false);
+  const [raisedHands, setRaisedHands] = useState<Set<string>>(new Set());
+  const [networkQuality, setNetworkQuality] = useState<NetworkQuality>('unknown');
+  const [audioHintDismissed, setAudioHintDismissed] = useState(false);
+  const [pipPosition, setPipPosition] = useState<{ x: number; y: number } | null>(null);
+  const [sheetDragY, setSheetDragY] = useState(0);
+  const viewportWidth = useViewportWidth();
+  const isMobileViewport = viewportWidth > 0 && viewportWidth < 768;
+  const isDesktopViewport = viewportWidth >= 768;
+
   // Chat state
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
@@ -260,6 +429,12 @@ export default function VideoCallRoom({
   const animationFrameRef = useRef<number | null>(null);
   const lastMuteWarning = useRef<number>(0);
   const chatEndRef = useRef<HTMLDivElement>(null);
+  // Producer refs so transport-'connected' handlers can resync media state
+  // without stale closures.
+  const localAudioProducerRef = useRef<types.Producer | null>(null);
+  const localVideoProducerRef = useRef<types.Producer | null>(null);
+  const pipDragRef = useRef<{ startX: number; startY: number; baseX: number; baseY: number } | null>(null);
+  const sheetDragRef = useRef<{ startY: number } | null>(null);
   // Waiting-room lifecycle: request must be sent even when the waiting screen
   // is the initial state, and never duplicated; admittedRef promotes the user
   // from the waiting screen to the full room join.
@@ -299,6 +474,8 @@ export default function VideoCallRoom({
   useEffect(() => { deviceRef.current = device; }, [device]);
   useEffect(() => { recvTransportRef.current = recvTransport; }, [recvTransport]);
   useEffect(() => { consumersMapRef.current = consumers; }, [consumers]);
+  useEffect(() => { localAudioProducerRef.current = localAudioProducer; }, [localAudioProducer]);
+  useEffect(() => { localVideoProducerRef.current = localVideoProducer; }, [localVideoProducer]);
   useEffect(() => {
     isMountedRef.current = true;
     return () => { isMountedRef.current = false; };
@@ -1248,6 +1425,28 @@ export default function VideoCallRoom({
         }
       });
 
+      // AUDIO HARDENING: when the DTLS handshake completes, force the local
+      // producer pause/resume state to match what the UI is showing. Drift
+      // here is the classic "I'm unmuted but nobody hears me" bug.
+      transport.on('connectionstatechange', (state) => {
+        if (state !== 'connected') return;
+        console.log('[mediasoup] send transport connected — syncing producer states');
+        try {
+          const audioProducer = localAudioProducerRef.current;
+          if (audioProducer) {
+            if (audioEnabledRef.current && audioProducer.paused) audioProducer.resume();
+            if (!audioEnabledRef.current && !audioProducer.paused) audioProducer.pause();
+          }
+          const videoProducer = localVideoProducerRef.current;
+          if (videoProducer) {
+            if (videoEnabledRef.current && videoProducer.paused) videoProducer.resume();
+            if (!videoEnabledRef.current && !videoProducer.paused) videoProducer.pause();
+          }
+        } catch (err) {
+          console.warn('[mediasoup] producer resync on connected failed:', err);
+        }
+      });
+
       createdSendTransport = transport;
       setSendTransport(transport);
     });
@@ -1286,6 +1485,24 @@ export default function VideoCallRoom({
         } catch (error) {
           errback(error);
         }
+      });
+
+      // AUDIO HARDENING: when the recv transport (re)connects, resume every
+      // consumer — server-side via mediasoup:resume and client-side — so audio
+      // never stays frozen after a network blip / reconnect.
+      transport.on('connectionstatechange', (state) => {
+        if (state !== 'connected') return;
+        console.log('[mediasoup] recv transport connected — resuming all consumers');
+        consumersMapRef.current.forEach((consumer) => {
+          try {
+            if (consumer.paused) {
+              try { consumer.resume(); } catch { /* ignore */ }
+            }
+            socket.emit('mediasoup:resume', { consumerId: consumer.id, roomId }, () => {});
+          } catch (err) {
+            console.warn('[mediasoup] consumer resume on connected failed:', err);
+          }
+        });
       });
 
       createdRecvTransport = transport;
@@ -1676,6 +1893,110 @@ export default function VideoCallRoom({
     const nextVideoEnabled = !isVideoEnabled;
     setIsVideoEnabled(nextVideoEnabled);
     emitMediaState({ videoEnabled: nextVideoEnabled });
+  };
+
+  // ==========================================
+  // AUDIO HARDENING (defensive — does not change any protocol flow)
+  // ==========================================
+  // Single source of truth for the local mic state: keeps the raw track's
+  // `enabled` flag, the mediasoup producer pause/resume state and the UI
+  // boolean in lockstep. Drift between those three layers is the #1 cause of
+  // "my mic is on but nobody can hear me".
+  const syncLocalAudioState = (nextEnabled: boolean) => {
+    try {
+      localAudioStreamRef.current?.getAudioTracks().forEach((track) => {
+        track.enabled = nextEnabled;
+      });
+      const producer = localAudioProducerRef.current || localAudioProducer;
+      if (producer) {
+        if (nextEnabled && producer.paused) producer.resume();
+        if (!nextEnabled && !producer.paused) producer.pause();
+      }
+    } catch (err) {
+      console.warn('[audio] syncLocalAudioState failed:', err);
+    }
+  };
+
+  // One-tap fix used by the "Audio troubleshooting" hint chip: re-enable the
+  // track, resume the producer and nudge every paused audio consumer back to
+  // life over the wire.
+  const fixLocalAudio = () => {
+    syncLocalAudioState(true);
+    setIsAudioEnabled(true);
+    audioEnabledRef.current = true;
+    lastLocalTalkingRef.current = false;
+    setIsLocalTalking(false);
+    emitMediaState({ audioEnabled: true });
+    try {
+      consumersMapRef.current.forEach((consumer) => {
+        if (consumer.kind !== 'audio') return;
+        try {
+          if (consumer.paused) consumer.resume();
+        } catch { /* ignore */ }
+        socket?.emit('mediasoup:resume', { consumerId: consumer.id, roomId }, () => {});
+      });
+    } catch { /* ignore */ }
+    setAudioHintDismissed(true);
+    toast({
+      title: 'Microphone re-synced',
+      description: 'Your mic was re-enabled end-to-end. You should be heard now.',
+      duration: 3500,
+    });
+  };
+
+  // Raise hand: local indicator + best-effort broadcast (peers that support
+  // the event will show the badge; servers that don't know it ignore it).
+  const toggleHandRaised = () => {
+    const next = !isHandRaised;
+    setIsHandRaised(next);
+    const myId = localStorage.getItem('userId') || 'local';
+    setRaisedHands((prev) => {
+      const nextSet = new Set(prev);
+      if (next) nextSet.add(myId);
+      else nextSet.delete(myId);
+      return nextSet;
+    });
+    try {
+      socket?.emit(`${eventPrefix}:raise-hand`, {
+        roomId: socketRoomId,
+        userId: myId,
+        userName,
+        isRaised: next,
+      });
+    } catch { /* non-fatal */ }
+    if (next) {
+      AudioUtils.playTone(880, 0.12, 'sine', 0.2);
+    }
+  };
+
+  // ==========================================
+  // Draggable self-view PiP (mobile only)
+  // ==========================================
+  const PIP_WIDTH = 140;
+  const PIP_HEIGHT = 110;
+
+  const handlePipPointerDown = (e: React.PointerEvent) => {
+    if (!isMobileViewport) return;
+    const base = pipPosition || { x: 0, y: 0 };
+    pipDragRef.current = { startX: e.clientX, startY: e.clientY, baseX: base.x, baseY: base.y };
+    (e.currentTarget as HTMLElement).setPointerCapture?.(e.pointerId);
+  };
+
+  const handlePipPointerMove = (e: React.PointerEvent) => {
+    const drag = pipDragRef.current;
+    if (!drag) return;
+    const maxX = 0;
+    const minX = -(Math.max(viewportWidth, PIP_WIDTH + 24) - PIP_WIDTH - 24);
+    const maxY = 0;
+    const minY = -(Math.max(window.innerHeight || 600, PIP_HEIGHT + 140) - PIP_HEIGHT - 140);
+    setPipPosition({
+      x: Math.max(minX, Math.min(maxX, drag.baseX + (e.clientX - drag.startX))),
+      y: Math.max(minY, Math.min(maxY, drag.baseY + (e.clientY - drag.startY))),
+    });
+  };
+
+  const handlePipPointerUp = () => {
+    pipDragRef.current = null;
   };
 
   const startScreenShare = async () => {
@@ -2596,6 +2917,89 @@ export default function VideoCallRoom({
     }
   }, [device, sendTransport]);
 
+  // Listen for raise-hand broadcasts (best-effort feature).
+  useEffect(() => {
+    if (!socket) return;
+    const handleRaiseHand = ({ userId, isRaised }: any) => {
+      if (!isMountedRef.current || !userId) return;
+      setRaisedHands((prev) => {
+        const next = new Set(prev);
+        if (isRaised) next.add(userId);
+        else next.delete(userId);
+        return next;
+      });
+    };
+    socket.on(`${eventPrefix}:raise-hand`, handleRaiseHand);
+    return () => {
+      socket.off(`${eventPrefix}:raise-hand`, handleRaiseHand);
+    };
+  }, [socket, eventPrefix]);
+
+  // Live network quality: RTT from the recv transport's ICE stats when
+  // available, falling back to the Network Information API. Never throws.
+  useEffect(() => {
+    if (!isConnected) return;
+    let cancelled = false;
+    const measure = async () => {
+      try {
+        let rttMs: number | null = null;
+        const transport = recvTransportRef.current;
+        if (transport && typeof (transport as any).getStats === 'function') {
+          const stats = await (transport as any).getStats();
+          if (stats && typeof stats.forEach === 'function') {
+            stats.forEach((report: any) => {
+              if (
+                report &&
+                report.type === 'candidate-pair' &&
+                (report.state === 'succeeded' || report.nominated) &&
+                typeof report.currentRoundTripTime === 'number'
+              ) {
+                rttMs = report.currentRoundTripTime * 1000;
+              }
+            });
+          }
+        }
+        if (cancelled) return;
+        if (rttMs !== null) {
+          setNetworkQuality(rttMs < 150 ? 'good' : rttMs < 400 ? 'fair' : 'poor');
+          return;
+        }
+        const conn = (navigator as any).connection;
+        if (conn) {
+          const down = Number(conn.downlink || 0);
+          setNetworkQuality(down >= 5 ? 'good' : down >= 1.5 ? 'fair' : down > 0 ? 'poor' : 'unknown');
+          return;
+        }
+        setNetworkQuality('unknown');
+      } catch {
+        if (!cancelled) setNetworkQuality('unknown');
+      }
+    };
+    measure();
+    const id = window.setInterval(measure, 8000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
+    };
+  }, [isConnected]);
+
+  // Defensive audio drift check (~1 Hz): if the raw mic track got muted
+  // underneath the UI (browser policy, device switch, producer race), flip the
+  // UI state back so the user sees the truth and gets the one-tap fix chip.
+  useEffect(() => {
+    const track = localAudioStreamRef.current?.getAudioTracks()[0];
+    if (track && !track.enabled && isAudioEnabled) {
+      console.warn('[audio] local track disabled while UI shows enabled — resyncing UI');
+      setIsAudioEnabled(false);
+      audioEnabledRef.current = false;
+    }
+  }, [isAudioEnabled, nowTick]);
+
+  // Reset sheet drag offset whenever a panel closes.
+  useEffect(() => {
+    if (!(showChat || showParticipants)) setSheetDragY(0);
+  }, [showChat, showParticipants]);
+
   // Render participants list
   const renderParticipantsList = () => {
     const localUserId = localStorage.getItem('userId') || 'local';
@@ -2642,18 +3046,18 @@ export default function VideoCallRoom({
       );
 
       const rowClass = cn(
-        "flex items-center justify-between p-2 rounded-md gap-2",
-        p.status === 'left' ? "opacity-60 hover:opacity-100 hover:bg-gray-800" : "hover:bg-gray-800"
+        "flex items-center justify-between p-2 rounded-xl gap-2 transition-colors",
+        p.status === 'left' ? "opacity-60 hover:opacity-100 hover:bg-white/5" : "hover:bg-white/5"
       );
 
       return (
         <div key={p.id} className={rowClass}>
           <div className="flex items-center gap-3 min-w-0 flex-1">
             <Avatar className={cn(
-              "h-8 w-8 shrink-0",
+              "h-9 w-9 shrink-0",
               p.isTalking && p.status === 'joined' ? talkingRingClass : avatarBaseClass
             )}>
-              <AvatarFallback className="bg-blue-600 text-white text-xs">
+              <AvatarFallback className="bg-gradient-to-br from-blue-600 to-indigo-600 text-white text-xs">
                 {getInitials(p.name)}
               </AvatarFallback>
             </Avatar>
@@ -2663,10 +3067,10 @@ export default function VideoCallRoom({
                 p.status === 'joined' ? "text-white" : "text-white/80"
               )}>
                 {p.name}
-                {p.isLocal && <span className="text-gray-400 text-xs ml-1">(You)</span>}
+                {p.isLocal && <span className="text-white/50 text-xs ml-1">(You)</span>}
               </p>
               <div className="flex items-center gap-2 mt-0.5">
-                {p.isHost && <p className="text-[10px] text-blue-400">Host</p>}
+                {p.isHost && <p className="text-[10px] font-semibold uppercase tracking-wide text-blue-400">Host</p>}
                 {statusBadge}
               </div>
               <div className="flex items-center gap-1 mt-1 flex-wrap">
@@ -2681,8 +3085,13 @@ export default function VideoCallRoom({
                   </Badge>
                 )}
                 {p.screenSharing && p.status === 'joined' && (
-                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-green-500 text-green-400">
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-emerald-500/50 text-emerald-400">
                     Sharing
+                  </Badge>
+                )}
+                {raisedHands.has(p.id) && p.status === 'joined' && (
+                  <Badge variant="outline" className="text-[9px] px-1.5 py-0 h-4 border-amber-500/50 text-amber-300 gap-0.5">
+                    <Hand className="h-2.5 w-2.5" /> Hand
                   </Badge>
                 )}
               </div>
@@ -2693,7 +3102,7 @@ export default function VideoCallRoom({
               <Button
                 variant={p.status === 'invited' ? "outline" : "secondary"}
                 size="sm"
-                className="h-7 px-2 text-xs gap-1"
+                className="h-8 px-2.5 text-xs gap-1 border-white/15 bg-white/5 text-white hover:bg-white/10 hover:text-white"
                 onClick={() => handleDialBack(p)}
                 disabled={cooling || !isHost}
                 title={isHost ? (p.status === 'invited' ? 'Re-send invite' : 'Dial back to call') : 'Only host can re-invite'}
@@ -2720,10 +3129,10 @@ export default function VideoCallRoom({
     const Section = ({ title, count, children, accent }: { title: string; count: number; children: React.ReactNode; accent?: string }) => (
       <div className="mb-4">
         <div className="flex items-center justify-between mb-2 px-1">
-          <h4 className={cn("text-[11px] font-semibold uppercase tracking-wider", accent || "text-gray-400")}>
+          <h4 className={cn("text-[11px] font-semibold uppercase tracking-wider", accent || "text-white/40")}>
             {title}
           </h4>
-          <Badge variant="outline" className="text-[10px] h-5 px-2">{count}</Badge>
+          <Badge variant="outline" className="text-[10px] h-5 px-2 border-white/15 text-white/70">{count}</Badge>
         </div>
         <div className="space-y-1">
           {children}
@@ -2735,7 +3144,7 @@ export default function VideoCallRoom({
       <div className="space-y-2">
         <Section title="In Call" count={joined.length} accent="text-emerald-400">
           {joined.length === 0 ? (
-            <p className="text-xs text-gray-500 px-2 py-3 text-center">Waiting for participants…</p>
+            <p className="text-xs text-white/40 px-2 py-3 text-center">Waiting for participants…</p>
           ) : (
             joined.map(p => renderRow(p, false))
           )}

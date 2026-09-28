@@ -328,6 +328,86 @@ export interface PayrollConfig {
   salary_custom_date?: string | null;
 }
 
+/**
+ * Employee row from GET /payroll/employees (full directory with recipient +
+ * verification details). Distinct from PayrollEmployee which is the
+ * /payroll/summary shape.
+ */
+export interface PayrollDirectoryEmployee {
+  id: string;
+  name: string;
+  email: string;
+  role: string;
+  job_title?: string | null;
+  department?: string | null;
+  phone_number?: string | null;
+  status?: string;
+  salary_amount?: number | string | null;
+  salary_currency?: string | null;
+  bank_code?: string | null;
+  account_number?: string | null;
+  account_name?: string | null;
+  bank_name?: string | null;
+  bank_country?: string | null;
+  swift_code?: string | null;
+  routing_number?: string | null;
+  beneficiary_address?: string | null;
+  beneficiary_city?: string | null;
+  beneficiary_country?: string | null;
+  verification_status?: "unverified" | "verified" | "failed" | "pending" | string | null;
+  verified_account_name?: string | null;
+  verified_at?: string | null;
+  verification_error?: string | null;
+  avatar_url?: string | null;
+  created_at?: string;
+}
+
+export interface PayrollDirectoryResponse {
+  success: boolean;
+  data: PayrollDirectoryEmployee[];
+  pagination: { total: number; page: number; limit: number; totalPages: number };
+}
+
+export interface VerifyEmployeeResult {
+  id: string;
+  name: string;
+  success: boolean;
+  account_name?: string;
+  error?: string;
+}
+
+export interface VerifyBulkResponse {
+  success: boolean;
+  data: {
+    total: number;
+    verified: number;
+    failed: number;
+    results: VerifyEmployeeResult[];
+  };
+}
+
+export interface EmployeeImportRow {
+  name: string;
+  email: string;
+  role?: string;
+  phone_number?: string;
+  department?: string;
+  job_title?: string;
+  salary?: number | string;
+  salary_currency?: string;
+  currency?: string;
+  bank_code?: string;
+  account_number?: string;
+  account_name?: string;
+  bank_name?: string;
+  swift_code?: string;
+  routing_number?: string;
+  beneficiary_address?: string;
+  beneficiary_city?: string;
+  beneficiary_country?: string;
+  contract_start_date?: string;
+}
+
 export interface PayrollConfigUpdateInput {
   salary_interval: "daily" | "weekly" | "monthly" | "yearly" | "custom";
   salary_custom_date?: string | null;
@@ -399,6 +479,12 @@ export interface BulkTransferResponseData {
     total: number;
   };
   transfers: Transfer[];
+  /** Salary payouts only: employees skipped because their account is not verified */
+  unverified_employees?: Array<{
+    id: string;
+    name: string;
+    verification_status?: string;
+  }>;
 }
 
 export interface BulkTransferResponse {
@@ -411,23 +497,92 @@ export interface Transfer {
   id: string;
   business_id: string;
   reference: string;
-  recipient_account?: string;
-  recipient_bank?: string;
-  recipient_name: string;
+  recipient_account?: string | null;
+  recipient_bank?: string | null;
+  recipient_name: string | null;
   amount: number | string;
   currency: string;
-  remark?: string;
-  status: "pending" | "success" | "failed";
-  failure_reason?: string;
+  remark?: string | null;
+  status: "pending" | "success" | "failed" | string;
+  failure_reason?: string | null;
   source_type?: string;
   source_id?: string | null;
   meta_data?: any;
   created_at: string;
   updated_at: string;
   wallet_id: string;
-  fee?: string;
+  fee?: string | number | null;
   payment_provider?: string;
   provider_metadata?: any;
+  /**
+   * GET /transfers returns a merged ledger: outgoing payouts come from
+   * transfer_queue (type === 'transfer', direction 'debit') while wallet
+   * funding / refunds / fee credits come from transactions (type ===
+   * 'transaction', direction 'credit').
+   */
+  type?: "transfer" | "transaction";
+  direction?: "credit" | "debit" | string;
+  transaction_type?: string;
+  description?: string | null;
+}
+
+// Wallet ledger transaction (GET /wallet/history)
+export interface WalletTransaction {
+  id: string;
+  business_id?: string | null;
+  wallet_id: string | null;
+  reference: string;
+  direction: "credit" | "debit" | string;
+  transaction_type: string;
+  amount: number | string;
+  currency?: string | null;
+  wallet_currency?: string | null;
+  status: string;
+  fee?: number | string | null;
+  description?: string | null;
+  created_at: string;
+  updated_at?: string;
+}
+
+export interface WalletHistoryWallet {
+  id: string;
+  currency: string;
+  balance: string | number;
+}
+
+export interface WalletHistoryResponse {
+  success: boolean;
+  data: WalletTransaction[];
+  wallets: WalletHistoryWallet[];
+  pagination: { total: number; page: number; limit: number; totalPages: number };
+}
+
+export interface WalletHistoryFilters {
+  wallet_id?: string;
+  direction?: "credit" | "debit" | "";
+  type?: string;
+  search?: string;
+  min_amount?: string;
+  max_amount?: string;
+  start_date?: string;
+  end_date?: string;
+  page?: number;
+  limit?: number;
+  format?: "json" | "csv";
+}
+
+// International payout quote (GET /transfers/quote)
+export interface TransferQuote {
+  source_currency: string;
+  destination_currency: string;
+  amount: number;
+  live_rate: number;
+  markup_percent: number;
+  marked_up_rate: number;
+  receiving_amount: number;
+  fee: number;
+  total_debit: number;
+  provider?: string;
 }
 
 export interface LoginInput {
