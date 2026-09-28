@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from "react";
+import { useState, useEffect, useRef, useMemo, useCallback, type ChangeEvent } from "react";
 import { useNavigate } from "react-router-dom";
 import Layout from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -41,6 +41,10 @@ import {
   Phone,
   Video,
   Mic,
+  Paperclip,
+  ImageIcon,
+  FileText,
+  Sparkles,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -51,7 +55,7 @@ import {
   useCreateCall,
   uploadChatMedia,
 } from "@/lib/meetings-chat-calls";
-import { Conversation, CreateConversationInput, TeamMember } from "@shared/api";
+import { Conversation, CreateConversationInput, TeamMember, MessageTypeName, SendMessageInput } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
 import {
@@ -82,6 +86,21 @@ import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
 import { ChatProfileModal, ChatProfilePerson } from "@/components/chat/ChatProfileModal";
 import { resolveMediaUrl } from "@/lib/media-url";
+import {
+  ImageAttachment,
+  VideoAttachment,
+  DocumentAttachment,
+  StickerAttachment,
+} from "@/components/chat/AttachmentMedia";
+import { StickerEmojiGifPanel } from "@/components/chat/StickerEmojiGifPanel";
+import { CallLogRow } from "@/components/chat/CallLogRow";
+import {
+  CHAT_MEDIA_MAX_BYTES,
+  formatFileSize,
+  isSoloEmojiMessage,
+  guessMediaKind,
+} from "@/lib/chat-media";
+import type { GifObject } from "@shared/api";
 
 // ==========================================
 // Types & Interfaces
@@ -113,6 +132,17 @@ type ChatMessage = {
   attachmentUrl?: string;
   attachment_type?: string;
   attachmentType?: string;
+  /** WhatsApp-style attachment metadata (batch 3). */
+  attachment_name?: string;
+  attachmentName?: string;
+  attachment_size?: number;
+  attachmentSize?: number;
+  message_type?: string;
+  messageType?: string;
+  /** Local blob URL for optimistic image/video previews while uploading. */
+  localPreviewUrl?: string;
+  /** True while the attachment file is still uploading to /chat/media. */
+  uploading?: boolean;
   status?: "sending" | "sent" | "failed" | "read";
   isOptimistic?: boolean;
 };
@@ -263,7 +293,23 @@ const getParticipantStatusLine = (
 const getAttachmentUrl = (m: ChatMessage) =>
   resolveMediaUrl(m.attachment_url || m.attachmentUrl || "");
 const getAttachmentType = (m: ChatMessage) => m.attachment_type || m.attachmentType || "";
-const isImageAttachment = (m: ChatMessage) => getAttachmentType(m).startsWith("image/");
+const getMessageType = (m: ChatMessage) => (m.messageType || m.message_type || "").toLowerCase();
+const getAttachmentName = (m: ChatMessage) => m.attachmentName || m.attachment_name || "";
+const getAttachmentSize = (m: ChatMessage) => m.attachmentSize ?? m.attachment_size ?? null;
+
+/** Backend batch-3 kinds are single words ('image'); legacy rows store a MIME ('image/png'). */
+const isImageAttachment = (m: ChatMessage) => {
+  const type = getAttachmentType(m);
+  return type === "image" || type.startsWith("image/");
+};
+const isVideoAttachment = (m: ChatMessage) => {
+  const type = getAttachmentType(m);
+  return type === "video" || type.startsWith("video/");
+};
+const isGifAttachment = (m: ChatMessage) =>
+  getAttachmentType(m) === "gif" || getMessageType(m) === "gif";
+const isStickerMessage = (m: ChatMessage) =>
+  getAttachmentType(m) === "sticker" || getMessageType(m) === "sticker";
 
 const isVoiceNoteContent = (content?: string) =>
   !!content && (content === "Voice note" || content === "🎤 Voice note");
@@ -271,11 +317,11 @@ const isVoiceNoteContent = (content?: string) =>
 // A message carrying a voice note: backend tags uploads as `audio`, and we
 // fall back to sniffing the attachment URL for legacy rows.
 const isAudioAttachment = (m: ChatMessage) => {
+  if (isImageAttachment(m) || isVideoAttachment(m) || isGifAttachment(m)) return false;
+  const type = getAttachmentType(m);
+  if (type === "audio" || type.startsWith("audio") || getMessageType(m) === "voice") return true;
   const url = getAttachmentUrl(m);
   if (!url) return false;
-  const type = getAttachmentType(m);
-  if (type.startsWith("audio")) return true;
-  if (type.startsWith("image/") || type.startsWith("video/")) return false;
   return /\.(webm|mp3|m4a|aac|ogg|opus|wav)(\?|#|$)/i.test(url);
 };
 
@@ -344,79 +390,7 @@ const getPresenceLabel = (status?: string) => {
   return "Online";
 };
 
-const EMOJI_LIST = [
-  "😀","😂","🤣","😊","😍","🥰","😘","😎","🤩","🥳",
-  "😇","🤗","🤔","🤭","🤫","😏","😌","😴","🥱","😷",
-  "🤒","🤕","🤢","🤮","🥵","🥶","😱","😨","😰","😥",
-  "😢","😭","😤","😡","🤬","😈","👿","💀","💩","🤡",
-  "👻","👽","🤖","😺","😸","😹","😻","😼","😽","🙀",
-  "🙌","👏","🤝","👍","👎","👊","✊","🤞","✌️","🤟",
-  "👌","👉","👆","👇","☝️","✋","👋","🤙","💪","🙏",
-  "❤️","🧡","💛","💚","💙","💜","🖤","🤍","💔","💕",
-  "💗","💖","💘","💝","💯","💢","🔥","⭐","🌟","✨",
-  "⚡","💥","🍀","🌈","☀️","🌤️","⛅","🌧️","⛈️","❄️",
-  "⛄","💨","🌪️","🌊","💧","🎉","🎊","🎈","🎁","🎀",
-  "🏆","🥇","🥈","🥉","⚽","🏀","🏈","⚾","🎾","🏐",
-  "🎯","🎪","🎨","🎬","🎤","🎧","🎼","🎵","🎶","🎸",
-  "🎹","🎺","🥁","🎻","🎲","♟️","🎯","🎮","🕹️","🎰",
-  "🚗","🚕","🚙","🚌","🚎","🏎️","🚓","🚑","🚒","🚐",
-  "🛻","🚚","🚛","🚜","🛵","🏍️","🚲","🛴","🛹","🛼",
-  "✈️","🚀","🛸","🚁","🛶","⛵","🚤","🛥️","🛳️","⛴️",
-  "🏠","🏡","🏢","🏣","🏤","🏥","🏦","🏨","🏩","🏪",
-  "🏫","🏬","🏭","🏯","🏰","💒","🗼","🗽","⛪","🕌",
-  "🛕","🕍","⛩️","🕋","⛲","⛺","🏕️","🗾","🏔️","🌋",
-  "🏖️","🏜️","🏝️","🏞️","🍕","🍔","🍟","🌭","🍿","🧂",
-  "🥓","🥚","🍳","🧇","🥞","🧈","🍞","🥐","🥨","🥯",
-  "🥖","🫓","🧀","🥗","🥙","🥪","🌮","🌯","🫔","🥫",
-  "🍝","🍜","🍲","🍛","🍣","🍱","🥟","🦪","🍤","🍙",
-  "🍚","🍘","🍥","🥠","🥮","🍢","🍡","🍧","🍨","🍦",
-  "🥧","🧁","🍰","🎂","🍮","🍭","🍬","🍫","🍩","🍪",
-];
-
-// ==========================================
-// Sub-Components
-// ==========================================
-
-const EmojiPicker = ({ onSelect }: { onSelect: (emoji: string) => void }) => {
-  const [open, setOpen] = useState(false);
-  return (
-    <Popover open={open} onOpenChange={setOpen}>
-      <PopoverTrigger asChild>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon"
-          className="h-9 w-9 text-muted-foreground hover:text-foreground shrink-0"
-          title="Emoji"
-        >
-          <Smile className="h-4 w-4" />
-        </Button>
-      </PopoverTrigger>
-      <PopoverContent className="w-72 p-0 bg-popover border-border" align="start" side="top" sideOffset={8}>
-        <div className="p-2 border-b border-border">
-          <p className="text-xs font-medium text-popover-foreground">Emoji</p>
-        </div>
-        <div className="h-64 overflow-y-auto p-2">
-          <div className="grid grid-cols-8 gap-0.5">
-            {EMOJI_LIST.map((emoji, idx) => (
-              <button
-                key={`${emoji}-${idx}`}
-                type="button"
-                onClick={() => {
-                  onSelect(emoji);
-                  setOpen(false);
-                }}
-                className="h-8 w-8 flex items-center justify-center rounded hover:bg-accent text-lg transition-colors"
-              >
-                {emoji}
-              </button>
-            ))}
-          </div>
-        </div>
-      </PopoverContent>
-    </Popover>
-  );
-};
+// (Emoji / sticker / GIF picking moved to components/chat/StickerEmojiGifPanel.tsx)
 
 const TypingIndicator = () => (
   <div className={cn("flex justify-start px-2 sm:px-4 pb-1 animate-in fade-in duration-200")}>
@@ -460,14 +434,103 @@ const MessageBubble = ({
   const isFailed = message.status === "failed";
   const isSending = message.status === "sending";
   const isRead = message.status === "read";
+  const uploading = !!message.uploading;
   const attachmentUrl = getAttachmentUrl(message);
+  const messageType = getMessageType(message);
   const isImage = isImageAttachment(message);
+  const isVideo = isVideoAttachment(message);
   const isAudio = isAudioAttachment(message);
-  const isFile = !!attachmentUrl && !isImage && !isAudio;
+  const isGif = isGifAttachment(message);
+  const isSticker = isStickerMessage(message);
+  const isFile = !!attachmentUrl && !isImage && !isVideo && !isAudio && !isGif;
   // Voice-note placeholder text (“🎤 Voice note”) is represented by the
   // player itself, so don't render it twice.
   const hideContent = isAudio && isVoiceNoteContent(message.content);
 
+  // WhatsApp-style "transparent" messages render WITHOUT a bubble background:
+  //  - big-emoji text (1-3 emoji, no attachment)
+  //  - stickers (huge emoji or sticker attachment)
+  //  - GIFs without a caption (GIFs WITH a caption stay in a bubble)
+  const soloEmoji = !attachmentUrl && isSoloEmojiMessage(message.content);
+  const transparent = isSticker || (isGif && !message.content) || soloEmoji;
+
+  const timestampRow = (
+    <div className={cn("flex items-center gap-1", transparent ? "justify-center" : isOwn ? "justify-end" : "justify-start")}>
+      <p className={cn("text-[10px]", transparent ? "text-muted-foreground/70" : "opacity-60")}>
+        {formatTime(getMsgTime(message))}
+      </p>
+      {isOwn && !transparent && (
+        isFailed ? (
+          <button onClick={onRetry} className="text-red-300 hover:text-red-100" title="Retry">
+            <CircleDot className="h-3 w-3" />
+          </button>
+        ) : isSending ? (
+          <Loader2 className="h-3 w-3 animate-spin opacity-60" />
+        ) : (
+          <span className="opacity-60" title={isRead ? "Read" : "Sent"}><Check className={cn("h-3 w-3", isRead && "text-cyan-200")} /></span>
+        )
+      )}
+    </div>
+  );
+
+  // ------------------------------------------------------------
+  // Transparent renderings (no bubble background)
+  // ------------------------------------------------------------
+  if (transparent) {
+    return (
+      <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
+        {!isOwn && (
+          <div className="w-7 shrink-0 flex items-end">
+            {!isGrouped && (
+              <button
+                type="button"
+                onClick={onSenderClick}
+                disabled={!onSenderClick}
+                aria-label={`View ${senderName || "sender"} profile`}
+                className={cn(
+                  "rounded-full transition-all",
+                  onSenderClick && "cursor-pointer hover:ring-2 hover:ring-blue-500/40 active:scale-95"
+                )}
+              >
+                <Avatar className="h-7 w-7">
+                  {senderAvatarUrl && <AvatarImage src={senderAvatarUrl} alt={senderName || "Sender"} />}
+                  <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-[10px]", getAvatarGradient(senderName || "?"))}>
+                    {getInitials(senderName || "?")}
+                  </AvatarFallback>
+                </Avatar>
+              </button>
+            )}
+          </div>
+        )}
+        <div className="flex flex-col items-center max-w-[82%] sm:max-w-[68%] animate-in fade-in slide-in-from-bottom-1 duration-200">
+          {showSender && !isOwn && isGif && (
+            <span className="mb-0.5 text-[11px] font-semibold text-blue-500 dark:text-blue-400">{senderName}</span>
+          )}
+          {isSticker && attachmentUrl && (
+            <StickerAttachment url={attachmentUrl} alt={getAttachmentName(message) || "Sticker"} />
+          )}
+          {isSticker && !attachmentUrl && (
+            <span className="select-none text-[96px] leading-none drop-shadow-sm" role="img" aria-label="Sticker">
+              {message.content || "🙂"}
+            </span>
+          )}
+          {isGif && attachmentUrl && (
+            <StickerAttachment url={attachmentUrl} alt={getAttachmentName(message) || "GIF"} />
+          )}
+          {soloEmoji && (
+            <span className="select-none text-[56px] leading-none" role="img" aria-label="Emoji">
+              {message.content}
+            </span>
+          )}
+          <div className="mt-0.5 w-full">{timestampRow}</div>
+        </div>
+      </div>
+    );
+  }
+
+  // ------------------------------------------------------------
+  // Standard bubble rendering (text + media attachments)
+  // ------------------------------------------------------------
   return (
     <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
       {!isOwn && (
@@ -528,56 +591,46 @@ const MessageBubble = ({
           </div>
         )}
 
-        {isImage && (
-          <div className={cn("overflow-hidden rounded-xl", message.content ? "mb-2" : "")}>
-            <img
-              src={attachmentUrl}
-              alt="Shared image"
-              className="max-w-full max-h-72 object-cover cursor-pointer hover:scale-[1.02] transition-transform"
-              onClick={() => window.open(attachmentUrl, "_blank")}
-              loading="lazy"
+        {isImage && attachmentUrl && (
+          <div className={cn(message.content ? "mb-2" : "")}>
+            <ImageAttachment
+              url={attachmentUrl}
+              alt={getAttachmentName(message)}
+              isOwn={isOwn}
+              uploading={uploading}
             />
           </div>
         )}
 
-        {isFile && (
-          <a
-            href={attachmentUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mb-2 flex items-center gap-2.5 p-2.5 rounded-xl bg-black/10 dark:bg-white/10 hover:bg-black/15 dark:hover:bg-white/15 transition-colors"
-            onClick={(e) => e.stopPropagation()}
-          >
-            <div className={cn("h-9 w-9 rounded-lg flex items-center justify-center shrink-0", isOwn ? "bg-white/20" : "bg-primary/15")}>
-              <CircleDot className="h-4 w-4" />
-            </div>
-            <div className="min-w-0 flex-1">
-              <p className="text-xs font-semibold truncate">
-                {attachmentUrl.split("/").pop()?.split("?")[0] || "Attachment"}
-              </p>
-              <p className="text-[10px] opacity-60">Tap to view</p>
-            </div>
-          </a>
+        {isVideo && attachmentUrl && (
+          <div className={cn(message.content ? "mb-2" : "")}>
+            <VideoAttachment url={attachmentUrl} name={getAttachmentName(message)} isOwn={isOwn} uploading={uploading} />
+          </div>
+        )}
+
+        {isGif && attachmentUrl && (
+          <div className={cn(message.content ? "mb-2" : "")}>
+            <StickerAttachment url={attachmentUrl} alt={getAttachmentName(message) || "GIF"} />
+          </div>
+        )}
+
+        {((isFile && attachmentUrl) || (uploading && isFile)) && (
+          <div className="mb-2">
+            <DocumentAttachment
+              url={attachmentUrl}
+              name={getAttachmentName(message) || (uploading ? "Uploading file" : "")}
+              size={getAttachmentSize(message)}
+              isOwn={isOwn}
+              uploading={uploading}
+            />
+          </div>
         )}
 
         {message.content && !hideContent && (
           <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
         )}
 
-        <div className={cn("flex items-center gap-1 mt-0.5", isOwn ? "justify-end" : "justify-start")}>
-          <p className="text-[10px] opacity-60">{formatTime(getMsgTime(message))}</p>
-          {isOwn && (
-            isFailed ? (
-              <button onClick={onRetry} className="text-red-300 hover:text-red-100" title="Retry">
-                <CircleDot className="h-3 w-3" />
-              </button>
-            ) : isSending ? (
-              <Loader2 className="h-3 w-3 animate-spin opacity-60" />
-            ) : (
-              <span className="opacity-60" title={isRead ? "Read" : "Sent"}><Check className={cn("h-3 w-3", isRead && "text-cyan-200")} /></span>
-            )
-          )}
-        </div>
+        {timestampRow}
       </div>
     </div>
   );
@@ -792,6 +845,11 @@ export default function Chat() {
   const [startingCall, setStartingCall] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
   const [voiceUploading, setVoiceUploading] = useState(false);
+
+  // Emoji/Sticker/GIF picker panel + attachment uploads (batch 3)
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const mediaInputRef = useRef<HTMLInputElement>(null);
+  const docInputRef = useRef<HTMLInputElement>(null);
 
   // Profile view modal (header avatar/name or message bubble sender click)
   const [profileModalOpen, setProfileModalOpen] = useState(false);
@@ -1084,10 +1142,6 @@ export default function Chat() {
     typingTimeoutRef.current = setTimeout(() => emitTypingStatus(false), 2000);
   };
 
-  const handleEmojiSelect = (emoji: string) => {
-    setNewMessage((prev) => prev + emoji);
-  };
-
   // ==========================================
   // Call Handlers
   // ==========================================
@@ -1127,6 +1181,10 @@ export default function Chat() {
         waitingRoomEnabled: isGroup,
         recordingEnabled: false,
         participantIds,
+        // Link the call to this conversation so the backend posts a
+        // call-log message into the chat when the call ends.
+        conversation_id: conv.id,
+        conversationId: conv.id,
       } as any);
 
       const callId = createdCall.id;
@@ -1181,64 +1239,252 @@ export default function Chat() {
     }
   };
 
+  // ==========================================
+  // Outgoing messages (text, stickers, GIFs, attachments)
+  // ==========================================
+
+  /** Shared optimistic-send pipeline. `onFailure: "keep"` marks the bubble
+   *  failed (retryable text); "remove" drops it entirely (attachments). */
+  const dispatchOptimisticMessage = useCallback(
+    async (data: SendMessageInput, optimisticExtras: Partial<ChatMessage>, onFailure: "keep" | "remove" = "keep") => {
+      if (!selectedConversation) return;
+      const convId = selectedConversation.id;
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const optimisticMsg: ChatMessage = {
+        id: tempId,
+        conversationId: convId,
+        conversation_id: convId,
+        senderId: CURRENT_USER_ID(),
+        sender_id: CURRENT_USER_ID(),
+        senderName: CURRENT_USER_NAME(),
+        sender_name: CURRENT_USER_NAME(),
+        content: data.content ?? "",
+        createdAt: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        status: "sending",
+        isOptimistic: true,
+        ...optimisticExtras,
+      };
+
+      setLocalMessages((prev) => [...prev, optimisticMsg]);
+      pendingMessageIdsRef.current.add(tempId);
+      scrollToBottom(true);
+      try { AudioUtils.playMessageSent(); } catch {}
+
+      try {
+        const result = await sendMessage.mutateAsync({ conversationId: convId, data });
+        const realId = (result as any)?.id || (result as any)?.messageId || tempId;
+        pendingMessageIdsRef.current.delete(tempId);
+        setLocalMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? {
+                  ...(result as any),
+                  id: realId,
+                  status: "sent",
+                  isOptimistic: false,
+                  conversationId: convId,
+                  conversation_id: convId,
+                  senderId: CURRENT_USER_ID(),
+                  sender_id: CURRENT_USER_ID(),
+                  senderName: CURRENT_USER_NAME(),
+                  sender_name: CURRENT_USER_NAME(),
+                  content: (result as any)?.content ?? data.content ?? "",
+                  createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
+                  created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
+                }
+              : m
+          )
+        );
+        refetchConv();
+      } catch (err) {
+        pendingMessageIdsRef.current.delete(tempId);
+        setLocalMessages((prev) =>
+          onFailure === "remove"
+            ? prev.filter((m) => m.id !== tempId)
+            : prev.map((m) => (m.id === tempId ? { ...m, status: "failed" as const } : m))
+        );
+        toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to send message") });
+      }
+    },
+    [selectedConversation, sendMessage, refetchConv, toast, scrollToBottom]
+  );
+
   const handleSendMessage = async () => {
     if (!selectedConversation || !newMessage.trim()) return;
-
     const content = newMessage.trim();
-    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
-    const optimisticMsg: ChatMessage = {
-      id: tempId,
-      conversationId: selectedConversation.id,
-      senderId: CURRENT_USER_ID(),
-      senderName: CURRENT_USER_NAME(),
-      content,
-      createdAt: new Date().toISOString(),
-      status: "sending",
-      isOptimistic: true,
-    };
-
-    setLocalMessages((prev) => [...prev, optimisticMsg]);
-    pendingMessageIdsRef.current.add(tempId);
     setNewMessage("");
     emitTypingStatus(false);
-    scrollToBottom(true);
-    try { AudioUtils.playMessageSent(); } catch {}
+    await dispatchOptimisticMessage({ content }, {}, "keep");
+  };
 
-    try {
-      const result = await sendMessage.mutateAsync({
-        conversationId: selectedConversation.id,
-        data: { content },
-      });
+  /** Instant-send emoji from the picker (WhatsApp behavior: sends as-is). */
+  const handlePanelEmojiSend = useCallback(
+    async (emoji: string) => {
+      if (!selectedConversation || !emoji) return;
+      setPickerOpen(false);
+      await dispatchOptimisticMessage({ content: emoji }, {}, "remove");
+    },
+    [selectedConversation, dispatchOptimisticMessage]
+  );
 
-      const realId = (result as any)?.id || (result as any)?.messageId || tempId;
-      pendingMessageIdsRef.current.delete(tempId);
-      setLocalMessages((prev) =>
-        prev.map((m) =>
-          m.id === tempId
-            ? {
-                ...(result as any),
-                id: realId,
-                status: "sent",
-                isOptimistic: false,
-                conversationId: selectedConversation.id,
-                conversation_id: selectedConversation.id,
-                senderId: CURRENT_USER_ID(),
-                sender_id: CURRENT_USER_ID(),
-                senderName: CURRENT_USER_NAME(),
-                sender_name: CURRENT_USER_NAME(),
-                content: (result as any)?.content || content,
-                createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
-                created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
-              }
-            : m
-        )
+  /** Instant-send big-emoji sticker (messageType='sticker', rendered ~96px). */
+  const handleSendSticker = useCallback(
+    async (emoji: string) => {
+      if (!selectedConversation) return;
+      setPickerOpen(false);
+      await dispatchOptimisticMessage(
+        { content: emoji, messageType: "sticker", attachmentType: "sticker" },
+        { content: emoji, messageType: "sticker", attachmentType: "sticker" },
+        "remove"
       );
-      refetchConv();
-    } catch (err) {
-      pendingMessageIdsRef.current.delete(tempId);
-      setLocalMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, status: "failed" } : m)));
-      toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to send message") });
-    }
+    },
+    [selectedConversation, dispatchOptimisticMessage]
+  );
+
+  /** Send a picked GIF as an attachment message. */
+  const handleSendGif = useCallback(
+    async (gif: GifObject) => {
+      if (!selectedConversation || !gif?.url) return;
+      setPickerOpen(false);
+      const gifName = gif.description || "GIF";
+      await dispatchOptimisticMessage(
+        {
+          content: "",
+          attachmentUrl: gif.url,
+          attachmentType: "gif",
+          attachmentName: gifName,
+          messageType: "gif",
+        },
+        { attachmentUrl: gif.url, attachmentType: "gif", messageType: "gif", attachmentName: gifName },
+        "remove"
+      );
+    },
+    [selectedConversation, dispatchOptimisticMessage]
+  );
+
+  // ==========================================
+  // File attachments (photos / videos / documents)
+  // ==========================================
+
+  /** WhatsApp-style attachment upload: optimistic bubble -> POST /chat/media
+   *  -> send message with attachment metadata. Text already typed in the
+   *  composer is used as the caption. */
+  const handleFileSelected = useCallback(
+    async (file?: File | null) => {
+      if (!file || !selectedConversation) return;
+      if (file.size > CHAT_MEDIA_MAX_BYTES) {
+        toast({
+          variant: "destructive",
+          title: "File too large",
+          description: `“${file.name}” is ${formatFileSize(file.size)} — attachments are limited to 100 MB.`,
+        });
+        return;
+      }
+
+      const kind = guessMediaKind(file);
+      const convId = selectedConversation.id;
+      const caption = newMessage.trim();
+      const isPreviewable = kind === "image" || kind === "video";
+      const localPreviewUrl = isPreviewable ? URL.createObjectURL(file) : undefined;
+
+      const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+      const optimisticMsg: ChatMessage = {
+        id: tempId,
+        conversationId: convId,
+        conversation_id: convId,
+        senderId: CURRENT_USER_ID(),
+        sender_id: CURRENT_USER_ID(),
+        senderName: CURRENT_USER_NAME(),
+        sender_name: CURRENT_USER_NAME(),
+        content: "",
+        attachmentUrl: localPreviewUrl || "",
+        attachmentType: kind,
+        attachmentName: file.name,
+        attachmentSize: file.size,
+        messageType: kind,
+        localPreviewUrl,
+        uploading: true,
+        createdAt: new Date().toISOString(),
+        created_at: new Date().toISOString(),
+        status: "sending",
+        isOptimistic: true,
+      };
+
+      setLocalMessages((prev) => [...prev, optimisticMsg]);
+      pendingMessageIdsRef.current.add(tempId);
+      setNewMessage("");
+      scrollToBottom(true);
+
+      try {
+        const media = await uploadChatMedia(file);
+        const result = await sendMessage.mutateAsync({
+          conversationId: convId,
+          data: {
+            content: caption || undefined,
+            attachmentUrl: media.url,
+            attachmentType: media.attachmentType,
+            attachmentName: media.name || file.name,
+            attachmentSize: media.size ?? file.size,
+            messageType: media.attachmentType as MessageTypeName,
+          },
+        });
+
+        const realId = (result as any)?.id || (result as any)?.messageId || tempId;
+        pendingMessageIdsRef.current.delete(tempId);
+        setLocalMessages((prev) =>
+          prev.map((m) =>
+            m.id === tempId
+              ? {
+                  ...(result as any),
+                  id: realId,
+                  status: "sent",
+                  isOptimistic: false,
+                  uploading: false,
+                  conversationId: convId,
+                  conversation_id: convId,
+                  senderId: CURRENT_USER_ID(),
+                  sender_id: CURRENT_USER_ID(),
+                  senderName: CURRENT_USER_NAME(),
+                  sender_name: CURRENT_USER_NAME(),
+                  content: (result as any)?.content ?? caption ?? "",
+                  attachmentUrl: (result as any)?.attachmentUrl || media.url,
+                  attachment_url: (result as any)?.attachment_url || media.url,
+                  attachmentType: (result as any)?.attachmentType || media.attachmentType,
+                  attachment_type: (result as any)?.attachment_type || media.attachmentType,
+                  attachmentName: (result as any)?.attachmentName || media.name || file.name,
+                  attachment_name: (result as any)?.attachment_name || media.name || file.name,
+                  attachmentSize: (result as any)?.attachmentSize ?? media.size ?? file.size,
+                  attachment_size: (result as any)?.attachment_size ?? media.size ?? file.size,
+                  messageType: (result as any)?.messageType || media.attachmentType,
+                  message_type: (result as any)?.message_type || media.attachmentType,
+                  createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
+                  created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
+                }
+              : m
+          )
+        );
+        refetchConv();
+        try { AudioUtils.playMessageSent(); } catch {}
+      } catch (err) {
+        pendingMessageIdsRef.current.delete(tempId);
+        setLocalMessages((prev) => prev.filter((m) => m.id !== tempId));
+        toast({
+          variant: "destructive",
+          title: "Upload failed",
+          description: getApiMessage(err, "Could not upload the attachment. Please try again."),
+        });
+      } finally {
+        if (localPreviewUrl) window.setTimeout(() => URL.revokeObjectURL(localPreviewUrl), 5_000);
+      }
+    },
+    [selectedConversation, newMessage, sendMessage, refetchConv, toast, scrollToBottom]
+  );
+
+  const handleMediaInputChange = (e: ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = "";
+    handleFileSelected(file);
   };
 
   const handleRetryMessage = async (message: ChatMessage) => {
@@ -1290,7 +1536,14 @@ export default function Chat() {
       const media = await uploadChatMedia(file);
       const result = await sendMessage.mutateAsync({
         conversationId: convId,
-        data: { content: "🎤 Voice note", attachmentUrl: media.url, attachmentType: "audio" },
+        data: {
+          content: "🎤 Voice note",
+          attachmentUrl: media.url,
+          attachmentType: "audio",
+          attachmentName: file.name || "Voice note.webm",
+          attachmentSize: file.size,
+          messageType: "voice",
+        },
       });
 
       const realId = (result as any)?.id || (result as any)?.messageId || tempId;
@@ -1314,6 +1567,12 @@ export default function Chat() {
                 attachment_url: (result as any)?.attachment_url || media.url,
                 attachmentType: (result as any)?.attachmentType || "audio",
                 attachment_type: (result as any)?.attachment_type || "audio",
+                attachmentName: (result as any)?.attachmentName || file.name || "Voice note.webm",
+                attachment_name: (result as any)?.attachment_name || file.name || "Voice note.webm",
+                attachmentSize: (result as any)?.attachmentSize ?? file.size,
+                attachment_size: (result as any)?.attachment_size ?? file.size,
+                messageType: (result as any)?.messageType || "voice",
+                message_type: (result as any)?.message_type || "voice",
                 createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
                 created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
               }
@@ -1473,15 +1732,27 @@ export default function Chat() {
                     {sortedConversations.length}
                   </span>
                 </div>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-sm hover:from-blue-700 hover:to-violet-700 hover:text-white"
-                  title="New conversation"
-                  onClick={() => setIsCreateDialogOpen(true)}
-                >
-                  <Plus className="h-4 w-4" />
-                </Button>
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="metric-ai-glow h-8 w-8 rounded-lg bg-gradient-to-br from-[#4F46E5] to-[#2563EB] text-white shadow-sm hover:from-[#4338CA] hover:to-[#1D4ED8] hover:text-white"
+                    title="MetricAi — your AI assistant"
+                    aria-label="Open MetricAi assistant"
+                    onClick={() => navigate("/metric-ai")}
+                  >
+                    <Sparkles className="h-4 w-4" />
+                  </Button>
+                  <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 rounded-lg bg-gradient-to-br from-blue-600 to-violet-600 text-white shadow-sm hover:from-blue-700 hover:to-violet-700 hover:text-white"
+                    title="New conversation"
+                    onClick={() => setIsCreateDialogOpen(true)}
+                  >
+                    <Plus className="h-4 w-4" />
+                  </Button>
+                </div>
               </div>
               <div className="relative">
                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground" />
@@ -1502,34 +1773,58 @@ export default function Chat() {
             <ScrollArea className="flex-1">
               {convLoading ? (
                 <div className="flex items-center justify-center p-8"><Loader2 className="h-6 w-6 animate-spin text-muted-foreground" /></div>
-              ) : sortedConversations.length > 0 ? (
-                <div className="p-2 space-y-1">
-                  {sortedConversations.map((conv) => (
-                    <ConversationListItem
-                      key={conv.id}
-                      conversation={conv}
-                      isSelected={selectedConversation?.id === conv.id}
-                      members={teamMembers}
-                      presence={userPresence}
-                      searchQuery={searchQuery}
-                      onClick={() => {
-                        setSelectedConversation(conv);
-                        // Mobile: enter the conversation immediately.
-                        setMobileShowSidebar(false);
-                      }}
-                    />
-                  ))}
-                </div>
               ) : (
-                <div className="flex flex-col items-center justify-center p-10 text-center">
-                  <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
-                    <MessageSquare className="h-6 w-6 text-muted-foreground/60" />
-                  </div>
-                  <p className="text-sm font-medium text-foreground/80">{searchQuery ? "No matching conversations" : "No conversations yet"}</p>
-                  {!searchQuery && (
-                    <Button variant="outline" size="sm" className="mt-3 rounded-lg" onClick={() => setIsCreateDialogOpen(true)}>
-                      <Plus className="h-3.5 w-3.5 mr-1.5" />Start one
-                    </Button>
+                <div className="p-2 space-y-1">
+                  {/* Pinned MetricAi entry (special assistant, not a real conversation) */}
+                  <button
+                    type="button"
+                    onClick={() => navigate("/metric-ai")}
+                    aria-label="Open MetricAi assistant"
+                    className="w-full px-3 py-2.5 mx-0 text-left transition-all duration-150 rounded-xl border border-transparent hover:bg-muted/70"
+                  >
+                    <div className="flex items-center gap-3">
+                      <div className="relative shrink-0">
+                        <span className="metric-ai-glow flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#4F46E5] to-[#2563EB] ring-1 ring-indigo-500/40">
+                          <img src="/Assets/logo.png" alt="" className="h-8 w-8 rounded-full object-cover" />
+                        </span>
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center justify-between gap-2">
+                          <p className="truncate text-sm font-semibold text-foreground">MetricAi</p>
+                          <Sparkles className="h-3.5 w-3.5 shrink-0 text-indigo-500/80" />
+                        </div>
+                        <p className="mt-0.5 truncate text-xs text-muted-foreground">Your AI assistant</p>
+                      </div>
+                    </div>
+                  </button>
+                  {sortedConversations.length > 0 ? (
+                    sortedConversations.map((conv) => (
+                      <ConversationListItem
+                        key={conv.id}
+                        conversation={conv}
+                        isSelected={selectedConversation?.id === conv.id}
+                        members={teamMembers}
+                        presence={userPresence}
+                        searchQuery={searchQuery}
+                        onClick={() => {
+                          setSelectedConversation(conv);
+                          // Mobile: enter the conversation immediately.
+                          setMobileShowSidebar(false);
+                        }}
+                      />
+                    ))
+                  ) : (
+                    <div className="flex flex-col items-center justify-center p-10 text-center">
+                      <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
+                        <MessageSquare className="h-6 w-6 text-muted-foreground/60" />
+                      </div>
+                      <p className="text-sm font-medium text-foreground/80">{searchQuery ? "No matching conversations" : "No conversations yet"}</p>
+                      {!searchQuery && (
+                        <Button variant="outline" size="sm" className="mt-3 rounded-lg" onClick={() => setIsCreateDialogOpen(true)}>
+                          <Plus className="h-3.5 w-3.5 mr-1.5" />Start one
+                        </Button>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -1654,6 +1949,17 @@ export default function Chat() {
                       if (item.type === "date") return <DateSeparator key={`date-${idx}`} date={item.data as string} />;
                       const msg = item.data as ChatMessage;
                       const isOwn = getMsgSenderId(msg) === CURRENT_USER_ID();
+                      // System call summaries render as a slim centered log row (no bubble)
+                      if (getMessageType(msg) === "call-log") {
+                        return (
+                          <CallLogRow
+                            key={msg.id}
+                            content={msg.content}
+                            createdAt={getMsgTime(msg)}
+                            isOwn={isOwn}
+                          />
+                        );
+                      }
                       return (
                         <MessageBubble
                           key={msg.id}
@@ -1676,6 +1982,16 @@ export default function Chat() {
 
                 {/* Input Area */}
                 <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0">
+                  {/* Emoji | Stickers | GIF picker — attaches above the composer */}
+                  {pickerOpen && !isRecording && (
+                    <div className="flex justify-start">
+                      <StickerEmojiGifPanel
+                        onEmojiSelect={handlePanelEmojiSend}
+                        onStickerSelect={handleSendSticker}
+                        onGifSelect={handleSendGif}
+                      />
+                    </div>
+                  )}
                   {isRecording ? (
                     <VoiceRecorderPill
                       onSend={handleSendVoiceNote}
@@ -1686,7 +2002,28 @@ export default function Chat() {
                     />
                   ) : (
                     <div className="flex items-end gap-2">
-                      <EmojiPicker onSelect={handleEmojiSelect} />
+                      {/* Attach menu (WhatsApp-style paperclip) */}
+                      <DropdownMenu>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-9 w-9 text-muted-foreground hover:text-foreground shrink-0"
+                            title="Attach a file"
+                            aria-label="Attach a file"
+                          >
+                            <Paperclip className="h-4 w-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="start" side="top" sideOffset={8}>
+                          <DropdownMenuItem onClick={() => mediaInputRef.current?.click()}>
+                            <ImageIcon className="h-4 w-4 mr-2" />Photo or Video
+                          </DropdownMenuItem>
+                          <DropdownMenuItem onClick={() => docInputRef.current?.click()}>
+                            <FileText className="h-4 w-4 mr-2" />Document
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
                       <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                         <Textarea
                           ref={composerRef}
@@ -1707,8 +2044,27 @@ export default function Chat() {
                             <Button
                               variant="ghost"
                               size="icon"
+                              className={cn(
+                                "h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent",
+                                pickerOpen && "bg-accent text-foreground"
+                              )}
+                              onClick={() => setPickerOpen((prev) => !prev)}
+                              title="Emoji, stickers and GIFs"
+                              aria-label="Open emoji, sticker and GIF picker"
+                              aria-expanded={pickerOpen}
+                            >
+                              <Smile className="h-4 w-4" />
+                            </Button>
+                          )}
+                          {!hasInputContent && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
                               className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent"
-                              onClick={() => setIsRecording(true)}
+                              onClick={() => {
+                                setPickerOpen(false);
+                                setIsRecording(true);
+                              }}
                               disabled={voiceUploading}
                               title="Record voice note"
                               aria-label="Record voice note"
@@ -1729,6 +2085,21 @@ export default function Chat() {
                       </div>
                     </div>
                   )}
+                  {/* Hidden attachment inputs (must stay mounted) */}
+                  <input
+                    ref={mediaInputRef}
+                    type="file"
+                    accept="image/*,video/*"
+                    className="hidden"
+                    onChange={handleMediaInputChange}
+                  />
+                  <input
+                    ref={docInputRef}
+                    type="file"
+                    accept=".pdf,.doc,.docx,.xls,.xlsx,.ppt,.pptx,.txt,.csv,.zip"
+                    className="hidden"
+                    onChange={handleMediaInputChange}
+                  />
                 </div>
               </>
             ) : (

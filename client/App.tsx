@@ -33,6 +33,7 @@ import Board from "./pages/Board";
 import NotFound from "./pages/NotFound";
 import Meetings from "./pages/Meetings";
 import Chat from "./pages/Chat";
+import MetricAiChat from "./pages/MetricAiChat";
 import Calls from "./pages/Calls";
 import Recordings from "./pages/Recordings";
 import JoinMeeting from "./pages/JoinMeeting";
@@ -202,6 +203,10 @@ const App = () => (
             <Route
               path="/chat"
               element={<TokenProtectedRoute element={<Chat />} />}
+            />
+            <Route
+              path="/metric-ai"
+              element={<TokenProtectedRoute element={<MetricAiChat />} />}
             />
             <Route
               path="/calls"

@@ -1079,14 +1079,62 @@ export interface Message {
   content: string;
   attachmentUrl?: string;
   attachmentType?: string;
+  /**
+   * WhatsApp-style attachment metadata (batch 3). `messageType` classifies the
+   * bubble: text | image | video | audio | document | gif | sticker | voice.
+   * The server reserves 'call-log' for system call summaries (content is a
+   * JSON string of ChatCallLogMeta).
+   */
+  attachmentName?: string;
+  attachment_name?: string;
+  attachmentSize?: number;
+  attachment_size?: number;
+  messageType?: MessageTypeName | 'call-log' | string;
+  message_type?: string;
   createdAt: string;
   senderName?: string;
 }
 
+export type MessageTypeName =
+  | 'text'
+  | 'image'
+  | 'video'
+  | 'audio'
+  | 'document'
+  | 'gif'
+  | 'sticker'
+  | 'voice';
+
+/** Payload of a `messageType === 'call-log'` chat message (content is JSON). */
+export interface ChatCallLogMeta {
+  callType: 'audio' | 'video';
+  status: 'completed' | 'missed' | 'cancelled';
+  durationSeconds: number | null;
+  initiatorName: string | null;
+  callCode: string | null;
+}
+
 export interface SendMessageInput {
-  content: string;
+  /** Caption / text body. Optional for pure-attachment messages. */
+  content?: string;
   attachmentUrl?: string;
   attachmentType?: string;
+  attachmentName?: string;
+  attachmentSize?: number;
+  messageType?: MessageTypeName;
+}
+
+export interface CreateCallInput {
+  type: 'audio' | 'video';
+  isGroupCall: boolean;
+  password?: string;
+  maxParticipants: number;
+  waitingRoomEnabled: boolean;
+  recordingEnabled: boolean;
+  participantIds: string[];
+  /** Links the call to a chat conversation so a call-log message is posted. */
+  conversation_id?: string;
+  conversationId?: string;
 }
 
 // Call Types
@@ -1224,4 +1272,66 @@ export interface AddParticipantsResponse {
     added: string[];
     invitedEmails?: string[];
   };
+}
+
+// ==========================================
+// GIFs (Tenor proxy — GET /chat/gifs)
+// ==========================================
+
+export interface GifObject {
+  id: string;
+  description: string;
+  /** Full-size GIF URL (sent as the message attachment). */
+  url: string;
+  /** Small preview used in the picker grid. */
+  previewUrl: string;
+}
+
+export interface ChatGifsResult {
+  /** false when TENOR_API_KEY is not configured server-side (hide the GIF tab). */
+  configured: boolean;
+  gifs: GifObject[];
+}
+
+// ==========================================
+// MetricAi (GET/POST /ai/* — plan-gated)
+// ==========================================
+
+export interface MetricAiStatus {
+  /** Plan includes MetricAi. */
+  enabled: boolean;
+  /** GLM_API_KEY configured server-side. */
+  serverConfigured: boolean;
+  /** enabled && serverConfigured — the flag the UI should gate on. */
+  available: boolean;
+  planName: string | null;
+  chatModel: string | null;
+  imageModel: string | null;
+  /** Error code, e.g. 'metric_ai_not_enabled' on 403. */
+  code?: string;
+  upgradeRequired?: boolean;
+}
+
+export interface MetricAiChatResult {
+  id: string;
+  reply: string;
+  /** Present when the assistant generated an image (CogView) for the ask. */
+  imageUrl: string | null;
+  model: string;
+  createdAt: string;
+}
+
+export interface MetricAiHistoryMessage {
+  id: string;
+  role: 'user' | 'assistant';
+  content: string;
+  imageUrl: string | null;
+  createdAt: string;
+}
+
+export interface MetricAiHistoryResult {
+  messages: MetricAiHistoryMessage[];
+  total: number;
+  page: number;
+  limit: number;
 }

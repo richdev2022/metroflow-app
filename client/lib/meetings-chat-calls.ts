@@ -17,6 +17,7 @@ import type {
   UpdateRecordingInput,
   ValidateCallResponse,
   ValidateMeetingResponse,
+  ChatGifsResult,
 } from '@shared/api';
 
 // --- Meetings ---
@@ -195,17 +196,23 @@ export const useSendMessage = () => {
 
 export interface ChatMediaUploadResult {
   url: string;
+  /** Original file name reported by the backend. */
+  name?: string;
+  /** Storage-driver filename (may differ from `name`). */
+  filename?: string;
   mimeType: string;
   size: number;
+  /** image | video | audio | document | gif */
   attachmentType: string;
 }
 
 /**
- * Upload a chat media file (voice-note audio etc.) to POST /chat/media.
- * Multipart field name must be `file`; the backend accepts webm/mp3/m4a/aac/
- * ogg/opus/wav up to 25MB and returns { url, mimeType, size, attachmentType }.
+ * Upload a chat media file (voice-note audio, photos, videos, documents…) to
+ * POST /chat/media. Multipart field name must be `file`; the backend accepts
+ * images/videos/audio/docs/GIFs up to 100MB and returns
+ * { url, name, filename, mimeType, size, attachmentType }.
  * The returned object feeds straight into useSendMessage as
- * { attachmentUrl: url, attachmentType }.
+ * { attachmentUrl: url, attachmentType, attachmentName, attachmentSize, messageType }.
  */
 export const uploadChatMedia = async (file: File): Promise<ChatMediaUploadResult> => {
   const formData = new FormData();
@@ -213,6 +220,18 @@ export const uploadChatMedia = async (file: File): Promise<ChatMediaUploadResult
   // Axios detects FormData and sets the multipart boundary header itself.
   const response = await api.post('/chat/media', formData);
   return unwrapApiData<ChatMediaUploadResult>(response.data, 'Failed to upload media');
+};
+
+/**
+ * Tenor GIF proxy — GET /chat/gifs?search=<query|'trending'>&limit=16.
+ * Returns { configured: false } when the server has no TENOR_API_KEY;
+ * callers must hide the GIF tab in that case.
+ */
+export const getChatGifs = async (search?: string, limit = 16): Promise<ChatGifsResult> => {
+  const response = await api.get('/chat/gifs', {
+    params: { search: search?.trim() ? search.trim() : 'trending', limit },
+  });
+  return unwrapApiData<ChatGifsResult>(response.data, 'Failed to load GIFs');
 };
 
 // --- Calls ---
