@@ -41,6 +41,7 @@ import JoinCall from "./pages/JoinCall";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { MaintenanceGate } from "./components/MaintenanceGate";
+import AskMetricAiWidget from "./components/AskMetricAiWidget";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
@@ -220,6 +221,10 @@ const App = () => (
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          {/* Floating "Ask MetricAi" widget — every page (authed + public),
+              hidden on the video call-room routes (handled inside the widget
+              via useLocation) and automatically suppressed by MaintenanceGate. */}
+          <AskMetricAiWidget />
           </MaintenanceGate>
           </UpgradePromptProvider>
         </SessionTimeoutProvider>

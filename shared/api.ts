@@ -1318,6 +1318,8 @@ export interface MetricAiChatResult {
   /** Present when the assistant generated an image (CogView) for the ask. */
   imageUrl: string | null;
   model: string;
+  /** True when MetricAi couldn't help and suggests handing off to human support. */
+  suggestHumanSupport: boolean;
   createdAt: string;
 }
 
