@@ -79,6 +79,7 @@ import { AudioUtils } from "@/lib/audio-utils";
 import { cn } from "@/lib/utils";
 import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
+import { resolveMediaUrl } from "@/lib/media-url";
 
 // ==========================================
 // Types & Interfaces
@@ -234,7 +235,12 @@ const getParticipantStatusLine = (
 };
 
 // Helpers for rendering received attachments from others
-const getAttachmentUrl = (m: ChatMessage) => m.attachment_url || m.attachmentUrl || "";
+// getAttachmentUrl resolves the raw attachment URL to an ABSOLUTE playable
+// URL (lib/media-url.ts) — the backend may return root-relative paths like
+// "/uploads/x.webm", which 404 when the app and API are on different origins.
+// blob:/data: optimistic URLs pass through untouched.
+const getAttachmentUrl = (m: ChatMessage) =>
+  resolveMediaUrl(m.attachment_url || m.attachmentUrl || "");
 const getAttachmentType = (m: ChatMessage) => m.attachment_type || m.attachmentType || "";
 const isImageAttachment = (m: ChatMessage) => getAttachmentType(m).startsWith("image/");
 
