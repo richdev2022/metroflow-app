@@ -28,7 +28,8 @@ import { CSS } from '@dnd-kit/utilities';
 import { Card } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Plus, Loader2, Calendar, Users, Check, X, Copy, Smile, Heart, ThumbsUp, Edit2, Trash2, GripVertical } from 'lucide-react';
+import { Plus, Loader2, Calendar, Users, Check, X, Copy, Smile, Heart, ThumbsUp, Edit2, Trash2, GripVertical, AlertTriangle } from 'lucide-react';
+import { useIsMobile } from '@/hooks/use-mobile';
 import {
   Dialog,
   DialogContent,
@@ -62,6 +63,7 @@ import {
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
+import { cn } from '@/lib/utils';
 import EmojiPicker from 'emoji-picker-react';
 import { Separator } from '@/components/ui/separator';
 import { ScrollArea } from '@/components/ui/scroll-area';
@@ -73,16 +75,57 @@ interface Column {
   status: TaskStatus;
 }
 
+/** Hex -> rgba tint (used for column header gradients and accent stripes). */
+const hexToRgba = (hex: string, alpha: number): string => {
+  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
+  if (!m) return hex;
+  return `rgba(${parseInt(m[1], 16)}, ${parseInt(m[2], 16)}, ${parseInt(m[3], 16)}, ${alpha})`;
+};
+
+/** Deterministic avatar hue per user id (matches chat avatar gradient feel). */
+const avatarHue = (id: string): number => {
+  let hash = 0;
+  for (let i = 0; i < id.length; i++) hash = (hash * 31 + id.charCodeAt(i)) | 0;
+  return Math.abs(hash) % 360;
+};
+
+type DueTone = "overdue" | "soon" | "calm" | "none";
+const getDueMeta = (dateStr?: string | null): { label: string; tone: DueTone } => {
+  if (!dateStr) return { label: "", tone: "none" };
+  const d = new Date(dateStr);
+  if (isNaN(d.getTime())) return { label: "", tone: "none" };
+  const now = new Date();
+  const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  const due = new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const dayDiff = Math.round((due - startOfToday) / 86_400_000);
+  const label = format(d, "MMM d");
+  if (dayDiff < 0) return { label, tone: "overdue" };
+  if (dayDiff === 0) return { label: "Today", tone: "soon" };
+  if (dayDiff === 1) return { label: "Tomorrow", tone: "soon" };
+  if (dayDiff <= 2) return { label, tone: "soon" };
+  return { label, tone: "calm" };
+};
+
+const DUE_CHIP_STYLES: Record<DueTone, string> = {
+  overdue: "bg-red-500/10 text-red-600 dark:text-red-400 border-red-500/30 font-semibold",
+  soon: "bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/30",
+  calm: "bg-muted/60 text-muted-foreground border-border/60",
+  none: "",
+};
+
 const SortableTask = ({
   task,
   onOpenDetail,
   teamMembers,
   updateTask,
+  accentColor,
 }: {
   task: Task;
   onOpenDetail: (task: Task) => void;
   teamMembers: TeamMember[];
   updateTask: (taskId: string, updates: Partial<Task>) => Promise<void>;
+  /** Column status color used for the card's left accent stripe. */
+  accentColor?: string;
 }) => {
   const { attributes, listeners, setNodeRef, transform, transition, isDragging } = useSortable({
     id: task.id,
@@ -103,87 +146,116 @@ const SortableTask = ({
     updateTask(task.id, { assignedTo: newAssigned });
   };
 
+  const due = getDueMeta(task.endDate);
+
   return (
     <div
       ref={setNodeRef}
       style={style}
       {...attributes}
       {...listeners}
-      className="bg-white dark:bg-gray-800 rounded-lg p-4 shadow-sm hover:shadow-md transition-shadow cursor-pointer border border-gray-200 dark:border-gray-700"
+      className="group relative overflow-hidden rounded-xl border border-border/70 bg-card shadow-sm hover:shadow-md hover:border-border transition-all cursor-grab active:cursor-grabbing"
     >
-      <div className="flex items-start justify-between mb-2">
-        <h4 className="font-semibold text-gray-900 dark:text-white truncate flex-1" onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}>
-          {task.title}
-        </h4>
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button variant="ghost" size="icon" className="h-6 w-6 ml-1" title="Assign team members">
-              <Users className="h-3 w-3" />
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent className="w-72 p-0">
-            <Command>
-              <CommandInput placeholder="Search members..." />
-              <CommandList>
-                <CommandEmpty>No members found.</CommandEmpty>
-                <CommandGroup>
-                  {teamMembers.map((member) => (
-                    <CommandItem
-                      key={member.id}
-                      onSelect={() => handleAssign(member.id)}
-                    >
-                      <Check
-                        className={`mr-2 h-4 w-4 ${
-                          (task.assignedTo || []).includes(member.id) ? 'opacity-100' : 'opacity-0'
-                        }`}
-                      />
-                      {member.name}
-                    </CommandItem>
-                  ))}
-                </CommandGroup>
-              </CommandList>
-            </Command>
-          </PopoverContent>
-        </Popover>
-      </div>
-      {task.description && (
-        <p className="text-sm text-gray-500 dark:text-gray-400 mb-3 line-clamp-2" onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}>
-          {task.description}
-        </p>
-      )}
-      <div className="flex items-center justify-between text-xs">
-        <div className="flex items-center gap-2">
-          <Calendar className="h-3 w-3 text-gray-400" />
-          <span className="text-gray-500 dark:text-gray-400">
-            {format(new Date(task.endDate), 'MMM d')}
-          </span>
+      {/* Status accent stripe */}
+      <span
+        aria-hidden="true"
+        className="absolute inset-y-0 left-0 w-1 shrink-0"
+        style={{ backgroundColor: accentColor || '#6b7280' }}
+      />
+      <div className="p-3 pl-4">
+        <div className="flex items-start justify-between gap-1 mb-1.5">
+          <h4
+            className="font-semibold text-sm text-foreground leading-snug line-clamp-2 flex-1 min-w-0"
+            onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}
+          >
+            {task.title}
+          </h4>
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="h-6 w-6 shrink-0 opacity-60 group-hover:opacity-100 transition-opacity"
+                title="Assign team members"
+                onClick={(e) => e.stopPropagation()}
+              >
+                <Users className="h-3 w-3" />
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent className="w-72 p-0" onClick={(e) => e.stopPropagation()}>
+              <Command>
+                <CommandInput placeholder="Search members..." />
+                <CommandList>
+                  <CommandEmpty>No members found.</CommandEmpty>
+                  <CommandGroup>
+                    {teamMembers.map((member) => (
+                      <CommandItem
+                        key={member.id}
+                        onSelect={() => handleAssign(member.id)}
+                      >
+                        <Check
+                          className={`mr-2 h-4 w-4 ${
+                            (task.assignedTo || []).includes(member.id) ? 'opacity-100' : 'opacity-0'
+                          }`}
+                        />
+                        {member.name}
+                      </CommandItem>
+                    ))}
+                  </CommandGroup>
+                </CommandList>
+              </Command>
+            </PopoverContent>
+          </Popover>
         </div>
-        {task.assignedTo && task.assignedTo.length > 0 && (
-          <div className="flex -space-x-2">
-            {task.assignedTo.slice(0, 3).map(userId => {
-              const member = teamMembers.find(m => m.id === userId);
-              return (
-                <div
-                  key={userId}
-                  className="h-6 w-6 rounded-full bg-primary text-primary-foreground flex items-center justify-center text-xs font-medium border-2 border-background"
-                >
-                  {member?.name.charAt(0).toUpperCase()}
-                </div>
-              );
-            })}
-            {task.assignedTo.length > 3 && (
-              <div className="h-6 w-6 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-xs font-medium border-2 border-background">
-                +{task.assignedTo.length - 3}
-              </div>
+        {task.description && (
+          <p
+            className="text-xs text-muted-foreground mb-3 line-clamp-2 leading-relaxed"
+            onClick={(e) => { e.stopPropagation(); onOpenDetail(task); }}
+          >
+            {task.description}
+          </p>
+        )}
+        <div className="flex items-center justify-between gap-2">
+          <div className="flex items-center gap-1.5 min-w-0">
+            {due.label && (
+              <span
+                className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[10px] font-medium whitespace-nowrap ${DUE_CHIP_STYLES[due.tone]}`}
+              >
+                {due.tone === 'overdue' && <AlertTriangle className="h-2.5 w-2.5" />}
+                {due.tone !== 'overdue' && <Calendar className="h-2.5 w-2.5" />}
+                {due.label}
+              </span>
+            )}
+            {task.epic && (
+              <span className="truncate rounded-full bg-primary/10 text-primary border border-primary/20 px-2 py-0.5 text-[10px] font-medium max-w-[110px]">
+                {task.epic}
+              </span>
             )}
           </div>
-        )}
+          {task.assignedTo && task.assignedTo.length > 0 && (
+            <div className="flex -space-x-1.5 shrink-0">
+              {task.assignedTo.slice(0, 3).map(userId => {
+                const member = teamMembers.find(m => m.id === userId);
+                return (
+                  <div
+                    key={userId}
+                    title={member?.name || userId}
+                    className="h-6 w-6 rounded-full flex items-center justify-center text-[10px] font-semibold text-white border-2 border-background"
+                    style={{ backgroundColor: `hsl(${avatarHue(userId)} 62% 45%)` }}
+                  >
+                    {(member?.name || userId).charAt(0).toUpperCase()}
+                  </div>
+                );
+              })}
+              {task.assignedTo.length > 3 && (
+                <div className="h-6 w-6 rounded-full bg-muted text-muted-foreground flex items-center justify-center text-[9px] font-semibold border-2 border-background">
+                  +{task.assignedTo.length - 3}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
       </div>
-      {task.epic && (
-        <Badge variant="secondary" className="mt-2 text-xs">
-          {task.epic}
-        </Badge>
-      )}
     </div>
   );
 };
@@ -209,15 +281,6 @@ const SortableTaskColumn = ({
     id: column.id,
   });
 
-  // Helper to get contrasting text color
-  const getContrastColor = (hexColor: string) => {
-    const r = parseInt(hexColor.slice(1, 3), 16);
-    const g = parseInt(hexColor.slice(3, 5), 16);
-    const b = parseInt(hexColor.slice(5, 7), 16);
-    const luminance = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
-    return luminance > 0.5 ? '#000000' : '#ffffff';
-  };
-
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
@@ -226,66 +289,74 @@ const SortableTaskColumn = ({
   };
 
   return (
-    <div 
+    <div
       ref={setNodeRef}
       style={style}
-      className="space-y-4 flex flex-col h-full min-w-[300px]"
+      className="space-y-0 flex flex-col h-full min-w-[300px] w-full"
     >
-      <div className="flex items-center justify-between flex-shrink-0 gap-2">
-        <div className="flex items-center gap-2">
-          <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing">
-            <GripVertical className="h-4 w-4 text-muted-foreground" />
+      {/* Column card: gradient header + task well */}
+      <div
+        className="flex flex-col h-full rounded-xl border border-border/70 bg-card shadow-sm overflow-hidden"
+      >
+        <div
+          className="flex items-center justify-between flex-shrink-0 gap-2 px-3 py-2.5 border-b border-border/60"
+          style={{ background: `linear-gradient(135deg, ${hexToRgba(column.color, 0.14)} 0%, ${hexToRgba(column.color, 0.04)} 100%)` }}
+        >
+          <div className="flex items-center gap-1.5 min-w-0">
+            <div {...attributes} {...listeners} className="cursor-grab active:cursor-grabbing shrink-0 p-0.5 -m-0.5">
+              <GripVertical className="h-4 w-4 text-muted-foreground/70" />
+            </div>
+            <span
+              className="h-2.5 w-2.5 rounded-full shrink-0 ring-2 ring-white/20"
+              style={{ backgroundColor: column.color }}
+            />
+            <span className="font-semibold text-sm text-foreground truncate">{column.title}</span>
+            <span className="shrink-0 rounded-full bg-muted/80 text-muted-foreground text-[11px] font-semibold px-1.5 py-0.5 min-w-[22px] text-center">
+              {tasks.length}
+            </span>
           </div>
-          <Badge
-            style={{
-              backgroundColor: column.color,
-              color: getContrastColor(column.color),
-            }}
-          >
-            {column.title}
-          </Badge>
-          <span className="text-sm text-muted-foreground">({tasks.length})</span>
-        </div>
-        <div className="flex gap-1">
-          <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEditStatus(column.status)}>
-            <Edit2 className="h-3.5 w-3.5" />
-          </Button>
-          {!column.status.is_default && (
-            <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => onDeleteStatus(column.status)}>
-              <Trash2 className="h-3.5 w-3.5" />
+          <div className="flex gap-0.5 shrink-0">
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => onEditStatus(column.status)}>
+              <Edit2 className="h-3.5 w-3.5" />
             </Button>
+            {!column.status.is_default && (
+              <Button variant="ghost" size="icon" className="h-7 w-7 text-red-500" onClick={() => onDeleteStatus(column.status)}>
+                <Trash2 className="h-3.5 w-3.5" />
+              </Button>
+            )}
+          </div>
+        </div>
+        <div
+          className={`flex-1 p-3 overflow-y-auto transition-colors bg-muted/30 dark:bg-muted/10 ${
+            isOver ? 'bg-primary/5 ring-2 ring-inset ring-primary/60' : ''
+          }`}
+        >
+          <SortableContext
+            items={tasks.map(t => t.id)}
+            strategy={verticalListSortingStrategy}
+          >
+            <div className="space-y-2.5">
+              {tasks.map((task) => (
+                <SortableTask
+                  key={task.id}
+                  task={task}
+                  onOpenDetail={onOpenDetail}
+                  teamMembers={teamMembers}
+                  updateTask={updateTask}
+                  accentColor={column.color}
+                />
+              ))}
+            </div>
+          </SortableContext>
+          {tasks.length === 0 && (
+            <div className="flex flex-col items-center justify-center py-12 text-center px-4">
+              <div className="h-10 w-10 rounded-xl border-2 border-dashed border-border flex items-center justify-center mb-2">
+                <Plus className="h-4 w-4 text-muted-foreground/60" />
+              </div>
+              <p className="text-xs text-muted-foreground">Drop tasks into {column.title}</p>
+            </div>
           )}
         </div>
-      </div>
-      <div
-        ref={() => {
-          // Need to handle multiple refs: one for droppable, one for sortable column header
-        }}
-        className={`bg-gray-50 dark:bg-gray-900 rounded-lg p-4 flex-1 overflow-y-auto transition-colors ${
-          isOver ? 'bg-gray-100 dark:bg-gray-800 ring-2 ring-primary' : ''
-        }`}
-      >
-        <SortableContext
-          items={tasks.map(t => t.id)}
-          strategy={verticalListSortingStrategy}
-        >
-          <div className="space-y-3">
-            {tasks.map((task) => (
-              <SortableTask
-                key={task.id}
-                task={task}
-                onOpenDetail={onOpenDetail}
-                teamMembers={teamMembers}
-                updateTask={updateTask}
-              />
-            ))}
-          </div>
-        </SortableContext>
-        {tasks.length === 0 && (
-          <div className="text-center py-12 text-muted-foreground">
-            No tasks in {column.title}
-          </div>
-        )}
       </div>
     </div>
   );
@@ -868,6 +939,21 @@ export default function Board() {
 
   const columns: Column[] = taskStatuses.map(taskStatusToColumn);
 
+  // Mobile (<768px): render a single column with a chip switcher instead of
+  // the horizontal kanban strip. Task drag within the column keeps working;
+  // cross-column moves go through the task detail status selector.
+  const isMobile = useIsMobile();
+  const [activeMobileColumnId, setActiveMobileColumnId] = useState('');
+  useEffect(() => {
+    if (!columns.length) return;
+    if (!columns.some(c => c.id === activeMobileColumnId)) {
+      setActiveMobileColumnId(columns[0].id);
+    }
+  }, [columns, activeMobileColumnId]);
+  const visibleColumns = isMobile
+    ? columns.filter(c => c.id === activeMobileColumnId)
+    : columns;
+
   useEffect(() => { 
     fetchBoardData();
     fetchTeamMembers();
@@ -896,22 +982,22 @@ export default function Board() {
 
   return (
     <Layout>
-      <div className="h-[calc(100vh-120px)] flex flex-col space-y-6">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold text-foreground">Board</h1>
-            <p className="text-muted-foreground mt-2">Drag and drop tasks to update their status</p>
+      <div className="h-[calc(100vh-120px)] flex flex-col space-y-4 sm:space-y-6">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="min-w-0">
+            <h1 className="text-2xl sm:text-3xl font-bold text-foreground">Board</h1>
+            <p className="text-muted-foreground mt-1 sm:mt-2 text-sm">Drag and drop tasks to update their status</p>
           </div>
-          <div className="flex gap-2">
-            <Button onClick={() => setShowStatusOverview(!showStatusOverview)} variant="outline">
-              {showStatusOverview ? 'Show Board' : 'Get Task Status'}
+          <div className="flex flex-wrap gap-2">
+            <Button onClick={() => setShowStatusOverview(!showStatusOverview)} variant="outline" size="sm" className="rounded-xl h-9">
+              {showStatusOverview ? 'Show Board' : 'Status Overview'}
             </Button>
-            <Button onClick={() => setShowCreateColumnModal(true)} variant="outline">
-              <Plus className="h-4 w-4 mr-2" />
-              Create Column
+            <Button onClick={() => setShowCreateColumnModal(true)} variant="outline" size="sm" className="rounded-xl h-9">
+              <Plus className="h-4 w-4 mr-1.5" />
+              Column
             </Button>
-            <Button onClick={() => window.location.href = '/tasks'}>
-              <Plus className="h-4 w-4 mr-2" />
+            <Button onClick={() => window.location.href = '/tasks'} size="sm" className="rounded-xl h-9 bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700">
+              <Plus className="h-4 w-4 mr-1.5" />
               Add Task
             </Button>
           </div>
@@ -944,14 +1030,58 @@ export default function Board() {
             onDragOver={handleDragOver}
             onDragEnd={handleDragEnd}
           >
-            <div className="flex-1 overflow-x-auto overflow-y-hidden">
+            {/* Mobile: column switcher chips (single-column view) */}
+            {isMobile && (
+              <div className="flex gap-2 overflow-x-auto pb-3 -mx-1 px-1 snap-x snap-mandatory [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                {columns.map((column) => {
+                  const isActive = column.id === activeMobileColumnId;
+                  return (
+                    <button
+                      key={column.id}
+                      type="button"
+                      onClick={() => setActiveMobileColumnId(column.id)}
+                      aria-pressed={isActive}
+                      className={cn(
+                        'flex shrink-0 snap-start items-center gap-1.5 rounded-full border px-3 py-1.5 text-xs font-medium transition-all',
+                        isActive
+                          ? 'border-transparent text-white shadow-md'
+                          : 'bg-card text-muted-foreground border-border hover:text-foreground hover:bg-muted/60'
+                      )}
+                      style={isActive ? { backgroundColor: column.color } : undefined}
+                    >
+                      <span
+                        className="h-2 w-2 rounded-full"
+                        style={{ backgroundColor: isActive ? 'rgba(255,255,255,0.85)' : column.color }}
+                      />
+                      {column.title}
+                      <span
+                        className={cn(
+                          'rounded-full px-1.5 text-[10px] font-semibold',
+                          isActive ? 'bg-white/25 text-white' : 'bg-muted text-muted-foreground'
+                        )}
+                      >
+                        {getTasksByStatus(column.id).length}
+                      </span>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+            <div className="flex-1 overflow-x-auto overflow-y-hidden snap-x snap-mandatory [scrollbar-width:thin]">
               <SortableContext
                 items={taskStatuses.map(s => s.id)}
                 strategy={horizontalListSortingStrategy}
               >
-                <div className="flex gap-6 h-full pb-4">
-                  {columns.map((column) => (
-                    <div key={column.id} className="min-w-[300px] h-full flex flex-col">
+                <div className="flex gap-4 sm:gap-6 h-full pb-4">
+                  {visibleColumns.map((column) => (
+                    <div
+                      key={column.id}
+                      className={
+                        isMobile
+                          ? "w-full min-w-0 h-full flex flex-col"
+                          : "min-w-[280px] sm:min-w-[300px] w-[85vw] sm:w-auto sm:flex-1 sm:min-w-0 h-full flex flex-col snap-start"
+                      }
+                    >
                       <SortableTaskColumn
                         column={column}
                         tasks={getTasksByStatus(column.id)}

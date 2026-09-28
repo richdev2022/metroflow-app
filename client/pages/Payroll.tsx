@@ -1,8 +1,18 @@
-import React, { useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { PayrollEmployee, Transfer, WalletInfo, PayrollAdjustment, PayrollConfig, Epic, TransferItem, OtpEnabledResponse } from "@shared/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  PayrollDirectoryEmployee,
+  PayrollDirectoryResponse,
+  PayrollAdjustment,
+  PayrollConfig,
+  Epic,
+  TransferItem,
+  WalletInfo,
+  OtpEnabledResponse,
+  VerifyBulkResponse,
+} from "@shared/api";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -11,30 +21,47 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
-import { Loader2, DollarSign, Plus, Minus, Check, ChevronsUpDown, MoreHorizontal, Trash2, Search as SearchIcon, ChevronLeft, ChevronRight, Filter, Calendar as CalendarIcon, Settings, User, CreditCard, FileText, Users, ArrowRightLeft, AlertCircle } from "lucide-react";
+import { Checkbox } from "@/components/ui/checkbox";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Loader2,
+  Plus,
+  Check,
+  ChevronsUpDown,
+  Trash2,
+  Search as SearchIcon,
+  ChevronLeft,
+  ChevronRight,
+  Settings,
+  Users,
+  ArrowRightLeft,
+  AlertTriangle,
+  Wallet,
+  ShieldCheck,
+  UserPlus,
+  Upload,
+  Pencil,
+  RefreshCw,
+} from "lucide-react";
+import * as z from "zod";
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import * as z from "zod";
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from "@/components/ui/form";
 import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Calendar } from "@/components/ui/calendar";
-import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountdown } from "@/hooks/useCountdown";
+import { extractAccountName } from "@/lib/account-lookup";
 import ImportEmployeesDialog from "@/components/payroll/ImportEmployeesDialog";
-import { Upload } from "lucide-react";
+import VerificationBadge from "@/components/payroll/VerificationBadge";
+import EmployeeDetailDialog from "@/components/payroll/EmployeeDetailDialog";
+import EmployeeFormDialog from "@/components/payroll/EmployeeFormDialog";
 
-const updatePayrollSchema = z.object({
-  salary: z.string().min(1, "Salary is required"),
-  salary_currency: z.string().min(1, "Currency is required"),
-  bank_code: z.string().min(1, "Bank Code is required"),
-  bank_account_number: z.string().length(10, "Account number must be 10 digits"),
-  account_name: z.string().min(1, "Account name is required"),
-  contract_start_date: z.string().optional(),
-});
+/* ------------------------------------------------------------------ */
+/* Schemas                                                             */
+/* ------------------------------------------------------------------ */
 
 const configSchema = z.object({
   salary_interval: z.enum(["daily", "weekly", "monthly", "yearly", "custom"]),
@@ -47,358 +74,570 @@ const adjustmentSchema = z.object({
   reason: z.string().min(3, "Reason is required"),
 });
 
-const bulkTransferSchema = z.object({
+const epicBulkTransferSchema = z.object({
   source_wallet_id: z.string().min(1, "Source wallet is required"),
-  type: z.enum(["salary", "epic"]),
-  otp: z.string().optional(),
-  epic_id: z.string().optional(),
+  epic_id: z.string().min(1, "Epic is required"),
 });
 
+type VerificationFilter = "all" | "verified" | "unverified" | "failed";
+type CurrencyFilter = "all" | "NGN" | "USD";
+
+interface PayrollStats {
+  total: number;
+  verified: number;
+  pending: number;
+  failed: number;
+  ngnTotal: number;
+  ngnCount: number;
+  usdTotal: number;
+  usdCount: number;
+}
+
+const EMPTY_STATS: PayrollStats = {
+  total: 0,
+  verified: 0,
+  pending: 0,
+  failed: 0,
+  ngnTotal: 0,
+  ngnCount: 0,
+  usdTotal: 0,
+  usdCount: 0,
+};
+
+/* ------------------------------------------------------------------ */
+/* Helpers                                                             */
+/* ------------------------------------------------------------------ */
+
+function initials(name?: string | null): string {
+  if (!name) return "?";
+  return name
+    .split(" ")
+    .map((p) => p[0])
+    .filter(Boolean)
+    .slice(0, 2)
+    .join("")
+    .toUpperCase();
+}
+
+function maskAccount(account?: string | null): string {
+  if (!account) return "—";
+  const trimmed = String(account).trim();
+  return trimmed.length > 4 ? `••••${trimmed.slice(-4)}` : trimmed;
+}
+
+function formatMoney(amount: number): string {
+  return amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
+}
+
 export default function Payroll() {
-  const [employees, setEmployees] = useState<PayrollEmployee[]>([]);
-  const [wallets, setWallets] = useState<WalletInfo | null>(null);
-  const [epics, setEpics] = useState<Epic[]>([]);
-  const [loading, setLoading] = useState(true);
   const { toast } = useToast();
-  
-  const [selectedEmployee, setSelectedEmployee] = useState<PayrollEmployee | null>(null);
-  const [updateDialogOpen, setUpdateDialogOpen] = useState(false);
-  const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
-  const [detailDialogOpen, setDetailDialogOpen] = useState(false);
-  const [bulkTransferDialogOpen, setBulkTransferDialogOpen] = useState(false);
-  const [employeeAdjustments, setEmployeeAdjustments] = useState<PayrollAdjustment[]>([]);
-  const [banks, setBanks] = useState<{code: string, name: string}[]>([]);
-  const [accountName, setAccountName] = useState<string>("");
-  const [openBank, setOpenBank] = useState(false);
-  
-  // Config State
-  const [configDialogOpen, setConfigDialogOpen] = useState(false);
-  const [payrollConfig, setPayrollConfig] = useState<PayrollConfig | null>(null);
-  const [isUpdating, setIsUpdating] = useState(false);
 
-  // Filter & Pagination States - Payroll
-  const [searchQuery, setSearchQuery] = useState("");
-  const [roleFilter, setRoleFilter] = useState("all");
-  const [startDate, setStartDate] = useState("");
-  const [endDate, setEndDate] = useState("");
+  /* ---------------- Tabs ---------------- */
+  const [activeTab, setActiveTab] = useState<"employees" | "payout" | "adjustments">("employees");
+
+  /* ---------------- Stats + full-directory fetch (payout + adjustment selects) ---------------- */
+  const [stats, setStats] = useState<PayrollStats>(EMPTY_STATS);
+  const [directory, setDirectory] = useState<PayrollDirectoryEmployee[]>([]);
+  const [directoryLoading, setDirectoryLoading] = useState(true);
+
+  /* ---------------- Employees tab (paginated directory) ---------------- */
+  const [employees, setEmployees] = useState<PayrollDirectoryEmployee[]>([]);
+  const [employeesLoading, setEmployeesLoading] = useState(true);
+  const [searchDraft, setSearchDraft] = useState("");
+  const [searchApplied, setSearchApplied] = useState("");
+  const [verificationFilter, setVerificationFilter] = useState<VerificationFilter>("all");
+  const [currencyFilter, setCurrencyFilter] = useState<CurrencyFilter>("all");
   const [page, setPage] = useState(1);
-  const [limit, setLimit] = useState(10);
-  
-  // Filter & Pagination States - Transfers
-  const [transfers, setTransfers] = useState<Transfer[]>([]);
-  const [transferPage, setTransferPage] = useState(1);
-  const [transferTotal, setTransferTotal] = useState(0);
-  const [transferSearch, setTransferSearch] = useState("");
-  const [transferStatus, setTransferStatus] = useState("all");
-  const [transferLimit, setTransferLimit] = useState(10);
-  const [retryingId, setRetryingId] = useState<string | null>(null);
-  const [selectedTransfer, setSelectedTransfer] = useState<Transfer | null>(null);
-  const [transferDetailDialogOpen, setTransferDetailDialogOpen] = useState(false);
-  
-  // Bulk Transfer State
-  const [epicTransferItems, setEpicTransferItems] = useState<TransferItem[]>([]);
-  const [bulkTransferStep, setBulkTransferStep] = useState<"select" | "review" | "otp" | "success">("select");
-  const [otpSent, setOtpSent] = useState(false);
-  const [otpLoading, setOtpLoading] = useState(false);
-  const [transferSuccessData, setTransferSuccessData] = useState<any>(null);
-  const [epicTransferMode, setEpicTransferMode] = useState<"single" | "bulk">("bulk");
-  const [editingRecipientId, setEditingRecipientId] = useState<string | null>(null);
-  const [openBankPopover, setOpenBankPopover] = useState<number | null>(null);
-  // Add lookup status per recipient (index-based)
-  const [recipientLookupStatus, setRecipientLookupStatus] = useState<Record<number, { loading: boolean; success: boolean; name: string; error?: string }>>({});
-  const { seconds, isActive, startCountdown } = useCountdown();
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRecords, setTotalRecords] = useState(0);
+  const PAGE_SIZE = 10;
 
-  // New security state
-  const [pin, setPin] = useState("");
-  const [otpMethod, setOtpMethod] = useState<string>("");
+  // row-level verification state
+  const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
+  const [verifyingRowId, setVerifyingRowId] = useState<string | null>(null);
+  const [bulkVerifying, setBulkVerifying] = useState(false);
+
+  /* ---------------- Detail + form dialogs ---------------- */
+  const [detailEmployee, setDetailEmployee] = useState<PayrollDirectoryEmployee | null>(null);
+  const [detailOpen, setDetailOpen] = useState(false);
+  const [formOpen, setFormOpen] = useState(false);
+  const [editingEmployee, setEditingEmployee] = useState<PayrollDirectoryEmployee | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
+
+  /* ---------------- Salary payout ---------------- */
+  const [payoutStep, setPayoutStep] = useState<"review" | "otp" | "success">("review");
+  const [payoutWalletId, setPayoutWalletId] = useState("");
+  const [payoutOtp, setPayoutOtp] = useState("");
+  const [payoutLoading, setPayoutLoading] = useState(false);
+  const [payoutOtpLoading, setPayoutOtpLoading] = useState(false);
+  const [payoutResult, setPayoutResult] = useState<any>(null);
+
+  /* ---------------- Adjustments tab ---------------- */
+  const [adjustments, setAdjustments] = useState<PayrollAdjustment[]>([]);
+  const [adjustmentsLoading, setAdjustmentsLoading] = useState(false);
+  const [adjustmentDialogOpen, setAdjustmentDialogOpen] = useState(false);
+  const [adjustmentUserId, setAdjustmentUserId] = useState("");
+
+  /* ---------------- Shared: wallets / banks / security ---------------- */
+  const [wallets, setWallets] = useState<WalletInfo | null>(null);
+  const [banks, setBanks] = useState<{ code: string; name: string }[]>([]);
   const [otpEnabled, setOtpEnabled] = useState(true);
   const [pinCreated, setPinCreated] = useState(false);
+  const [pin, setPin] = useState("");
+  const [otpMethod, setOtpMethod] = useState<string>("");
   const [showCreatePinModal, setShowCreatePinModal] = useState(false);
   const [showResetPinModal, setShowResetPinModal] = useState(false);
   const [resetPinOtp, setResetPinOtp] = useState("");
   const [newPin, setNewPin] = useState("");
-  const [importDialogOpen, setImportDialogOpen] = useState(false);
-  
-  // Effect to auto-lookup recipient accounts
-  useEffect(() => {
-    const lookupRecipients = async () => {
-      for (let index = 0; index < epicTransferItems.length; index++) {
-        const item = epicTransferItems[index];
-        const currentStatus = recipientLookupStatus[index];
-        
-        // If we have both bank and account number (10 digits)
-        if (item.recipient_bank && item.recipient_account && item.recipient_account.length === 10) {
-          // Don't re-lookup if we already have a success or are loading
-          if (currentStatus?.success || currentStatus?.loading) continue;
-          
-          // Mark as loading
-          setRecipientLookupStatus(prev => ({
-            ...prev,
-            [index]: { loading: true, success: false, name: "" }
-          }));
-          
-          try {
-            const res = await api.post("/transfers/account-lookup", {
-              bank_code: item.recipient_bank,
-              account_number: item.recipient_account
-            });
-            
-            let name = "";
-            if (res.data.data?.responseBody?.accountName) {
-              name = res.data.data.responseBody.accountName;
-            } else if (res.data.data?.account_name) {
-              name = res.data.data.account_name;
-            } else if (res.data.data?.accountName) {
-              name = res.data.data.accountName;
-            }
-            
-            // Update recipient name and status
-            updateRecipient(`recipient_${index}`, "recipient_name", name);
-            setRecipientLookupStatus(prev => ({
-              ...prev,
-              [index]: { loading: false, success: true, name }
-            }));
-          } catch (error: any) {
-            // Update status to failed
-            const errorMsg = error.response?.data?.error || error.response?.data?.message || "Could not verify account name";
-            setRecipientLookupStatus(prev => ({
-              ...prev,
-              [index]: { loading: false, success: false, name: "", error: errorMsg }
-            }));
-          }
-        } else {
-          // Reset status if conditions aren't met
-          if (currentStatus) {
-            setRecipientLookupStatus(prev => {
-              const newStatus = { ...prev };
-              delete newStatus[index];
-              return newStatus;
-            });
-            updateRecipient(`recipient_${index}`, "recipient_name", "");
-          }
-        }
-      }
-    };
-    
-    lookupRecipients();
-  }, [epicTransferItems]);
 
-  const updateForm = useForm<z.infer<typeof updatePayrollSchema>>({
-    resolver: zodResolver(updatePayrollSchema),
-    defaultValues: { salary: "", salary_currency: "NGN", bank_code: "", bank_account_number: "", account_name: "", contract_start_date: "" },
-  });
+  /* ---------------- Config dialog ---------------- */
+  const [configDialogOpen, setConfigDialogOpen] = useState(false);
+  const [payrollConfig, setPayrollConfig] = useState<PayrollConfig | null>(null);
+
+  /* ---------------- Epic bulk transfer dialog ---------------- */
+  const [epics, setEpics] = useState<Epic[]>([]);
+  const [epicTransferDialogOpen, setEpicTransferDialogOpen] = useState(false);
+  const [epicTransferStep, setEpicTransferStep] = useState<"select" | "review" | "otp" | "success">("select");
+  const [epicTransferItems, setEpicTransferItems] = useState<TransferItem[]>([]);
+  const [epicTransferMode, setEpicTransferMode] = useState<"single" | "bulk">("bulk");
+  const [epicOtpLoading, setEpicOtpLoading] = useState(false);
+  const [epicTransferSuccessData, setEpicTransferSuccessData] = useState<any>(null);
+  const [epicOtp, setEpicOtp] = useState("");
+  const [openBankPopover, setOpenBankPopover] = useState<number | null>(null);
+  const [openBank, setOpenBank] = useState(false);
+  const [recipientLookupStatus, setRecipientLookupStatus] = useState<Record<number, { loading: boolean; success: boolean; name: string; error?: string }>>({});
+  const { seconds, isActive, startCountdown } = useCountdown();
 
   const configForm = useForm<z.infer<typeof configSchema>>({
     resolver: zodResolver(configSchema),
     defaultValues: { salary_interval: "monthly", salary_custom_date: null },
   });
-  
   const watchInterval = configForm.watch("salary_interval");
-
-  const watchBankCode = updateForm.watch("bank_code");
-  const watchAccountNumber = updateForm.watch("bank_account_number");
-
-  useEffect(() => {
-    const lookup = async () => {
-        if (watchBankCode && watchAccountNumber && watchAccountNumber.length === 10) {
-            setAccountName("Verifying...");
-            try {
-                const res = await api.post("/transfers/account-lookup", {
-                    bank_code: watchBankCode,
-                    account_number: watchAccountNumber
-                });
-                if (res.data.success) {
-                    let name = "";
-                    if (res.data.data?.responseBody?.accountName) {
-                        name = res.data.data.responseBody.accountName;
-                    } else if (res.data.data?.account_name) {
-                        name = res.data.data.account_name;
-                    } else if (res.data.data?.accountName) {
-                        name = res.data.data.accountName;
-                    }
-                    setAccountName(name);
-                    updateForm.setValue("account_name", name);
-                } else {
-                     setAccountName("Not found");
-                }
-            } catch (e) {
-                setAccountName("Lookup failed");
-            }
-        } else {
-            setAccountName("");
-        }
-    };
-    const timer = setTimeout(lookup, 500); // Debounce
-    return () => clearTimeout(timer);
-  }, [watchBankCode, watchAccountNumber, updateForm]);
 
   const adjustmentForm = useForm<z.infer<typeof adjustmentSchema>>({
     resolver: zodResolver(adjustmentSchema),
     defaultValues: { type: "bonus", amount: "", reason: "" },
   });
 
-  const bulkTransferForm = useForm<z.infer<typeof bulkTransferSchema>>({
-    resolver: zodResolver(bulkTransferSchema),
-    defaultValues: { source_wallet_id: "", type: "salary", epic_id: "" },
+  const epicTransferForm = useForm<z.infer<typeof epicBulkTransferSchema>>({
+    resolver: zodResolver(epicBulkTransferSchema),
+    defaultValues: { source_wallet_id: "", epic_id: "" },
   });
 
-  const fetchEmployees = async (currentPage = page) => {
+  /* ================================================================== */
+  /* Data fetching                                                       */
+  /* ================================================================== */
+
+  /** Full directory (up to 1000 rows) for stat cards, payout review + adjustment selects */
+  const fetchDirectory = useCallback(async (silent = false) => {
+    if (!silent) setDirectoryLoading(true);
     try {
-      const queryParams = new URLSearchParams();
-      if (searchQuery) queryParams.append("search", searchQuery);
-      if (roleFilter && roleFilter !== "all") queryParams.append("role", roleFilter);
-      if (startDate) queryParams.append("startDate", startDate);
-      if (endDate) queryParams.append("endDate", endDate);
-      queryParams.append("page", currentPage.toString());
-      queryParams.append("limit", limit.toString());
+      const collected: PayrollDirectoryEmployee[] = [];
+      let current = 1;
+      let tp = 1;
+      do {
+        const res = await api.get<PayrollDirectoryResponse>(`/payroll/employees?page=${current}&limit=200`);
+        if (!res.data?.success) break;
+        collected.push(...(Array.isArray(res.data.data) ? res.data.data : []));
+        tp = res.data.pagination?.totalPages || 1;
+        current += 1;
+      } while (current <= tp && current <= 5);
 
-      const res = await api.get<{success: boolean, payroll: PayrollEmployee[], pagination: any}>(`/payroll/summary?${queryParams.toString()}`);
-      if (res.data.success) {
-        setEmployees(res.data.payroll || []);
-      } else {
-        setEmployees([]);
-      }
-    } catch (error: any) {
-      console.error("Failed to fetch employees", error);
-      toast({
-        title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Failed to load employee data",
-        variant: "destructive",
-      });
-    }
-  };
+      setDirectory(collected);
 
-  const fetchTransfers = async (currentPage = transferPage) => {
-    try {
-      const queryParams = new URLSearchParams();
-      if (transferSearch) queryParams.append("search", transferSearch);
-      if (transferStatus && transferStatus !== "all") queryParams.append("status", transferStatus);
-      queryParams.append("page", currentPage.toString());
-      queryParams.append("limit", transferLimit.toString());
-
-      const res = await api.get<{
-          success: boolean, 
-          data: Transfer[], 
-          pagination: { total: number, page: number, limit: number } 
-      }>(`/transfers?${queryParams.toString()}`);
-      
-      if (res.data.success) {
-          setTransfers(res.data.data);
-          setTransferTotal(res.data.pagination.total);
-      } else {
-          setTransfers([]);
-      }
-    } catch (error: any) {
-      console.error("Failed to fetch transfers", error);
-      toast({
-        title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Failed to load transfer history",
-        variant: "destructive",
-      });
-    }
-  };
-
-  const fetchConfig = async () => {
-    try {
-        const res = await api.get<{success: boolean, data: PayrollConfig}>("/payroll/config");
-        if (res.data.success) {
-            setPayrollConfig(res.data.data);
-            configForm.reset({
-                salary_interval: res.data.data.salary_interval,
-                salary_custom_date: res.data.data.salary_custom_date
-            });
+      const s: PayrollStats = { ...EMPTY_STATS };
+      for (const emp of collected) {
+        s.total += 1;
+        const status = (emp.verification_status || "unverified").toLowerCase();
+        if (status === "verified") s.verified += 1;
+        else if (status === "failed") s.failed += 1;
+        else s.pending += 1;
+        const salary = Number(emp.salary_amount);
+        if (!isNaN(salary) && salary > 0) {
+          if ((emp.salary_currency || "NGN").toUpperCase() === "USD") {
+            s.usdTotal += salary;
+            s.usdCount += 1;
+          } else {
+            s.ngnTotal += salary;
+            s.ngnCount += 1;
+          }
         }
-    } catch (error) {
-        console.error("Failed to fetch config");
+      }
+      setStats(s);
+    } catch (error: any) {
+      console.error("Failed to fetch employee directory", error);
+      if (!silent) {
+        toast({
+          title: "Error",
+          description: error.response?.data?.error || error.response?.data?.message || "Failed to load employees",
+          variant: "destructive",
+        });
+      }
+    } finally {
+      setDirectoryLoading(false);
     }
-  };
+  }, [toast]);
 
-  const fetchEpics = async () => {
+  /** Paginated, filtered directory for the Employees table */
+  const fetchEmployees = useCallback(
+    async (currentPage = page) => {
+      setEmployeesLoading(true);
+      try {
+        const params = new URLSearchParams();
+        if (searchApplied.trim()) params.append("search", searchApplied.trim());
+        if (verificationFilter !== "all") params.append("verification_status", verificationFilter);
+        if (currencyFilter !== "all") params.append("currency", currencyFilter);
+        params.append("page", String(currentPage));
+        params.append("limit", String(PAGE_SIZE));
+
+        const res = await api.get<PayrollDirectoryResponse>(`/payroll/employees?${params.toString()}`);
+        if (res.data?.success) {
+          setEmployees(Array.isArray(res.data.data) ? res.data.data : []);
+          setTotalRecords(res.data.pagination?.total || 0);
+          setTotalPages(Math.max(1, res.data.pagination?.totalPages || 1));
+        } else {
+          setEmployees([]);
+        }
+      } catch (error: any) {
+        console.error("Failed to fetch employees", error);
+        toast({
+          title: "Error",
+          description: error.response?.data?.error || error.response?.data?.message || "Failed to load employee data",
+          variant: "destructive",
+        });
+      } finally {
+        setEmployeesLoading(false);
+      }
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [searchApplied, verificationFilter, currencyFilter, page]
+  );
+
+  const fetchAdjustments = useCallback(async () => {
+    setAdjustmentsLoading(true);
     try {
-      const res = await api.get<{success: boolean, data: Epic[]}>("/epics");
+      const res = await api.get<{ success: boolean; adjustments: PayrollAdjustment[] }>("/payroll/adjustments");
+      if (res.data?.success) {
+        setAdjustments(res.data.adjustments || []);
+      }
+    } catch (error: any) {
+      console.error("Failed to fetch adjustments", error);
+    } finally {
+      setAdjustmentsLoading(false);
+    }
+  }, []);
+
+  const fetchConfig = useCallback(async () => {
+    try {
+      const res = await api.get<{ success: boolean; data: PayrollConfig }>("/payroll/config");
+      if (res.data.success) {
+        setPayrollConfig(res.data.data);
+        configForm.reset({
+          salary_interval: res.data.data.salary_interval,
+          salary_custom_date: res.data.data.salary_custom_date,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to fetch config");
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const fetchEpics = useCallback(async () => {
+    try {
+      const res = await api.get<{ success: boolean; data: Epic[] }>("/epics");
       if (res.data.success) {
         setEpics(res.data.data || []);
       }
     } catch (error) {
       console.error("Failed to fetch epics");
     }
-  };
+  }, []);
 
-  const onUpdateConfig = async (values: z.infer<typeof configSchema>) => {
+  const refreshAll = useCallback(() => {
+    fetchDirectory(true);
+    fetchEmployees(page);
+    fetchAdjustments();
+  }, [fetchDirectory, fetchEmployees, fetchAdjustments, page]);
+
+  useEffect(() => {
+    const bootstrap = async () => {
       try {
-          const res = await api.put("/payroll/config", values);
-          if (res.data.success) {
-              toast({ title: "Success", description: "Configuration updated" });
-              setConfigDialogOpen(false);
-              fetchConfig();
-          }
+        const [walletRes, banksRes, otpEnabledRes] = await Promise.all([
+          api.get<WalletInfo>("/wallet"),
+          api.get<{ success: boolean; data: { code: string; name: string }[] }>("/transfers/banks"),
+          api.get<OtpEnabledResponse>("/settings/otp-enabled"),
+        ]);
+        setWallets(walletRes.data);
+        if (banksRes.data.success) setBanks(banksRes.data.data);
+        if (otpEnabledRes.data.success) {
+          setOtpEnabled(otpEnabledRes.data.otpEnabled);
+          setPinCreated(otpEnabledRes.data.pinCreated);
+        }
       } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to update configuration", variant: "destructive" });
-    }
-  };
-
-  const fetchData = async () => {
-    try {
-      fetchEmployees(1);
+        console.error("Failed to fetch payroll prerequisites", error);
+      }
       fetchConfig();
       fetchEpics();
-      fetchTransfers(1);
+      fetchDirectory();
+      fetchAdjustments();
+    };
+    bootstrap();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-      const [walletRes, banksRes, otpEnabledRes] = await Promise.all([
-        api.get<WalletInfo>("/wallet"),
-        api.get<{success: boolean, data: {code: string, name: string}[]}>("/transfers/banks"),
-        api.get<OtpEnabledResponse>("/settings/otp-enabled")
-      ]);
-      
-      setWallets(walletRes.data);
-      if (banksRes.data.success) {
-        setBanks(banksRes.data.data);
-      }
-      if (otpEnabledRes.data.success) {
-        setOtpEnabled(otpEnabledRes.data.otpEnabled);
-        setPinCreated(otpEnabledRes.data.pinCreated);
+  // Refetch the employees table when page or filters change
+  useEffect(() => {
+    fetchEmployees(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page, searchApplied, verificationFilter, currencyFilter]);
+
+  /* ================================================================== */
+  /* Verification actions                                                */
+  /* ================================================================== */
+
+  const afterVerifyRefresh = () => {
+    fetchEmployees(page);
+    fetchDirectory(true);
+  };
+
+  const verifyEmployee = async (employeeId: string) => {
+    setVerifyingRowId(employeeId);
+    try {
+      const res = await api.post(`/payroll/employees/${employeeId}/verify`);
+      if (res.data?.success) {
+        toast({
+          title: "Account verified",
+          description: `Resolved name: ${res.data?.data?.account_name || "—"}`,
+        });
+      } else {
+        toast({
+          title: "Verification failed",
+          description: res.data?.error || "Could not verify this account",
+          variant: "destructive",
+        });
       }
     } catch (error: any) {
-      console.error("Failed to fetch data", error);
       toast({
-        title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Failed to load data",
+        title: "Verification failed",
+        description: error.response?.data?.error || error.response?.data?.message || "Could not verify this account",
         variant: "destructive",
       });
     } finally {
-      setLoading(false);
+      setVerifyingRowId(null);
+      afterVerifyRefresh();
     }
   };
 
-  useEffect(() => {
-    fetchData();
-  }, []);
-
-  // Effect to refetch when page changes (but not when filters change, to allow "Search" button)
-  useEffect(() => {
-    if (!loading) {
-       fetchEmployees(page);
-    }
-  }, [page]);
-
-  const handlePayrollSearch = () => {
-    setPage(1);
-    fetchEmployees(1);
-  };
-
-  const handleTransferSearch = () => {
-    setTransferPage(1);
-    fetchTransfers(1);
-  };
-
-  const fetchAdjustments = async (userId: string) => {
+  /** Verify a list of ids (or all pending when ids is omitted) with a result summary */
+  const verifyBulk = async (employeeIds?: string[]) => {
+    setBulkVerifying(true);
     try {
-      const res = await api.get<{success: boolean, data: PayrollAdjustment[]}>(`/payroll/adjustments?userId=${userId}`);
-      if (res.data.success) {
-        setEmployeeAdjustments(res.data.data || []);
+      const payload = employeeIds && employeeIds.length > 0 ? { employee_ids: employeeIds } : {};
+      const res = await api.post<VerifyBulkResponse>("/payroll/employees/verify-bulk", payload);
+      if (res.data?.success) {
+        const { total, verified, failed, results } = res.data.data;
+        const failedNames = (results || [])
+          .filter((r) => !r.success)
+          .slice(0, 3)
+          .map((r) => r.name)
+          .join(", ");
+        toast({
+          title: `Verification finished — ${verified}/${total} verified`,
+          description: failed > 0 ? `Failed: ${failed}${failedNames ? ` (${failedNames}${failed > 3 ? "…" : ""})` : ""}` : "All accounts resolved successfully.",
+          variant: failed > 0 ? "destructive" : "default",
+        });
+        setSelectedIds(new Set());
+        afterVerifyRefresh();
+      } else {
+        const errData = res.data as any;
+        toast({
+          title: "Verification failed",
+          description: errData?.error || "Could not run bulk verification",
+          variant: "destructive",
+        });
       }
-    } catch (e) {
-      console.error("Failed to fetch adjustments");
+    } catch (error: any) {
+      toast({
+        title: "Verification failed",
+        description: error.response?.data?.error || error.response?.data?.message || "Could not run bulk verification",
+        variant: "destructive",
+      });
+    } finally {
+      setBulkVerifying(false);
+    }
+  };
+
+  const pendingSelectableIds = employees
+    .filter((e) => (e.verification_status || "unverified") !== "verified" && e.bank_code && e.account_number)
+    .map((e) => e.id);
+
+  const toggleSelect = (id: string, checked: boolean) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
+
+  const toggleSelectAll = (checked: boolean) => {
+    if (checked) {
+      setSelectedIds(new Set(pendingSelectableIds));
+    } else {
+      setSelectedIds(new Set());
+    }
+  };
+
+  const pendingCount = useMemo(
+    () => directory.filter((e) => (e.verification_status || "unverified") !== "verified").length,
+    [directory]
+  );
+
+  /* ================================================================== */
+  /* Salary payout                                                       */
+  /* ================================================================== */
+
+  const payable = useMemo(
+    () => directory.filter((e) => Number(e.salary_amount) > 0 && e.status === "active"),
+    [directory]
+  );
+
+  const payoutReview = useMemo(() => {
+    // Match backend queue criteria: only employees WITH bank_code + account_number
+    // are considered; among those, only verified ones are queued.
+    const withBank = payable.filter((e) => e.bank_code && e.account_number);
+    const verified = withBank.filter((e) => (e.verification_status || "unverified") === "verified");
+    const skipped = withBank.filter((e) => (e.verification_status || "unverified") !== "verified");
+    // Salary-earning actives without full bank details are dropped silently by the backend — flag them in the UI instead.
+    const missingBank = payable.filter((e) => !(e.bank_code && e.account_number));
+    const ngn = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() !== "USD");
+    const usd = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() === "USD");
+    const ngnTotal = ngn.reduce((sum, e) => sum + Number(e.salary_amount), 0);
+    const usdTotal = usd.reduce((sum, e) => sum + Number(e.salary_amount), 0);
+    return { withBank, verified, skipped, missingBank, ngn, usd, ngnTotal, usdTotal };
+  }, [payable]);
+
+  const requestPayoutOtp = async () => {
+    if (!pin || pin.length !== 4) {
+      toast({ title: "Error", description: "Please enter your 4-digit transaction PIN", variant: "destructive" });
+      return;
+    }
+    if (!payoutWalletId) {
+      toast({ title: "Error", description: "Please select a source wallet", variant: "destructive" });
+      return;
+    }
+    if (payoutReview.verified.length === 0) {
+      toast({ title: "Nothing to pay", description: "No verified employees with a salary were found.", variant: "destructive" });
+      return;
+    }
+    try {
+      setPayoutOtpLoading(true);
+      const requestData: any = { wallet_id: payoutWalletId };
+      if (otpMethod) requestData.otp_method = otpMethod;
+      await api.post("/transfers/otp/request", requestData);
+      setPayoutStep("otp");
+      startCountdown();
+      toast({ title: "OTP Sent", description: "Enter the OTP to confirm the salary payout." });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP",
+        variant: "destructive",
+      });
+    } finally {
+      setPayoutOtpLoading(false);
+    }
+  };
+
+  const runSalaryPayout = async () => {
+    if (otpEnabled && (!payoutOtp || payoutOtp.length < 4)) {
+      toast({ title: "Error", description: "Please enter a valid OTP", variant: "destructive" });
+      return;
+    }
+    if (!pin || pin.length !== 4) {
+      toast({ title: "Error", description: "Please enter your 4-digit transaction PIN", variant: "destructive" });
+      return;
+    }
+    try {
+      setPayoutLoading(true);
+      const payload: any = {
+        type: "Salary",
+        pin,
+        source_wallet_id: payoutWalletId,
+      };
+      if (otpEnabled) payload.otp = payoutOtp;
+
+      const res = await api.post("/transfers/bulk", payload);
+      if (res.data?.success) {
+        setPayoutResult({ ...res.data.data, message: res.data.message });
+        setPayoutStep("success");
+        fetchDirectory(true);
+        fetchAdjustments();
+      } else {
+        toast({
+          title: "Payout failed",
+          description: res.data?.error || res.data?.message || "Could not run the salary payout",
+          variant: "destructive",
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: "Payout failed",
+        description: error.response?.data?.error || error.response?.data?.message || "Could not run the salary payout",
+        variant: "destructive",
+      });
+    } finally {
+      setPayoutLoading(false);
+    }
+  };
+
+  const resetPayout = () => {
+    setPayoutStep("review");
+    setPayoutResult(null);
+    setPayoutOtp("");
+  };
+
+  /** CTA from the unverified warning card -> Employees tab with the pending filter */
+  const reviewPendingVerifications = () => {
+    setActiveTab("employees");
+    setVerificationFilter("unverified");
+    setSearchDraft("");
+    setSearchApplied("");
+    setPage(1);
+    setSelectedIds(new Set());
+    resetPayout();
+  };
+
+  /* ================================================================== */
+  /* Adjustments                                                         */
+  /* ================================================================== */
+
+  const onAddAdjustment = async (values: z.infer<typeof adjustmentSchema>) => {
+    if (!adjustmentUserId) {
+      toast({ title: "Error", description: "Please select an employee", variant: "destructive" });
+      return;
+    }
+    try {
+      const employee = directory.find((e) => e.id === adjustmentUserId);
+      await api.post("/payroll/adjustments", {
+        userId: adjustmentUserId,
+        ...values,
+        amount: Number(values.amount),
+        currency: (employee?.salary_currency || "NGN").toUpperCase(),
+      });
+      toast({ title: "Success", description: "Adjustment added" });
+      setAdjustmentDialogOpen(false);
+      setAdjustmentUserId("");
+      adjustmentForm.reset();
+      fetchAdjustments();
+      fetchDirectory(true);
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to add adjustment",
+        variant: "destructive",
+      });
     }
   };
 
@@ -406,253 +645,92 @@ export default function Payroll() {
     try {
       await api.delete(`/payroll/adjustments/${id}`);
       toast({ title: "Success", description: "Adjustment deleted" });
-      if (selectedEmployee) {
-        fetchAdjustments(selectedEmployee.id);
-        fetchData();
-      }
-    } catch (e: any) {
-      toast({ title: "Error", description: e.response?.data?.error || e.response?.data?.message || "Failed to delete adjustment", variant: "destructive" });
-    }
-  };
-
-  const onUpdatePayroll = async (values: z.infer<typeof updatePayrollSchema>) => {
-    if (!selectedEmployee) return;
-    setIsUpdating(true);
-    try {
-      await api.put(`/payroll/user/${selectedEmployee.id}`, {
-        ...values,
-        salary: Number(values.salary),
+      fetchAdjustments();
+      fetchDirectory(true);
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to delete adjustment",
+        variant: "destructive",
       });
-      toast({ title: "Success", description: "Payroll details updated" });
-      setUpdateDialogOpen(false);
-      fetchData();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to update details", variant: "destructive" });
-    } finally {
-      setIsUpdating(false);
     }
   };
 
-  const onAddAdjustment = async (values: z.infer<typeof adjustmentSchema>) => {
-    if (!selectedEmployee) return;
-    try {
-      await api.post("/payroll/adjustments", {
-        userId: selectedEmployee.id,
-        ...values,
-        amount: Number(values.amount),
-        currency: "NGN",
-      });
-      toast({ title: "Success", description: "Adjustment added" });
-      setAdjustmentDialogOpen(false);
-      fetchData();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to add adjustment", variant: "destructive" });
-    }
-  };
+  /* ================================================================== */
+  /* Config                                                              */
+  /* ================================================================== */
 
-  const handleResendOTP = async () => {
+  const onUpdateConfig = async (values: z.infer<typeof configSchema>) => {
     try {
-      setOtpLoading(true);
-      const values = bulkTransferForm.getValues();
-      const requestData: any = { wallet_id: values.source_wallet_id };
-      if (otpMethod) {
-        requestData.otp_method = otpMethod;
+      const res = await api.put("/payroll/config", values);
+      if (res.data.success) {
+        toast({ title: "Success", description: "Configuration updated" });
+        setConfigDialogOpen(false);
+        fetchConfig();
       }
-      await api.post("/transfers/otp/request", requestData);
-      toast({ title: "OTP Sent", description: "New OTP sent." });
-      startCountdown();
     } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to resend OTP", variant: "destructive" });
-    } finally {
-      setOtpLoading(false);
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to update configuration",
+        variant: "destructive",
+      });
     }
   };
 
-  const handleCreatePin = async () => {
-    if (newPin.length !== 4) {
-      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
-      return;
-    }
-    try {
-      await api.post("/settings/pin", { pin: newPin });
-      setPinCreated(true);
-      setShowCreatePinModal(false);
-      setNewPin("");
-      toast({ title: "Success", description: "PIN created successfully" });
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to create PIN", variant: "destructive" });
-    }
-  };
+  /* ================================================================== */
+  /* Epic / bulk one-off transfers                                       */
+  /* ================================================================== */
 
-  const handleSendResetPinOtp = async () => {
-    try {
-      await api.post("/settings/pin/send-otp");
-      toast({ title: "OTP Sent", description: "OTP sent to reset PIN" });
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP", variant: "destructive" });
-    }
-  };
-
-  const handleResetPin = async () => {
-    if (newPin.length !== 4) {
-      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
-      return;
-    }
-    try {
-      await api.put("/settings/pin", { newPin, otp: resetPinOtp });
-      setPinCreated(true);
-      setShowResetPinModal(false);
-      setNewPin("");
-      setResetPinOtp("");
-      toast({ title: "Success", description: "PIN reset successfully" });
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to reset PIN", variant: "destructive" });
-    }
-  };
-
-  const retryTransfer = async (id: string) => {
-    setRetryingId(id);
-    try {
-      await api.post(`/transfers/${id}/retry`);
-      toast({ title: "Success", description: "Transfer retry initiated" });
-      fetchTransfers();
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to retry transfer", variant: "destructive" });
-    } finally {
-      setRetryingId(null);
-    }
-  };
-
-  const printReceipt = () => {
-    const printContents = document.getElementById('receipt-content')?.innerHTML;
-    if (!printContents) return;
-
-    const originalContents = document.body.innerHTML;
-
-    const printWindow = window.open('', '', 'width=800,height=600');
-    if (!printWindow) return;
-
-    printWindow.document.write(`
-      <!DOCTYPE html>
-      <html>
-        <head>
-          <title>Transfer Receipt</title>
-          <style>
-            body {
-              font-family: Arial, sans-serif;
-              padding: 2rem;
-              max-width: 800px;
-              margin: 0 auto;
-            }
-            .receipt-header {
-              text-align: center;
-              border-bottom: 2px solid #e5e7eb;
-              padding-bottom: 1rem;
-              margin-bottom: 1rem;
-            }
-            .receipt-section {
-              margin-bottom: 1rem;
-            }
-            .receipt-label {
-              font-size: 0.875rem;
-              color: #6b7280;
-              text-transform: uppercase;
-              letter-spacing: 0.05em;
-            }
-            .receipt-value {
-              font-size: 1rem;
-              font-weight: 500;
-            }
-            .receipt-grid {
-              display: grid;
-              grid-template-columns: repeat(2, 1fr);
-              gap: 1rem;
-            }
-            .status-success {
-              color: #10b981;
-            }
-            .status-failed {
-              color: #ef4444;
-            }
-            .status-pending {
-              color: #f59e0b;
-            }
-          </style>
-        </head>
-        <body>
-          ${printContents}
-        </body>
-      </html>
-    `);
-
-    printWindow.document.close();
-    printWindow.focus();
-
-    setTimeout(() => {
-      printWindow.print();
-    }, 500);
-  };
-
-  const openBulkTransfer = () => {
-    setBulkTransferStep("select");
-    setOtpSent(false);
+  const openEpicTransfer = () => {
+    setEpicTransferStep("select");
     setEpicTransferItems([]);
     setEpicTransferMode("bulk");
-    setEditingRecipientId(null);
-    bulkTransferForm.reset();
-    setBulkTransferDialogOpen(true);
+    setEpicOtp("");
+    epicTransferForm.reset();
+    setEpicTransferDialogOpen(true);
   };
 
-  const onGoToReviewStep = async (values: z.infer<typeof bulkTransferSchema>) => {
-    try {
-      setOtpLoading(true);
-      // Start with appropriate recipients for epic transfers
-      if (values.type === "epic") {
-        if (epicTransferMode === "single") {
-          // Single mode starts with one recipient
-          setEpicTransferItems([
-            {
-              recipient_account: "",
-              recipient_bank: "",
-              recipient_name: "",
-              amount: 0,
-              remark: epics.find(e => e.id === values.epic_id)?.name || "",
-              source_type: "epic",
-              source_id: values.epic_id || ""
-            }
-          ]);
-        } else {
-          // Bulk mode starts empty
-          setEpicTransferItems([]);
-        }
-      }
-      setBulkTransferStep("review");
-    } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to proceed", variant: "destructive" });
-    } finally {
-      setOtpLoading(false);
+  const onEpicGoToReview = async (values: z.infer<typeof epicBulkTransferSchema>) => {
+    if (epicTransferMode === "single") {
+      setEpicTransferItems([
+        {
+          recipient_account: "",
+          recipient_bank: "",
+          recipient_name: "",
+          amount: 0,
+          remark: epics.find((e) => e.id === values.epic_id)?.name || "",
+          source_type: "epic",
+          source_id: values.epic_id || "",
+        },
+      ]);
+    } else {
+      setEpicTransferItems([]);
     }
+    setEpicTransferStep("review");
   };
 
-  const onRequestOtp = async () => {
+  const onEpicRequestOtp = async () => {
     try {
-      setOtpLoading(true);
-      const values = bulkTransferForm.getValues();
+      setEpicOtpLoading(true);
+      const values = epicTransferForm.getValues();
       await api.post("/transfers/otp/request", { wallet_id: values.source_wallet_id });
-      setOtpSent(true);
-      setBulkTransferStep("otp");
+      setEpicTransferStep("otp");
       startCountdown();
       toast({ title: "OTP Sent", description: "Please enter the OTP sent to your registered contact." });
     } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP", variant: "destructive" });
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP",
+        variant: "destructive",
+      });
     } finally {
-      setOtpLoading(false);
+      setEpicOtpLoading(false);
     }
   };
 
   const addRecipient = () => {
-    const values = bulkTransferForm.getValues();
-    const selectedEpic = epics.find(e => e.id === values.epic_id);
+    const values = epicTransferForm.getValues();
+    const selectedEpic = epics.find((e) => e.id === values.epic_id);
     setEpicTransferItems([
       ...epicTransferItems,
       {
@@ -662,8 +740,8 @@ export default function Payroll() {
         amount: 0,
         remark: selectedEpic?.name || "",
         source_type: "epic",
-        source_id: values.epic_id || ""
-      }
+        source_id: values.epic_id || "",
+      },
     ]);
   };
 
@@ -685,34 +763,101 @@ export default function Payroll() {
 
   const verifyRecipientAccount = async (id: string) => {
     const recipient = epicTransferItems.find((_, index) => `recipient_${index}` === id);
+    const index = epicTransferItems.findIndex((_, i) => `recipient_${i}` === id);
     if (!recipient || !recipient.recipient_bank || !recipient.recipient_account) {
       toast({ title: "Error", description: "Please select a bank and enter account number", variant: "destructive" });
       return;
     }
     try {
+      setRecipientLookupStatus((prev) => ({
+        ...prev,
+        [index]: { loading: true, success: false, name: "" },
+      }));
       const res = await api.post("/transfers/account-lookup", {
         bank_code: recipient.recipient_bank,
-        account_number: recipient.recipient_account
+        account_number: recipient.recipient_account,
       });
       if (res.data.success) {
-        let name = "";
-        if (res.data.data?.responseBody?.accountName) {
-          name = res.data.data.responseBody.accountName;
-        } else if (res.data.data?.account_name) {
-          name = res.data.data.account_name;
-        } else if (res.data.data?.accountName) {
-          name = res.data.data.accountName;
-        }
+        const name = extractAccountName(res.data);
         updateRecipient(id, "recipient_name", name);
-        toast({ title: "Success", description: "Account verified successfully" });
+        setRecipientLookupStatus((prev) => ({
+          ...prev,
+          [index]: { loading: false, success: true, name },
+        }));
+        toast({ title: "Success", description: name ? `Verified: ${name}` : "Account verified successfully" });
+      } else {
+        setRecipientLookupStatus((prev) => ({
+          ...prev,
+          [index]: { loading: false, success: false, name: "", error: res.data?.error || "Lookup failed" },
+        }));
       }
     } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to verify account", variant: "destructive" });
+      setRecipientLookupStatus((prev) => ({
+        ...prev,
+        [index]: { loading: false, success: false, name: "", error: error.response?.data?.error || error.response?.data?.message || "Failed to verify account" },
+      }));
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to verify account",
+        variant: "destructive",
+      });
     }
   };
 
-  const onFinalizeBulkTransfer = async (otp: string) => {
-    if (otpEnabled && !otp) {
+  // Auto-lookup recipient account names as rows are completed (bank + 10-digit
+  // account). Rows already resolved or in-flight are skipped.
+  useEffect(() => {
+    const runLookups = async () => {
+      for (let index = 0; index < epicTransferItems.length; index++) {
+        const item = epicTransferItems[index];
+        const currentStatus = recipientLookupStatus[index];
+        if (item.recipient_bank && item.recipient_account && item.recipient_account.length === 10) {
+          if (currentStatus?.success || currentStatus?.loading) continue;
+          setRecipientLookupStatus((prev) => ({
+            ...prev,
+            [index]: { loading: true, success: false, name: "" },
+          }));
+          try {
+            const res = await api.post("/transfers/account-lookup", {
+              bank_code: item.recipient_bank,
+              account_number: item.recipient_account,
+            });
+            const name = extractAccountName(res.data);
+            setEpicTransferItems((items) =>
+              items.map((it, i) => (i === index ? { ...it, recipient_name: name } : it))
+            );
+            setRecipientLookupStatus((prev) => ({
+              ...prev,
+              [index]: { loading: false, success: true, name },
+            }));
+          } catch (error: any) {
+            setRecipientLookupStatus((prev) => ({
+              ...prev,
+              [index]: {
+                loading: false,
+                success: false,
+                name: "",
+                error: error.response?.data?.error || error.response?.data?.message || "Could not verify account name",
+              },
+            }));
+          }
+        } else if (currentStatus) {
+          setRecipientLookupStatus((prev) => {
+            const next = { ...prev };
+            delete next[index];
+            return next;
+          });
+        }
+      }
+    };
+    if (epicTransferItems.length > 0 && epicTransferStep === "review") {
+      runLookups();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [epicTransferItems, epicTransferStep]);
+
+  const onFinalizeEpicTransfer = async () => {
+    if (otpEnabled && !epicOtp) {
       toast({ title: "Error", description: "Please enter OTP", variant: "destructive" });
       return;
     }
@@ -721,1564 +866,1471 @@ export default function Payroll() {
       return;
     }
     try {
-      const values = bulkTransferForm.getValues();
-      let items: any[] = [];
-      let transferType: "Salary" | "Epic" = "Salary";
+      const values = epicTransferForm.getValues();
+      const selectedEpic = epics.find((e) => e.id === values.epic_id);
 
-      if (values.type === "salary") {
-        transferType = "Salary";
-        items = employees.map(emp => ({
-          bankCode: emp.bank_code || "",
-          accountNumber: emp.bank_account_number || emp.account_number || "",
-          accountName: emp.account_name || emp.name,
-          amount: emp.net_salary,
-          remark: "Salary Payment"
-        }));
-      } else if (values.type === "epic" && epicTransferItems.length > 0) {
-        transferType = "Epic";
-        const selectedEpic = epics.find(e => e.id === values.epic_id);
-        items = epicTransferItems.map(item => ({
+      // Single recipient -> route through /transfers/single
+      if (epicTransferMode === "single" && epicTransferItems.length === 1) {
+        const item = epicTransferItems[0];
+        const payload: any = {
           bankCode: item.recipient_bank,
           accountNumber: item.recipient_account,
           accountName: item.recipient_name,
           amount: item.amount,
-          remark: selectedEpic?.name || ""
-        }));
-      }
-
-      // Check if it's single transfer mode
-      if (values.type === "epic" && epicTransferMode === "single" && items.length === 1) {
-        const item = items[0];
-        const payload: any = {
-          bankCode: item.bankCode,
-          accountNumber: item.accountNumber,
-          accountName: item.accountName,
-          amount: item.amount,
-          remark: item.remark,
-          otp: otp,
+          remark: selectedEpic?.name || "",
           pin: pin,
-          wallet_id: values.source_wallet_id
+          wallet_id: values.source_wallet_id,
         };
-        
+        if (otpEnabled) payload.otp = epicOtp;
+
         const response = await api.post("/transfers/single", payload);
         if (response.data.success) {
-          setTransferSuccessData({
+          setEpicTransferSuccessData({
             queued: 1,
             type: "Single Epic",
             message: response.data.message,
             totals: {
               amount: item.amount,
               fee: response.data.data.fee || 0,
-              total: (Number(item.amount) || 0) + (response.data.data.fee || 0)
+              total: (Number(item.amount) || 0) + (response.data.data.fee || 0),
             },
-            transfers: [response.data.data]
+            transfers: [response.data.data],
           });
-          setBulkTransferStep("success");
-          fetchData();
-          fetchTransfers();
+          setEpicTransferStep("success");
+          fetchDirectory(true);
         }
-      } else {
-        const payload: any = {
-          type: transferType,
-          otp: otp,
-          pin: pin,
-          source_wallet_id: values.source_wallet_id,
-          data: { items }
-        };
+        return;
+      }
 
-        const response = await api.post("/transfers/bulk", payload);
-        if (response.data.success) {
-          setTransferSuccessData({
-            ...response.data.data,
-            message: response.data.message
-          });
-          setBulkTransferStep("success");
-          fetchData();
-          fetchTransfers();
-        }
+      const items = epicTransferItems.map((item) => ({
+        bankCode: item.recipient_bank,
+        accountNumber: item.recipient_account,
+        accountName: item.recipient_name,
+        amount: item.amount,
+        remark: selectedEpic?.name || "",
+      }));
+
+      const payload: any = {
+        type: "Epic",
+        pin: pin,
+        source_wallet_id: values.source_wallet_id,
+        data: { items },
+      };
+      if (otpEnabled) payload.otp = epicOtp;
+
+      const response = await api.post("/transfers/bulk", payload);
+      if (response.data.success) {
+        setEpicTransferSuccessData({
+          ...response.data.data,
+          message: response.data.message,
+        });
+        setEpicTransferStep("success");
+        fetchDirectory(true);
       }
     } catch (error: any) {
-      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate transfer", variant: "destructive" });
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate transfer",
+        variant: "destructive",
+      });
     }
   };
 
-  if (loading) {
-    return (
-      <Layout>
-        <div className="flex items-center justify-center h-full">
-          <Loader2 className="h-8 w-8 animate-spin" />
-        </div>
-      </Layout>
-    );
-  }
+  /* ================================================================== */
+  /* PIN management                                                      */
+  /* ================================================================== */
+
+  const handleCreatePin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.post("/settings/pin", { pin: newPin });
+      setPinCreated(true);
+      setShowCreatePinModal(false);
+      setNewPin("");
+      toast({ title: "Success", description: "PIN created successfully" });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to create PIN",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleSendResetPinOtp = async () => {
+    try {
+      await api.post("/settings/pin/send-otp");
+      toast({ title: "OTP Sent", description: "OTP sent to reset PIN" });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to send OTP",
+        variant: "destructive",
+      });
+    }
+  };
+
+  const handleResetPin = async () => {
+    if (newPin.length !== 4) {
+      toast({ title: "Error", description: "PIN must be exactly 4 digits", variant: "destructive" });
+      return;
+    }
+    try {
+      await api.put("/settings/pin", { newPin, otp: resetPinOtp });
+      setPinCreated(true);
+      setShowResetPinModal(false);
+      setNewPin("");
+      setResetPinOtp("");
+      toast({ title: "Success", description: "PIN reset successfully" });
+    } catch (error: any) {
+      toast({
+        title: "Error",
+        description: error.response?.data?.error || error.response?.data?.message || "Failed to reset PIN",
+        variant: "destructive",
+      });
+    }
+  };
+
+  /* ================================================================== */
+  /* Derived UI helpers                                                  */
+  /* ================================================================== */
+
+  const verificationChips: { value: VerificationFilter; label: string }[] = [
+    { value: "all", label: "All" },
+    { value: "verified", label: "Verified" },
+    { value: "unverified", label: "Pending" },
+    { value: "failed", label: "Failed" },
+  ];
+
+  const allPendingOnPageSelected =
+    pendingSelectableIds.length > 0 && pendingSelectableIds.every((id) => selectedIds.has(id));
+
+  const pinFields = (
+    <div className="space-y-2">
+      <Label>Transaction PIN</Label>
+      <Input
+        type="password"
+        placeholder="Enter your PIN"
+        value={pin}
+        onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+        maxLength={4}
+      />
+      {!pinCreated && (
+        <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
+          Create PIN
+        </Button>
+      )}
+      {pinCreated && (
+        <Button variant="link" size="sm" onClick={() => setShowResetPinModal(true)} className="p-0 h-auto">
+          Forgot PIN?
+        </Button>
+      )}
+    </div>
+  );
+
+  const otpMethodFields = (idPrefix: string) =>
+    otpEnabled ? (
+      <div className="space-y-2">
+        <Label>OTP Method (Optional)</Label>
+        <RadioGroup value={otpMethod} onValueChange={setOtpMethod} className="flex flex-col gap-2">
+          <div className="flex items-center space-x-2">
+            <RadioGroupItem value="" id={`${idPrefix}-method-default`} />
+            <Label htmlFor={`${idPrefix}-method-default`}>Default</Label>
+          </div>
+          <div className="flex items-center space-x-2">
+            <RadioGroupItem value="email" id={`${idPrefix}-method-email`} />
+            <Label htmlFor={`${idPrefix}-method-email`}>Email</Label>
+          </div>
+          <div className="flex items-center space-x-2">
+            <RadioGroupItem value="sms" id={`${idPrefix}-method-sms`} />
+            <Label htmlFor={`${idPrefix}-method-sms`}>SMS</Label>
+          </div>
+          <div className="flex items-center space-x-2">
+            <RadioGroupItem value="whatsapp" id={`${idPrefix}-method-whatsapp`} />
+            <Label htmlFor={`${idPrefix}-method-whatsapp`}>WhatsApp</Label>
+          </div>
+        </RadioGroup>
+      </div>
+    ) : null;
+
+  /* ================================================================== */
+  /* Render                                                              */
+  /* ================================================================== */
 
   return (
     <Layout>
-      <div className="p-8 space-y-8">
-        <div className="flex justify-between items-center">
+      <div className="p-4 sm:p-8 space-y-6">
+        {/* Header */}
+        <div className="flex flex-wrap items-start justify-between gap-3">
           <div>
-            <h2 className="text-3xl font-bold tracking-tight">Payroll</h2>
-            <p className="text-muted-foreground">Manage payroll, transfers, and employee salaries.</p>
+            <h2 className="text-2xl sm:text-3xl font-bold tracking-tight">Payroll</h2>
+            <p className="text-muted-foreground">Employees, salary payouts and adjustments in one place.</p>
           </div>
           <div className="flex flex-wrap justify-end gap-2">
-             <Button variant="outline" onClick={() => setImportDialogOpen(true)}>
-               <Upload className="mr-2 h-4 w-4" /> Import Employees
-             </Button>
-             <Button variant="outline" onClick={() => setConfigDialogOpen(true)}>
-               <Settings className="mr-2 h-4 w-4" /> Configuration
-             </Button>
-             <Button onClick={openBulkTransfer}>
-               <ArrowRightLeft className="mr-2 h-4 w-4" /> Bulk Transfer
-             </Button>
-           </div>
+            <Button variant="outline" size="sm" onClick={() => setImportDialogOpen(true)}>
+              <Upload className="mr-2 h-4 w-4" /> Import
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => {
+                setEditingEmployee(null);
+                setFormOpen(true);
+              }}
+            >
+              <UserPlus className="mr-2 h-4 w-4" /> Add employee
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setConfigDialogOpen(true)}>
+              <Settings className="mr-2 h-4 w-4" /> Configuration
+            </Button>
+            <Button variant="outline" size="sm" onClick={openEpicTransfer}>
+              <ArrowRightLeft className="mr-2 h-4 w-4" /> Epic transfer
+            </Button>
+          </div>
         </div>
 
-        <Tabs defaultValue="payroll" className="w-full">
-          <TabsList>
-            <TabsTrigger value="payroll">
-              <Users className="mr-2 h-4 w-4" />
-              Payroll
+        {/* Stat cards */}
+        <div className="grid grid-cols-2 gap-3 lg:grid-cols-4 lg:gap-4">
+          <Card className="rounded-xl shadow-sm">
+            <CardContent className="p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Total employees</p>
+                <Users className="h-4 w-4 text-muted-foreground" />
+              </div>
+              {directoryLoading ? (
+                <Skeleton className="mt-2 h-8 w-16" />
+              ) : (
+                <p className="mt-1.5 text-2xl font-bold tabular-nums">{stats.total}</p>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">
+                {stats.verified} verified · {stats.pending} pending
+              </p>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-xl shadow-sm">
+            <CardContent className="p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monthly payroll · NGN</p>
+                <Wallet className="h-4 w-4 text-muted-foreground" />
+              </div>
+              {directoryLoading ? (
+                <Skeleton className="mt-2 h-8 w-24" />
+              ) : (
+                <p className="mt-1.5 text-xl sm:text-2xl font-bold tabular-nums">₦{formatMoney(stats.ngnTotal)}</p>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">{stats.ngnCount} employee{stats.ngnCount === 1 ? "" : "s"}</p>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-xl shadow-sm">
+            <CardContent className="p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monthly payroll · USD</p>
+                <Wallet className="h-4 w-4 text-muted-foreground" />
+              </div>
+              {directoryLoading ? (
+                <Skeleton className="mt-2 h-8 w-24" />
+              ) : (
+                <p className="mt-1.5 text-xl sm:text-2xl font-bold tabular-nums">${formatMoney(stats.usdTotal)}</p>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">{stats.usdCount} employee{stats.usdCount === 1 ? "" : "s"}</p>
+            </CardContent>
+          </Card>
+
+          <Card className="rounded-xl shadow-sm">
+            <CardContent className="p-4 sm:p-6">
+              <div className="flex items-center justify-between">
+                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Verification</p>
+                <ShieldCheck className="h-4 w-4 text-muted-foreground" />
+              </div>
+              {directoryLoading ? (
+                <Skeleton className="mt-2 h-8 w-20" />
+              ) : (
+                <div className="mt-1.5 flex items-baseline gap-3">
+                  <span className="text-2xl font-bold tabular-nums text-emerald-600 dark:text-emerald-400">{stats.verified}</span>
+                  <span className="text-xs font-medium text-muted-foreground">vs</span>
+                  <span className="text-2xl font-bold tabular-nums text-amber-600 dark:text-amber-400">{stats.pending + stats.failed}</span>
+                </div>
+              )}
+              <p className="mt-1 text-xs text-muted-foreground">
+                <span className="text-emerald-600 dark:text-emerald-400">verified</span> vs{" "}
+                <span className="text-amber-600 dark:text-amber-400">pending/failed</span>
+              </p>
+            </CardContent>
+          </Card>
+        </div>
+
+        {/* Tabs */}
+        <Tabs value={activeTab} onValueChange={(v) => setActiveTab(v as typeof activeTab)} className="w-full">
+          <TabsList className="h-auto w-full justify-start overflow-x-auto sm:w-auto">
+            <TabsTrigger value="employees" className="gap-1.5">
+              <Users className="h-4 w-4" />
+              Employees
             </TabsTrigger>
-            <TabsTrigger value="transfers">
-              <ArrowRightLeft className="mr-2 h-4 w-4" />
-              Transfers
+            <TabsTrigger value="payout" className="gap-1.5">
+              <Wallet className="h-4 w-4" />
+              Salary Payout
+            </TabsTrigger>
+            <TabsTrigger value="adjustments" className="gap-1.5">
+              <Plus className="h-4 w-4" />
+              Adjustments
             </TabsTrigger>
           </TabsList>
 
-          {/* Payroll Tab */}
-          <TabsContent value="payroll" className="space-y-6">
-            <div className="space-y-4">
-                <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
-                  <div className="grid w-full max-w-sm items-center gap-1.5">
-                    <p className="text-sm font-medium">Search</p>
-                    <div className="relative">
-                       <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                       <Input 
-                          placeholder="Name or Email" 
-                          className="pl-8" 
-                          value={searchQuery}
-                          onChange={(e) => setSearchQuery(e.target.value)}
-                       />
-                    </div>
-                  </div>
-                  
-                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                     <p className="text-sm font-medium">Role</p>
-                     <Select value={roleFilter} onValueChange={setRoleFilter}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="All Roles" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All Roles</SelectItem>
-                          <SelectItem value="admin">Admin</SelectItem>
-                          <SelectItem value="manager">Manager</SelectItem>
-                          <SelectItem value="member">Member</SelectItem>
-                        </SelectContent>
-                     </Select>
-                  </div>
+          {/* ------------------------------ Employees tab ------------------------------ */}
+          <TabsContent value="employees" className="mt-4 space-y-4">
+            {/* Filter bar */}
+            <div className="flex flex-col gap-3 rounded-xl border bg-card p-3 shadow-sm lg:flex-row lg:flex-wrap lg:items-center">
+              <div className="relative w-full lg:w-64">
+                <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+                <Input
+                  className="pl-8"
+                  placeholder="Search name, email or account"
+                  value={searchDraft}
+                  onChange={(e) => setSearchDraft(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setPage(1);
+                      setSearchApplied(searchDraft);
+                    }
+                  }}
+                />
+              </div>
 
-                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                     <p className="text-sm font-medium">Start Date</p>
-                     <Input 
-                        type="date" 
-                        value={startDate}
-                        onChange={(e) => setStartDate(e.target.value)}
-                     />
-                  </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {verificationChips.map((chip) => (
+                  <button
+                    key={chip.value}
+                    type="button"
+                    onClick={() => {
+                      setPage(1);
+                      setVerificationFilter(chip.value);
+                    }}
+                    className={cn(
+                      "rounded-full border px-3 py-1.5 text-xs font-medium transition-colors",
+                      verificationFilter === chip.value
+                        ? "bg-primary text-primary-foreground border-primary"
+                        : "bg-background text-muted-foreground hover:bg-muted"
+                    )}
+                    aria-pressed={verificationFilter === chip.value}
+                  >
+                    {chip.label}
+                    {chip.value === "verified" && stats.verified > 0 && (
+                      <span className="ml-1 opacity-70">{stats.verified}</span>
+                    )}
+                    {chip.value === "unverified" && stats.pending + stats.failed > 0 && (
+                      <span className="ml-1 opacity-70">{stats.pending + stats.failed}</span>
+                    )}
+                  </button>
+                ))}
+              </div>
 
-                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                     <p className="text-sm font-medium">End Date</p>
-                     <Input 
-                        type="date" 
-                        value={endDate}
-                        onChange={(e) => setEndDate(e.target.value)}
-                     />
-                  </div>
+              <Select
+                value={currencyFilter}
+                onValueChange={(v) => {
+                  setPage(1);
+                  setCurrencyFilter(v as CurrencyFilter);
+                }}
+              >
+                <SelectTrigger className="w-full sm:w-[130px]" aria-label="Filter by currency">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="all">All currencies</SelectItem>
+                  <SelectItem value="NGN">NGN</SelectItem>
+                  <SelectItem value="USD">USD</SelectItem>
+                </SelectContent>
+              </Select>
 
-                  <Button onClick={handlePayrollSearch}>
-                    <Filter className="mr-2 h-4 w-4" /> Filter
+              <div className="flex items-center gap-2 lg:ml-auto">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => verifyBulk()}
+                  disabled={bulkVerifying || pendingCount === 0 || stats.verified === stats.total}
+                >
+                  {bulkVerifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                  Verify all pending{pendingCount > 0 ? ` (${pendingCount})` : ""}
+                </Button>
+              </div>
+            </div>
+
+            {/* Bulk selection bar */}
+            {selectedIds.size > 0 && (
+              <div className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-primary/30 bg-primary/5 p-3">
+                <p className="text-sm font-medium">
+                  {selectedIds.size} employee{selectedIds.size === 1 ? "" : "s"} selected
+                </p>
+                <div className="flex items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => verifyBulk(Array.from(selectedIds))}
+                    disabled={bulkVerifying}
+                  >
+                    {bulkVerifying ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-2 h-4 w-4" />}
+                    Verify selected
+                  </Button>
+                  <Button size="sm" variant="ghost" onClick={() => setSelectedIds(new Set())}>
+                    Clear
                   </Button>
                 </div>
-
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Employee Payroll</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Table>
-                      <TableHeader>
-                        <TableRow>
-                          <TableHead>Name</TableHead>
-                          <TableHead>Role</TableHead>
-                          <TableHead>Net Pay</TableHead>
-                          <TableHead>Next Pay Date</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Actions</TableHead>
-                        </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {Array.isArray(employees) && employees.map((emp) => (
-                          <TableRow key={emp.id}>
-                            <TableCell>
-                                <div className="font-medium">{emp.name}</div>
-                                <div className="text-xs text-muted-foreground">{emp.email}</div>
-                            </TableCell>
-                            <TableCell className="capitalize">{emp.role}</TableCell>
-                            <TableCell className="font-bold">{emp.salary_currency} {Number(emp.net_salary).toLocaleString()}</TableCell>
-                            <TableCell>{emp.next_pay_date}</TableCell>
-                            <TableCell>
-                                <Badge variant={emp.salary_calculation_status === 'ready' ? 'default' : 'secondary'}>
-                                    {emp.salary_calculation_status || 'standard'}
-                                </Badge>
-                            </TableCell>
-                            <TableCell>
-                              <div className="flex space-x-2">
-                                 <Button variant="ghost" size="icon" onClick={() => {
-                                  setSelectedEmployee(emp);
-                                  fetchAdjustments(emp.id);
-                                  setDetailDialogOpen(true);
-                                }}>
-                                  <MoreHorizontal className="h-4 w-4" />
-                                </Button>
-                                <Button variant="outline" size="sm" onClick={() => {
-                                  setSelectedEmployee(emp);
-                                  updateForm.reset({
-                                    salary: emp.salary.toString(),
-                                    salary_currency: emp.salary_currency,
-                                    bank_code: emp.bank_code || "",
-                                    bank_account_number: emp.bank_account_number || emp.account_number || "",
-                                    account_name: emp.account_name || "",
-                                    contract_start_date: emp.contract_start_date ? emp.contract_start_date.split('T')[0] : "",
-                                  });
-                                  setUpdateDialogOpen(true);
-                                }}>Edit</Button>
-                                <Button variant="ghost" size="sm" onClick={() => {
-                                  setSelectedEmployee(emp);
-                                  adjustmentForm.reset();
-                                  setAdjustmentDialogOpen(true);
-                                }}>Adjust</Button>
-                              </div>
-                            </TableCell>
-                          </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                    
-                    <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPage(p => Math.max(1, p - 1))}
-                          disabled={page === 1}
-                        >
-                          <ChevronLeft className="h-4 w-4 mr-1" />
-                          Previous
-                        </Button>
-                        <div className="text-sm font-medium">Page {page}</div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setPage(p => p + 1)}
-                          disabled={employees.length < limit}
-                        >
-                          Next
-                          <ChevronRight className="h-4 w-4 ml-1" />
-                        </Button>
-                    </div>
-                  </CardContent>
-                </Card>
               </div>
+            )}
+
+            {/* Directory table */}
+            <Card className="rounded-xl shadow-sm">
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <Table className="min-w-[760px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-10 pl-4">
+                          <Checkbox
+                            checked={allPendingOnPageSelected}
+                            onCheckedChange={(v) => toggleSelectAll(v === true)}
+                            aria-label="Select all pending employees on this page"
+                          />
+                        </TableHead>
+                        <TableHead>Employee</TableHead>
+                        <TableHead>Job / Department</TableHead>
+                        <TableHead>Salary</TableHead>
+                        <TableHead>Bank</TableHead>
+                        <TableHead>Verification</TableHead>
+                        <TableHead className="text-right pr-4">Actions</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {employeesLoading ? (
+                        Array.from({ length: 5 }).map((_, i) => (
+                          <TableRow key={`skeleton-${i}`}>
+                            {Array.from({ length: 7 }).map((_, j) => (
+                              <TableCell key={j}>
+                                <Skeleton className="h-4 w-full" />
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        ))
+                      ) : employees.length === 0 ? (
+                        <TableRow>
+                          <TableCell colSpan={7} className="h-40">
+                            <div className="flex flex-col items-center justify-center gap-2 text-center">
+                              <div className="flex h-11 w-11 items-center justify-center rounded-full bg-muted">
+                                <Users className="h-5 w-5 text-muted-foreground" />
+                              </div>
+                              <p className="text-sm font-medium">No employees found</p>
+                              <p className="max-w-xs text-xs text-muted-foreground">
+                                {searchApplied || verificationFilter !== "all" || currencyFilter !== "all"
+                                  ? "Try adjusting or clearing the filters."
+                                  : "Add your first employee or import a spreadsheet to get started."}
+                              </p>
+                            </div>
+                          </TableCell>
+                        </TableRow>
+                      ) : (
+                        employees.map((emp) => {
+                          const isVerified = (emp.verification_status || "unverified") === "verified";
+                          const canVerify = !isVerified && !!emp.bank_code && !!emp.account_number;
+                          const isUsd = (emp.salary_currency || "NGN").toUpperCase() === "USD";
+                          return (
+                            <TableRow
+                              key={emp.id}
+                              className="cursor-pointer hover:bg-muted/40"
+                              onClick={() => {
+                                setDetailEmployee(emp);
+                                setDetailOpen(true);
+                              }}
+                            >
+                              <TableCell className="pl-4" onClick={(e) => e.stopPropagation()}>
+                                {canVerify && (
+                                  <Checkbox
+                                    checked={selectedIds.has(emp.id)}
+                                    onCheckedChange={(v) => toggleSelect(emp.id, v === true)}
+                                    aria-label={`Select ${emp.name} for verification`}
+                                  />
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <div className="flex items-center gap-2.5">
+                                  <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-primary/10 text-xs font-semibold text-primary">
+                                    {initials(emp.name)}
+                                  </span>
+                                  <div className="min-w-0">
+                                    <p className="truncate font-medium">{emp.name}</p>
+                                    <p className="truncate text-xs text-muted-foreground">{emp.email}</p>
+                                  </div>
+                                </div>
+                              </TableCell>
+                              <TableCell>
+                                <p className="text-sm">{emp.job_title || "—"}</p>
+                                <p className="text-xs text-muted-foreground">{emp.department || "—"}</p>
+                              </TableCell>
+                              <TableCell>
+                                {emp.salary_amount ? (
+                                  <Badge variant="secondary" className="bg-primary/10 font-semibold text-primary hover:bg-primary/10">
+                                    {emp.salary_currency || "NGN"} {Number(emp.salary_amount).toLocaleString()}
+                                  </Badge>
+                                ) : (
+                                  <span className="text-xs text-muted-foreground">—</span>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                {isUsd ? (
+                                  <>
+                                    <p className="text-sm">{emp.bank_name || "—"}</p>
+                                    <p className="font-mono text-xs text-muted-foreground">{maskAccount(emp.account_number)}</p>
+                                  </>
+                                ) : (
+                                  <>
+                                    <p className="text-sm">{emp.bank_name || emp.bank_code || "—"}</p>
+                                    <p className="font-mono text-xs text-muted-foreground">{maskAccount(emp.account_number)}</p>
+                                  </>
+                                )}
+                              </TableCell>
+                              <TableCell>
+                                <VerificationBadge
+                                  status={emp.verification_status}
+                                  verifiedAccountName={emp.verified_account_name}
+                                  error={emp.verification_error}
+                                />
+                              </TableCell>
+                              <TableCell className="text-right pr-4" onClick={(e) => e.stopPropagation()}>
+                                <div className="flex items-center justify-end gap-1.5">
+                                  {canVerify && (
+                                    <Button
+                                      variant="outline"
+                                      size="sm"
+                                      onClick={() => verifyEmployee(emp.id)}
+                                      disabled={verifyingRowId === emp.id || bulkVerifying}
+                                    >
+                                      {verifyingRowId === emp.id ? (
+                                        <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />
+                                      ) : (
+                                        <ShieldCheck className="mr-1.5 h-3.5 w-3.5" />
+                                      )}
+                                      Verify
+                                    </Button>
+                                  )}
+                                  <Button
+                                    variant="ghost"
+                                    size="icon"
+                                    className="h-8 w-8"
+                                    aria-label={`Edit ${emp.name}`}
+                                    onClick={() => {
+                                      setEditingEmployee(emp);
+                                      setFormOpen(true);
+                                    }}
+                                  >
+                                    <Pencil className="h-4 w-4" />
+                                  </Button>
+                                </div>
+                              </TableCell>
+                            </TableRow>
+                          );
+                        })
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+
+                {/* Pagination */}
+                <div className="flex flex-wrap items-center justify-between gap-2 border-t px-4 py-3">
+                  <p className="text-xs text-muted-foreground">
+                    Page {page} of {totalPages} · {totalRecords} employee{totalRecords === 1 ? "" : "s"}
+                  </p>
+                  <div className="flex items-center gap-2">
+                    <Button variant="outline" size="sm" onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={page <= 1 || employeesLoading}>
+                      <ChevronLeft className="mr-1 h-4 w-4" /> Previous
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
+                      disabled={page >= totalPages || employeesLoading}
+                    >
+                      Next <ChevronRight className="ml-1 h-4 w-4" />
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
           </TabsContent>
 
-          {/* Transfers Tab */}
-          <TabsContent value="transfers" className="space-y-6">
-            <div className="space-y-4">
-                <div className="flex flex-wrap gap-4 items-end bg-card p-4 rounded-lg border shadow-sm">
-                  <div className="grid w-full max-w-sm items-center gap-1.5">
-                    <p className="text-sm font-medium">Search</p>
-                    <div className="relative">
-                       <SearchIcon className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
-                       <Input 
-                          placeholder="Recipient Name" 
-                          className="pl-8" 
-                          value={transferSearch}
-                          onChange={(e) => setTransferSearch(e.target.value)}
-                       />
+          {/* ------------------------------ Salary Payout tab ------------------------------ */}
+          <TabsContent value="payout" className="mt-4 space-y-4">
+            <Card className="rounded-xl shadow-sm">
+              <CardHeader>
+                <CardTitle>Salary Payout</CardTitle>
+                <CardDescription>
+                  Pay all active, verified employees in one run. Employees with unverified accounts are skipped and listed after the run.
+                </CardDescription>
+              </CardHeader>
+              <CardContent>
+                {directoryLoading ? (
+                  <div className="flex items-center justify-center py-10">
+                    <Loader2 className="h-6 w-6 animate-spin text-muted-foreground" />
+                  </div>
+                ) : payoutStep === "review" ? (
+                  <div className="space-y-5">
+                    {/* Confirmation screen: per-currency totals */}
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl border bg-muted/30 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Nigeria (NGN)</p>
+                        <p className="mt-1 text-2xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {payoutReview.ngn.length} verified employee{payoutReview.ngn.length === 1 ? "" : "s"} will be paid
+                        </p>
+                      </div>
+                      <div className="rounded-xl border bg-muted/30 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">International (USD)</p>
+                        <p className="mt-1 text-2xl font-bold tabular-nums">${formatMoney(payoutReview.usdTotal)}</p>
+                        <p className="mt-1 text-xs text-muted-foreground">
+                          {payoutReview.usd.length} verified employee{payoutReview.usd.length === 1 ? "" : "s"} will be paid
+                        </p>
+                      </div>
+                    </div>
+
+                    {payoutReview.verified.length === 0 ? (
+                      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/30 dark:text-amber-200">
+                        No verified employees with a salary were found. Verify recipient accounts in the{" "}
+                        <button type="button" className="font-semibold underline" onClick={reviewPendingVerifications}>
+                          Employees tab
+                        </button>{" "}
+                        first.
+                      </div>
+                    ) : (
+                      <>
+                        {payoutReview.skipped.length > 0 && (
+                          <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/40 dark:bg-amber-950/30">
+                            <p className="flex items-center gap-1.5 text-sm font-semibold text-amber-900 dark:text-amber-200">
+                              <AlertTriangle className="h-4 w-4" />
+                              {payoutReview.skipped.length} employee{payoutReview.skipped.length === 1 ? "" : "s"} will be skipped (not verified)
+                            </p>
+                            <ul className="mt-2 space-y-1">
+                              {payoutReview.skipped.slice(0, 5).map((e) => (
+                                <li key={e.id} className="flex items-center justify-between gap-2 text-sm text-amber-900/90 dark:text-amber-200/90">
+                                  <span className="truncate">{e.name}</span>
+                                  <VerificationBadge status={e.verification_status} className="scale-90" />
+                                </li>
+                              ))}
+                              {payoutReview.skipped.length > 5 && (
+                                <li className="text-xs text-amber-800/80 dark:text-amber-300/80">
+                                  and {payoutReview.skipped.length - 5} more…
+                                </li>
+                              )}
+                            </ul>
+                            <Button size="sm" variant="outline" className="mt-3" onClick={reviewPendingVerifications}>
+                              <ShieldCheck className="mr-2 h-4 w-4" />
+                              Review pending verifications
+                            </Button>
+                          </div>
+                        )}
+
+                        {payoutReview.missingBank.length > 0 && (
+                          <div className="rounded-xl border bg-muted/30 p-4">
+                            <p className="text-sm font-medium">
+                              {payoutReview.missingBank.length} employee
+                              {payoutReview.missingBank.length === 1 ? "" : "s"} with a salary have incomplete bank details
+                            </p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              They will not be queued for this payout — open their profile in the Employees tab to complete the recipient details
+                              {payoutReview.missingBank.some((e) => (e.salary_currency || "NGN").toUpperCase() === "USD")
+                                ? " (USD recipients need bank name / SWIFT / routing details)."
+                                : "."}
+                            </p>
+                          </div>
+                        )}
+
+                        {/* Wallet + PIN + OTP */}
+                        <div className="grid gap-4 sm:grid-cols-2">
+                          <div className="grid gap-1.5">
+                            <Label>Source wallet</Label>
+                            <Select value={payoutWalletId} onValueChange={setPayoutWalletId}>
+                              <SelectTrigger aria-label="Source wallet">
+                                <SelectValue placeholder="Select wallet" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {wallets?.business_wallet && (
+                                  <SelectItem value={wallets.business_wallet.id}>
+                                    Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
+                                  </SelectItem>
+                                )}
+                                {wallets?.user_wallet && (
+                                  <SelectItem value={wallets.user_wallet.id}>
+                                    Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
+                                  </SelectItem>
+                                )}
+                              </SelectContent>
+                            </Select>
+                          </div>
+                          {pinFields}
+                        </div>
+                        {otpMethodFields("payout")}
+
+                        <div className="flex flex-col gap-2 sm:flex-row sm:justify-end">
+                          <Button
+                            size="lg"
+                            onClick={requestPayoutOtp}
+                            disabled={payoutOtpLoading || payoutReview.verified.length === 0}
+                          >
+                            {payoutOtpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                            {otpEnabled ? "Review & send OTP" : "Review & run payout"}
+                          </Button>
+                        </div>
+                      </>
+                    )}
+                  </div>
+                ) : payoutStep === "otp" ? (
+                  <div className="space-y-4">
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      <div className="rounded-xl border bg-muted/30 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">NGN total</p>
+                        <p className="mt-1 text-xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
+                      </div>
+                      <div className="rounded-xl border bg-muted/30 p-4">
+                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">USD total</p>
+                        <p className="mt-1 text-xl font-bold tabular-nums">${formatMoney(payoutReview.usdTotal)}</p>
+                      </div>
+                    </div>
+                    <div className="space-y-2">
+                      <Label>Enter OTP</Label>
+                      <Input
+                        placeholder="123456"
+                        value={payoutOtp}
+                        onChange={(e) => setPayoutOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                        maxLength={6}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2 sm:flex-row sm:justify-between">
+                      <Button variant="ghost" size="sm" onClick={() => setPayoutStep("review")} disabled={payoutLoading}>
+                        Back
+                      </Button>
+                      <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+                        {isActive && <span className="text-xs text-muted-foreground">Resend OTP in {seconds}s</span>}
+                        <Button variant="outline" size="sm" onClick={requestPayoutOtp} disabled={isActive || payoutOtpLoading}>
+                          Resend OTP
+                        </Button>
+                        <Button onClick={runSalaryPayout} loading={payoutLoading}>
+                          Confirm payout
+                        </Button>
+                      </div>
                     </div>
                   </div>
-                  
-                  <div className="grid w-full max-w-[150px] items-center gap-1.5">
-                     <p className="text-sm font-medium">Status</p>
-                     <Select value={transferStatus} onValueChange={setTransferStatus}>
-                        <SelectTrigger>
-                          <SelectValue placeholder="All" />
-                        </SelectTrigger>
-                        <SelectContent>
-                          <SelectItem value="all">All</SelectItem>
-                          <SelectItem value="pending">Pending</SelectItem>
-                          <SelectItem value="success">Success</SelectItem>
-                          <SelectItem value="failed">Failed</SelectItem>
-                        </SelectContent>
-                     </Select>
+                ) : (
+                  /* Success step */
+                  <div className="space-y-4">
+                    <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-500/40 dark:bg-emerald-950/30">
+                      <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+                        {payoutResult?.message || "Salary payout queued"}
+                      </p>
+                      {payoutResult?.totals && (
+                        <p className="mt-1 text-sm text-emerald-700/90 dark:text-emerald-400/90">
+                          Amount ₦{formatMoney(Number(payoutResult.totals.amount) || 0)} · Fee ₦
+                          {formatMoney(Number(payoutResult.totals.fee) || 0)} · Total ₦
+                          {formatMoney(Number(payoutResult.totals.total) || 0)}
+                        </p>
+                      )}
+                      {payoutResult?.summary && (
+                        <p className="mt-1 text-xs text-emerald-700/80 dark:text-emerald-400/80">
+                          {Object.entries(payoutResult.summary)
+                            .map(([k, v]) => `${v} ${k}`)
+                            .join(" · ")}
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Unverified employees warning card */}
+                    {Array.isArray(payoutResult?.unverified_employees) && payoutResult.unverified_employees.length > 0 && (
+                      <div className="rounded-xl border border-amber-300 bg-amber-50 p-4 dark:border-amber-500/40 dark:bg-amber-950/30">
+                        <p className="flex items-center gap-1.5 text-sm font-semibold text-amber-900 dark:text-amber-200">
+                          <AlertTriangle className="h-4 w-4" />
+                          {payoutResult.unverified_employees.length} employee
+                          {payoutResult.unverified_employees.length === 1 ? "" : "s"} skipped — account not verified
+                        </p>
+                        <ul className="mt-2 space-y-1">
+                          {payoutResult.unverified_employees.slice(0, 5).map((e: any) => (
+                            <li key={e.id} className="flex items-center justify-between gap-2 text-sm text-amber-900/90 dark:text-amber-200/90">
+                              <span className="truncate">{e.name}</span>
+                              <VerificationBadge status={e.verification_status} className="scale-90" />
+                            </li>
+                          ))}
+                          {payoutResult.unverified_employees.length > 5 && (
+                            <li className="text-xs text-amber-800/80 dark:text-amber-300/80">
+                              and {payoutResult.unverified_employees.length - 5} more…
+                            </li>
+                          )}
+                        </ul>
+                        <Button size="sm" variant="outline" className="mt-3" onClick={reviewPendingVerifications}>
+                          <ShieldCheck className="mr-2 h-4 w-4" />
+                          Review pending verifications
+                        </Button>
+                      </div>
+                    )}
+
+                    <div className="flex justify-end">
+                      <Button variant="outline" onClick={resetPayout}>
+                        <RefreshCw className="mr-2 h-4 w-4" /> Run another payout
+                      </Button>
+                    </div>
                   </div>
+                )}
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-                  <Button onClick={handleTransferSearch}>
-                    <Filter className="mr-2 h-4 w-4" /> Filter
-                  </Button>
-                </div>
+          {/* ------------------------------ Adjustments tab ------------------------------ */}
+          <TabsContent value="adjustments" className="mt-4 space-y-4">
+            <div className="flex items-center justify-between">
+              <p className="text-sm text-muted-foreground">
+                Pending bonuses and deductions applied automatically on the next salary payout.
+              </p>
+              <Button
+                size="sm"
+                onClick={() => {
+                  adjustmentForm.reset();
+                  setAdjustmentUserId("");
+                  setAdjustmentDialogOpen(true);
+                }}
+              >
+                <Plus className="mr-2 h-4 w-4" /> Add adjustment
+              </Button>
+            </div>
 
-                <Card>
-                  <CardHeader>
-                    <CardTitle>Transfer History</CardTitle>
-                  </CardHeader>
-                  <CardContent>
-                    <Table>
-                      <TableHeader>
+            <Card className="rounded-xl shadow-sm">
+              <CardContent className="p-0">
+                <div className="overflow-x-auto">
+                  <Table className="min-w-[640px]">
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="pl-4">Employee</TableHead>
+                        <TableHead>Type</TableHead>
+                        <TableHead>Amount</TableHead>
+                        <TableHead>Reason</TableHead>
+                        <TableHead>Date</TableHead>
+                        <TableHead className="text-right pr-4"></TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
+                      {adjustmentsLoading ? (
+                        Array.from({ length: 3 }).map((_, i) => (
+                          <TableRow key={`adj-skeleton-${i}`}>
+                            {Array.from({ length: 6 }).map((_, j) => (
+                              <TableCell key={j}>
+                                <Skeleton className="h-4 w-full" />
+                              </TableCell>
+                            ))}
+                          </TableRow>
+                        ))
+                      ) : adjustments.length === 0 ? (
                         <TableRow>
-                          <TableHead>Recipient</TableHead>
-                          <TableHead>Amount</TableHead>
-                          <TableHead>Status</TableHead>
-                          <TableHead>Date</TableHead>
-                          <TableHead>Actions</TableHead>
+                          <TableCell colSpan={6} className="h-32 text-center text-muted-foreground">
+                            No pending adjustments. Bonuses and deductions you add will appear here until the next payout.
+                          </TableCell>
                         </TableRow>
-                      </TableHeader>
-                      <TableBody>
-                        {Array.isArray(transfers) && transfers.map((transfer) => (
-                          <TableRow 
-                            key={transfer.id} 
-                            className="cursor-pointer hover:bg-muted/50"
-                            onClick={() => {
-                              setSelectedTransfer(transfer);
-                              setTransferDetailDialogOpen(true);
-                            }}
-                          >
-                            <TableCell>
-                                <div className="font-medium">{transfer.recipient_name}</div>
+                      ) : (
+                        adjustments.map((adj) => (
+                          <TableRow key={adj.id} className="hover:bg-muted/40">
+                            <TableCell className="pl-4">
+                              <p className="font-medium">{adj.user_name || "—"}</p>
+                              <p className="text-xs text-muted-foreground">{adj.user_email}</p>
                             </TableCell>
-                            <TableCell className="font-bold">{transfer.currency} {Number(transfer.amount).toLocaleString()}</TableCell>
                             <TableCell>
-                                <Badge variant={
-                                    transfer.status === 'success' ? 'default' : 
-                                    transfer.status === 'failed' ? 'destructive' : 'secondary'
-                                }>
-                                    {transfer.status}
-                                </Badge>
+                              <Badge
+                                variant="secondary"
+                                className={cn(
+                                  "font-medium",
+                                  adj.type === "bonus"
+                                    ? "bg-emerald-500/10 text-emerald-700 dark:text-emerald-400"
+                                    : "bg-red-500/10 text-red-700 dark:text-red-400"
+                                )}
+                              >
+                                {adj.type === "bonus" ? "+" : "−"} {adj.type}
+                              </Badge>
                             </TableCell>
-                            <TableCell>{transfer.created_at ? format(new Date(transfer.created_at), "MMM d, yyyy") : ""}</TableCell>
-                            <TableCell onClick={(e) => e.stopPropagation()}>
-                              {transfer.status === 'failed' && (
-                                <Button variant="ghost" size="sm" onClick={() => retryTransfer(transfer.id)} disabled={retryingId === transfer.id}>
-                                  {retryingId === transfer.id ? <Loader2 className="h-4 w-4 animate-spin" /> : "Retry"}
-                                </Button>
-                              )}
+                            <TableCell className="font-semibold tabular-nums">
+                              {adj.currency} {Number(adj.amount).toLocaleString()}
+                            </TableCell>
+                            <TableCell className="max-w-[220px] truncate" title={adj.reason}>
+                              {adj.reason}
+                            </TableCell>
+                            <TableCell className="whitespace-nowrap text-muted-foreground">
+                              {adj.created_at ? new Date(adj.created_at).toLocaleDateString() : "—"}
+                            </TableCell>
+                            <TableCell className="text-right pr-4">
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-8 w-8"
+                                aria-label="Delete adjustment"
+                                onClick={() => deleteAdjustment(adj.id)}
+                              >
+                                <Trash2 className="h-4 w-4 text-destructive" />
+                              </Button>
                             </TableCell>
                           </TableRow>
-                        ))}
-                      </TableBody>
-                    </Table>
-                    
-                    <div className="flex items-center justify-end space-x-2 py-4 border-t mt-4">
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setTransferPage(p => Math.max(1, p - 1))}
-                          disabled={transferPage === 1}
-                        >
-                          <ChevronLeft className="h-4 w-4 mr-1" />
-                          Previous
-                        </Button>
-                        <div className="text-sm font-medium">Page {transferPage}</div>
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          onClick={() => setTransferPage(p => p + 1)}
-                          disabled={transfers.length < transferLimit}
-                        >
-                          Next
-                          <ChevronRight className="h-4 w-4 ml-1" />
-                        </Button>
-                    </div>
-                  </CardContent>
-                </Card>
-              </div>
+                        ))
+                      )}
+                    </TableBody>
+                  </Table>
+                </div>
+              </CardContent>
+            </Card>
           </TabsContent>
         </Tabs>
-
-        {/* Detail Dialog */}
-        <Dialog open={detailDialogOpen} onOpenChange={setDetailDialogOpen}>
-          <DialogContent className="w-[90vw] max-h-[85vh] overflow-y-auto sm:max-w-[600px]">
-            <DialogHeader>
-              <DialogTitle>Employee Payroll Details</DialogTitle>
-              <DialogDescription>Comprehensive view of employee payroll and adjustments.</DialogDescription>
-            </DialogHeader>
-            {selectedEmployee && (
-              <div className="space-y-6">
-                
-                {/* Section 1: Personal & Employment Details */}
-                <div>
-                    <h3 className="text-lg font-semibold mb-3 flex items-center">
-                        <User className="mr-2 h-5 w-5 text-primary" />
-                        Personal & Employment
-                    </h3>
-                    <div className="grid grid-cols-2 gap-4 bg-muted/30 p-4 rounded-lg border">
-                        <div>
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Name</h4>
-                            <p className="font-medium">{selectedEmployee.name}</p>
-                        </div>
-                        <div>
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Email</h4>
-                            <p className="font-medium">{selectedEmployee.email}</p>
-                        </div>
-                        <div>
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Role</h4>
-                            <Badge variant="outline" className="capitalize mt-1">{selectedEmployee.role}</Badge>
-                        </div>
-                        <div>
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Status</h4>
-                            <Badge variant={selectedEmployee.salary_calculation_status === 'ready' ? 'default' : 'secondary'} className="mt-1">
-                                {selectedEmployee.salary_calculation_status || 'standard'}
-                            </Badge>
-                        </div>
-                        <div>
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Contract Start</h4>
-                            <p className="font-medium">{selectedEmployee.contract_start_date ? format(new Date(selectedEmployee.contract_start_date), "PPP") : "N/A"}</p>
-                        </div>
-                        <div>
-                             <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Employee ID</h4>
-                             <p className="text-xs text-muted-foreground truncate" title={selectedEmployee.id}>{selectedEmployee.id}</p>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Section 2: Financial Overview */}
-                <div>
-                     <h3 className="text-lg font-semibold mb-3 flex items-center">
-                        <DollarSign className="mr-2 h-5 w-5 text-primary" />
-                        Financial Overview
-                    </h3>
-                    <div className="grid grid-cols-3 gap-4 mb-4">
-                        <div className="bg-background p-4 rounded-lg border shadow-sm text-center">
-                            <span className="text-xs text-muted-foreground font-medium uppercase">Base Salary</span>
-                            <div className="text-xl font-bold mt-1">
-                                {selectedEmployee.salary_currency} {Number(selectedEmployee.salary).toLocaleString()}
-                            </div>
-                        </div>
-                        <div className="bg-background p-4 rounded-lg border shadow-sm text-center">
-                            <span className="text-xs text-muted-foreground font-medium uppercase">Next Pay Date</span>
-                            <div className="text-lg font-semibold mt-1">
-                                {selectedEmployee.next_pay_date ? format(new Date(selectedEmployee.next_pay_date), "MMM d, yyyy") : "N/A"}
-                            </div>
-                        </div>
-                        <div className="bg-primary/10 p-4 rounded-lg border border-primary/20 text-center">
-                            <span className="text-xs text-primary font-bold uppercase">Net Pay</span>
-                            <div className="text-xl font-bold text-primary mt-1">
-                                {selectedEmployee.salary_currency} {Number(selectedEmployee.net_salary).toLocaleString()}
-                            </div>
-                        </div>
-                    </div>
-                </div>
-
-                {/* Section 3: Bank Details */}
-                <div>
-                     <h3 className="text-lg font-semibold mb-3 flex items-center">
-                        <CreditCard className="mr-2 h-5 w-5 text-primary" />
-                        Bank Details
-                    </h3>
-                     <div className="grid grid-cols-2 gap-4 bg-muted/30 p-4 rounded-lg border">
-                        <div className="col-span-2 sm:col-span-1">
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Bank Name</h4>
-                             <p className="font-medium">
-                                {selectedEmployee.bank_code 
-                                    ? (banks.find(b => b.code === selectedEmployee.bank_code)?.name || selectedEmployee.bank_code) 
-                                    : "N/A"}
-                             </p>
-                        </div>
-                        <div className="col-span-2 sm:col-span-1">
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Account Number</h4>
-                            <p className="font-medium font-mono">{selectedEmployee.bank_account_number || selectedEmployee.account_number || "N/A"}</p>
-                        </div>
-                        <div className="col-span-2">
-                            <h4 className="font-medium text-xs text-muted-foreground uppercase tracking-wider">Account Name</h4>
-                            <p className="font-medium">{selectedEmployee.account_name || "N/A"}</p>
-                        </div>
-                     </div>
-                </div>
-
-                {/* Section 4: Adjustments Breakdown */}
-                <div>
-                    <h3 className="text-lg font-semibold mb-3 flex items-center">
-                        <FileText className="mr-2 h-5 w-5 text-primary" />
-                        Adjustments Breakdown
-                    </h3>
-                    
-                    <div className="grid grid-cols-2 gap-4 mb-4">
-                        <div className="bg-green-50 p-3 rounded-md border border-green-100 flex justify-between items-center">
-                            <span className="text-sm text-green-700 font-medium">Total Bonuses</span>
-                            <span className="text-lg font-bold text-green-700">
-                                +{selectedEmployee.salary_currency} {selectedEmployee.adjustments?.bonuses.toLocaleString() ?? 0}
-                            </span>
-                        </div>
-                        <div className="bg-red-50 p-3 rounded-md border border-red-100 flex justify-between items-center">
-                            <span className="text-sm text-red-700 font-medium">Total Deductions</span>
-                            <span className="text-lg font-bold text-red-700">
-                                -{selectedEmployee.salary_currency} {selectedEmployee.adjustments?.deductions.toLocaleString() ?? 0}
-                            </span>
-                        </div>
-                    </div>
-
-                    <div className="space-y-4">
-                        {/* Bonus List */}
-                        {(selectedEmployee.adjustments?.bonus_list || []).length > 0 ? (
-                            <div className="border rounded-md overflow-hidden">
-                                <div className="bg-muted px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Bonus Details</div>
-                                <div className="divide-y">
-                                    {(selectedEmployee.adjustments?.bonus_list || []).map((item, idx) => (
-                                        <div key={idx} className="flex justify-between items-center p-3 text-sm">
-                                            <span>{item.type === 'bonus' ? 'Bonus' : item.type}</span>
-                                            <span className="font-medium text-green-600">+{item.currency} {Number(item.amount).toLocaleString()}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ) : (
-                             <p className="text-sm text-muted-foreground italic">No specific bonuses recorded.</p>
-                        )}
-
-                        {/* Deduction List */}
-                        {(selectedEmployee.adjustments?.deduction_list || []).length > 0 ? (
-                            <div className="border rounded-md overflow-hidden">
-                                <div className="bg-muted px-3 py-2 text-xs font-semibold uppercase text-muted-foreground">Deduction Details</div>
-                                <div className="divide-y">
-                                    {(selectedEmployee.adjustments?.deduction_list || []).map((item, idx) => (
-                                        <div key={idx} className="flex justify-between items-center p-3 text-sm">
-                                            <span>{item.type === 'deduction' ? 'Deduction' : item.type}</span>
-                                            <span className="font-medium text-red-600">-{item.currency} {Number(item.amount).toLocaleString()}</span>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        ) : (
-                             <p className="text-sm text-muted-foreground italic">No specific deductions recorded.</p>
-                        )}
-                    </div>
-                </div>
-
-                {/* Legacy Adjustments */}
-                {(employeeAdjustments || []).length > 0 && (
-                     <div className="border-t pt-4">
-                        <h4 className="font-semibold mb-2 text-sm text-muted-foreground">Manual Adjustments</h4>
-                        <Table>
-                            <TableHeader>
-                                <TableRow>
-                                <TableHead>Type</TableHead>
-                                <TableHead>Amount</TableHead>
-                                <TableHead>Reason</TableHead>
-                                <TableHead></TableHead>
-                                </TableRow>
-                            </TableHeader>
-                            <TableBody>
-                                {employeeAdjustments.map((adj) => (
-                                <TableRow key={adj.id}>
-                                    <TableCell className="capitalize">{adj.type}</TableCell>
-                                    <TableCell>{adj.currency} {Number(adj.amount).toLocaleString()}</TableCell>
-                                    <TableCell>{adj.reason}</TableCell>
-                                    <TableCell>
-                                    <Button variant="ghost" size="sm" onClick={() => deleteAdjustment(adj.id)}>
-                                        <Trash2 className="h-4 w-4 text-destructive" />
-                                    </Button>
-                                    </TableCell>
-                                </TableRow>
-                                ))}
-                            </TableBody>
-                        </Table>
-                    </div>
-                )}
-
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-
-        {/* Transfer Detail Dialog */}
-        <Dialog open={transferDetailDialogOpen} onOpenChange={setTransferDetailDialogOpen}>
-          <DialogContent className="w-[90vw] max-h-[85vh] overflow-y-auto sm:max-w-[600px]">
-            <DialogHeader>
-              <DialogTitle>Transfer Receipt</DialogTitle>
-              <DialogDescription>Complete details of the transfer transaction.</DialogDescription>
-            </DialogHeader>
-            {selectedTransfer && (
-              <div className="space-y-6">
-                {/* Receipt Content */}
-                <div id="receipt-content">
-                  {/* Header */}
-                  <div className="receipt-header text-center border-b border-gray-200 pb-4 mb-4">
-                    <h2 className="text-xl font-bold">Transfer Receipt</h2>
-                    <p className="text-sm text-muted-foreground">{format(new Date(selectedTransfer.created_at), "MMMM d, yyyy")}</p>
-                  </div>
-
-                  {/* Transaction Details */}
-                  <div className="receipt-section mb-4">
-                    <h3 className="text-lg font-semibold mb-3">Transaction Details</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Reference</div>
-                        <div className="font-medium font-mono">{selectedTransfer.reference}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Status</div>
-                        <div className={`font-semibold ${
-                          selectedTransfer.status === 'success' ? 'text-green-600' : 
-                          selectedTransfer.status === 'failed' ? 'text-red-600' : 'text-yellow-600'
-                        }`}>
-                          {selectedTransfer.status.toUpperCase()}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Source Type</div>
-                        <div className="font-medium">{selectedTransfer.source_type || "N/A"}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Payment Provider</div>
-                        <div className="font-medium">{selectedTransfer.payment_provider || "N/A"}</div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Recipient Details */}
-                  <div className="receipt-section mb-4">
-                    <h3 className="text-lg font-semibold mb-3">Recipient Details</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Name</div>
-                        <div className="font-medium">{selectedTransfer.recipient_name}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Account Number</div>
-                        <div className="font-medium font-mono">{selectedTransfer.recipient_account || "N/A"}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Bank Code</div>
-                        <div className="font-medium font-mono">{selectedTransfer.recipient_bank || "N/A"}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Bank Name</div>
-                        <div className="font-medium">
-                          {selectedTransfer.recipient_bank 
-                            ? (banks.find(b => b.code === selectedTransfer.recipient_bank)?.name || selectedTransfer.recipient_bank) 
-                            : "N/A"}
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-
-                  {/* Amount Details */}
-                  <div className="receipt-section mb-4">
-                    <h3 className="text-lg font-semibold mb-3">Amount Details</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Amount</div>
-                        <div className="text-xl font-bold">
-                          {selectedTransfer.currency} {Number(selectedTransfer.amount).toLocaleString()}
-                        </div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Fee</div>
-                        <div className="font-medium">{selectedTransfer.currency} {selectedTransfer.fee || "0.00"}</div>
-                      </div>
-                    </div>
-                    {selectedTransfer.remark && (
-                      <div className="mt-3">
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Remark</div>
-                        <div className="font-medium">{selectedTransfer.remark}</div>
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Additional Details */}
-                  <div className="receipt-section mb-4">
-                    <h3 className="text-lg font-semibold mb-3">Additional Details</h3>
-                    <div className="grid grid-cols-2 gap-4">
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Created At</div>
-                        <div className="font-medium">{format(new Date(selectedTransfer.created_at), "MMM d, yyyy h:mm a")}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Updated At</div>
-                        <div className="font-medium">{format(new Date(selectedTransfer.updated_at), "MMM d, yyyy h:mm a")}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Wallet ID</div>
-                        <div className="font-medium font-mono text-sm truncate" title={selectedTransfer.wallet_id}>{selectedTransfer.wallet_id}</div>
-                      </div>
-                      <div>
-                        <div className="text-xs text-muted-foreground uppercase tracking-wider">Transaction ID</div>
-                        <div className="font-medium font-mono text-sm truncate" title={selectedTransfer.id}>{selectedTransfer.id}</div>
-                      </div>
-                    </div>
-                    {selectedTransfer.failure_reason && (
-                      <div className="mt-3 p-3 bg-red-50 rounded-md border border-red-100">
-                        <div className="text-xs text-red-700 uppercase tracking-wider">Failure Reason</div>
-                        <div className="font-medium text-red-700">{selectedTransfer.failure_reason}</div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <DialogFooter className="flex gap-2">
-                  <Button variant="outline" onClick={printReceipt}>
-                    Print Receipt
-                  </Button>
-                  <Button onClick={() => setTransferDetailDialogOpen(false)}>
-                    Close
-                  </Button>
-                </DialogFooter>
-              </div>
-            )}
-          </DialogContent>
-        </Dialog>
-
-        {/* Configuration Dialog */}
-        <Dialog open={configDialogOpen} onOpenChange={setConfigDialogOpen}>
-            <DialogContent className="sm:max-w-[425px]">
-                <DialogHeader>
-                    <DialogTitle>Payroll Configuration</DialogTitle>
-                    <DialogDescription>
-                        Set the salary payment interval and other settings.
-                    </DialogDescription>
-                </DialogHeader>
-                <Form {...configForm}>
-                    <form onSubmit={configForm.handleSubmit(onUpdateConfig)} className="space-y-4">
-                        <FormField
-                            control={configForm.control}
-                            name="salary_interval"
-                            render={({ field }) => (
-                                <FormItem>
-                                    <FormLabel>Salary Interval</FormLabel>
-                                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                        <FormControl>
-                                            <SelectTrigger>
-                                                <SelectValue placeholder="Select interval" />
-                                            </SelectTrigger>
-                                        </FormControl>
-                                        <SelectContent>
-                                            <SelectItem value="daily">Daily</SelectItem>
-                                            <SelectItem value="weekly">Weekly</SelectItem>
-                                            <SelectItem value="monthly">Monthly</SelectItem>
-                                            <SelectItem value="yearly">Yearly</SelectItem>
-                                            <SelectItem value="custom">Custom</SelectItem>
-                                        </SelectContent>
-                                    </Select>
-                                    <FormMessage />
-                                </FormItem>
-                            )}
-                        />
-
-                        {watchInterval === 'custom' && (
-                            <FormField
-                                control={configForm.control}
-                                name="salary_custom_date"
-                                render={({ field }) => (
-                                    <FormItem className="flex flex-col">
-                                        <FormLabel>Custom Date</FormLabel>
-                                        <Popover>
-                                            <PopoverTrigger asChild>
-                                                <FormControl>
-                                                    <Button
-                                                        variant={"outline"}
-                                                        className={cn(
-                                                            "w-full pl-3 text-left font-normal",
-                                                            !field.value && "text-muted-foreground"
-                                                        )}
-                                                    >
-                                                        {field.value ? (
-                                                            format(new Date(field.value), "PPP")
-                                                        ) : (
-                                                            <span>Pick a date</span>
-                                                        )}
-                                                        <CalendarIcon className="ml-auto h-4 w-4 opacity-50" />
-                                                    </Button>
-                                                </FormControl>
-                                            </PopoverTrigger>
-                                            <PopoverContent className="w-auto p-0" align="start">
-                                                <Calendar
-                                                    mode="single"
-                                                    selected={field.value ? new Date(field.value) : undefined}
-                                                    onSelect={(date) => field.onChange(date?.toISOString())}
-                                                    disabled={(date) =>
-                                                        date < new Date("1900-01-01")
-                                                    }
-                                                    initialFocus
-                                                />
-                                            </PopoverContent>
-                                        </Popover>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-                        )}
-
-                        <DialogFooter>
-                            <Button type="submit">Save Changes</Button>
-                        </DialogFooter>
-                    </form>
-                </Form>
-            </DialogContent>
-        </Dialog>
-
-        {/* Update Payroll Dialog */}
-        <Dialog open={updateDialogOpen} onOpenChange={setUpdateDialogOpen}>
-          <DialogContent className="w-[90vw] max-h-[85vh] overflow-y-auto">
-            <DialogHeader>
-              <DialogTitle>Update Payroll Details</DialogTitle>
-            </DialogHeader>
-            <Form {...updateForm}>
-              <form onSubmit={updateForm.handleSubmit(onUpdatePayroll)} className="space-y-4">
-                 <FormField
-                    control={updateForm.control}
-                    name="salary"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Salary</FormLabel>
-                            <FormControl><Input type="number" placeholder="100" {...field} /></FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                 <FormField
-                    control={updateForm.control}
-                    name="salary_currency"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Currency</FormLabel>
-                            <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                                <SelectContent>
-                                    <SelectItem value="NGN">NGN</SelectItem>
-                                    <SelectItem value="USD">USD</SelectItem>
-                                </SelectContent>
-                            </Select>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                 <FormField
-                    control={updateForm.control}
-                    name="bank_code"
-                    render={({ field }) => (
-                        <FormItem className="flex flex-col">
-                            <FormLabel>Bank</FormLabel>
-                            <Popover open={openBank} onOpenChange={setOpenBank}>
-                                <PopoverTrigger asChild>
-                                    <FormControl>
-                                        <Button
-                                            variant="outline"
-                                            role="combobox"
-                                            aria-expanded={openBank}
-                                            className={cn(
-                                                "w-full justify-between",
-                                                !field.value && "text-muted-foreground"
-                                            )}
-                                        >
-                                            {field.value
-                                                ? banks.find((bank) => bank.code === field.value)?.name
-                                                : "Select Bank"}
-                                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                                        </Button>
-                                    </FormControl>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-[--radix-popover-trigger-width] p-0" side="bottom" align="start">
-                                    <Command className="h-auto">
-                                        <CommandInput placeholder="Search bank..." />
-                                        <CommandList className="max-h-[200px] overflow-y-auto">
-                                            <CommandEmpty>No bank found.</CommandEmpty>
-                                            <CommandGroup>
-                                            {banks.map((bank) => (
-                                                <CommandItem
-                                                    value={bank.name}
-                                                    key={bank.code}
-                                                    onSelect={() => {
-                                                        updateForm.setValue("bank_code", bank.code)
-                                                        setOpenBank(false)
-                                                    }}
-                                                >
-                                                    <Check
-                                                        className={cn(
-                                                            "mr-2 h-4 w-4",
-                                                            bank.code === field.value
-                                                                ? "opacity-100"
-                                                                : "opacity-0"
-                                                        )}
-                                                    />
-                                                    {bank.name}
-                                                </CommandItem>
-                                            ))}
-                                            </CommandGroup>
-                                        </CommandList>
-                                    </Command>
-                                </PopoverContent>
-                            </Popover>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                 <FormField
-                    control={updateForm.control}
-                    name="bank_account_number"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Account Number</FormLabel>
-                            <FormControl><Input {...field} maxLength={10} /></FormControl>
-                            {accountName && <p className="text-sm text-muted-foreground mt-1">Verified: {accountName}</p>}
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-
-                <FormField
-                    control={updateForm.control}
-                    name="account_name"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Account Name</FormLabel>
-                            <FormControl><Input {...field} placeholder="Verified account name will appear here" readOnly className="bg-muted" /></FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-
-                <FormField
-                    control={updateForm.control}
-                    name="contract_start_date"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Contract Start Date</FormLabel>
-                            <FormControl><Input type="date" {...field} /></FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                <DialogFooter>
-                    <Button type="submit" disabled={isUpdating}>
-                        {isUpdating && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                        Update
-                    </Button>
-                </DialogFooter>
-              </form>
-            </Form>
-          </DialogContent>
-        </Dialog>
-
-        {/* Adjustment Dialog */}
-        <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
-          <DialogContent>
-            <DialogHeader>
-              <DialogTitle>Add Adjustment</DialogTitle>
-            </DialogHeader>
-            <Form {...adjustmentForm}>
-              <form onSubmit={adjustmentForm.handleSubmit(onAddAdjustment)} className="space-y-4">
-                 <FormField
-                    control={adjustmentForm.control}
-                    name="type"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Type</FormLabel>
-                            <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                                <SelectContent>
-                                    <SelectItem value="bonus">Bonus</SelectItem>
-                                    <SelectItem value="deduction">Deduction</SelectItem>
-                                </SelectContent>
-                            </Select>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                 <FormField
-                    control={adjustmentForm.control}
-                    name="amount"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Amount</FormLabel>
-                            <FormControl><Input type="number" placeholder="100" {...field} /></FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                 <FormField
-                    control={adjustmentForm.control}
-                    name="reason"
-                    render={({ field }) => (
-                        <FormItem>
-                            <FormLabel>Reason</FormLabel>
-                            <FormControl><Input {...field} /></FormControl>
-                            <FormMessage />
-                        </FormItem>
-                    )}
-                />
-                <DialogFooter>
-                    <Button type="submit">Add</Button>
-                </DialogFooter>
-              </form>
-            </Form>
-          </DialogContent>
-        </Dialog>
-
-        {/* Bulk Transfer Dialog */}
-        <Dialog open={bulkTransferDialogOpen} onOpenChange={(open) => {
-            setBulkTransferDialogOpen(open);
-            if (!open) {
-                setBulkTransferStep("select");
-                setOtpSent(false);
-                setEpicTransferItems([]);
-                setTransferSuccessData(null);
-            }
-        }}>
-            <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                    <DialogTitle>Bulk Transfer</DialogTitle>
-                    <DialogDescription>
-                        Select transfer type and complete the process.
-                    </DialogDescription>
-                </DialogHeader>
-
-                {bulkTransferStep === "select" ? (
-                    <Form {...bulkTransferForm}>
-                        <form onSubmit={bulkTransferForm.handleSubmit(onGoToReviewStep)} className="space-y-4">
-                            <FormField
-                                control={bulkTransferForm.control}
-                                name="type"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Transfer Type</FormLabel>
-                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                            <FormControl><SelectTrigger><SelectValue /></SelectTrigger></FormControl>
-                                            <SelectContent>
-                                                <SelectItem value="salary">Salary Transfer</SelectItem>
-                                                <SelectItem value="epic">Epic Transfer</SelectItem>
-                                            </SelectContent>
-                                        </Select>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            {bulkTransferForm.watch("type") === "epic" && (
-                                <>
-                                    <FormField
-                                        control={bulkTransferForm.control}
-                                        name="epic_id"
-                                        render={({ field }) => (
-                                            <FormItem>
-                                                <FormLabel>Select Epic</FormLabel>
-                                                <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                                    <FormControl><SelectTrigger><SelectValue placeholder="Select epic" /></SelectTrigger></FormControl>
-                                                    <SelectContent>
-                                                        {epics.map(epic => (
-                                                            <SelectItem key={epic.id} value={epic.id}>{epic.name}</SelectItem>
-                                                        ))}
-                                                    </SelectContent>
-                                                </Select>
-                                                <FormMessage />
-                                            </FormItem>
-                                        )}
-                                    />
-                                    <div className="space-y-2">
-                                        <Label>Transfer Mode</Label>
-                                        <div className="flex gap-2">
-                                            <Button
-                                                type="button"
-                                                variant={epicTransferMode === "single" ? "default" : "outline"}
-                                                onClick={() => setEpicTransferMode("single")}
-                                                className="flex-1"
-                                            >
-                                                Single
-                                            </Button>
-                                            <Button
-                                                type="button"
-                                                variant={epicTransferMode === "bulk" ? "default" : "outline"}
-                                                onClick={() => setEpicTransferMode("bulk")}
-                                                className="flex-1"
-                                            >
-                                                Bulk
-                                            </Button>
-                                        </div>
-                                    </div>
-                                </>
-                            )}
-
-                            <FormField
-                                control={bulkTransferForm.control}
-                                name="source_wallet_id"
-                                render={({ field }) => (
-                                    <FormItem>
-                                        <FormLabel>Source Wallet</FormLabel>
-                                        <Select onValueChange={field.onChange} defaultValue={field.value}>
-                                            <FormControl><SelectTrigger><SelectValue placeholder="Select wallet" /></SelectTrigger></FormControl>
-                                            <SelectContent>
-                                                {wallets?.business_wallet && (
-                                                    <SelectItem value={wallets.business_wallet.id}>
-                                                        Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
-                                                    </SelectItem>
-                                                )}
-                                                {wallets?.user_wallet && (
-                                                    <SelectItem value={wallets.user_wallet.id}>
-                                                        Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
-                                                    </SelectItem>
-                                                )}
-                                            </SelectContent>
-                                        </Select>
-                                        <FormMessage />
-                                    </FormItem>
-                                )}
-                            />
-
-                            {bulkTransferForm.watch("type") === "salary" && (
-                                <div className="bg-muted p-3 rounded-lg">
-                                    <p className="text-sm font-medium mb-2">Preview</p>
-                                    <p className="text-sm text-muted-foreground">
-                                        {employees.length} employees will receive a total of {employees.reduce((acc, emp) => acc + Number(emp.net_salary), 0).toLocaleString()} NGN
-                                    </p>
-                                </div>
-                            )}
-
-                            <div className="space-y-2">
-                                <Label>Transaction PIN</Label>
-                                <Input 
-                                    type="password" 
-                                    placeholder="Enter your PIN" 
-                                    value={pin} 
-                                    onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                                    maxLength={4}
-                                />
-                                {!pinCreated && (
-                                    <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
-                                        Create PIN
-                                    </Button>
-                                )}
-                                {pinCreated && (
-                                    <Button variant="link" size="sm" onClick={() => setShowResetPinModal(true)} className="p-0 h-auto">
-                                        Forgot PIN?
-                                    </Button>
-                                )}
-                            </div>
-
-                            {otpEnabled && (
-                                <div className="space-y-2">
-                                    <Label>OTP Method (Optional)</Label>
-                                    <RadioGroup value={otpMethod} onValueChange={setOtpMethod} className="flex flex-col gap-2">
-                                        <div className="flex items-center space-x-2">
-                                            <RadioGroupItem value="" id="payroll-method-default" />
-                                            <Label htmlFor="payroll-method-default">Default</Label>
-                                        </div>
-                                        <div className="flex items-center space-x-2">
-                                            <RadioGroupItem value="email" id="payroll-method-email" />
-                                            <Label htmlFor="payroll-method-email">Email</Label>
-                                        </div>
-                                        <div className="flex items-center space-x-2">
-                                            <RadioGroupItem value="sms" id="payroll-method-sms" />
-                                            <Label htmlFor="payroll-method-sms">SMS</Label>
-                                        </div>
-                                        <div className="flex items-center space-x-2">
-                                            <RadioGroupItem value="whatsapp" id="payroll-method-whatsapp" />
-                                            <Label htmlFor="payroll-method-whatsapp">WhatsApp</Label>
-                                        </div>
-                                    </RadioGroup>
-                                </div>
-                            )}
-
-                            <DialogFooter>
-                                <Button type="submit" disabled={otpLoading}>
-                                    {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                    Continue
-                                </Button>
-                            </DialogFooter>
-                        </form>
-                    </Form>
-                ) : bulkTransferStep === "review" ? (
-                    <div className="space-y-4">
-                        {bulkTransferForm.watch("type") === "salary" ? (
-                            <div className="space-y-4">
-                                <div className="bg-muted p-3 rounded-lg">
-                                    <h3 className="font-semibold mb-2">Salary Transfer Preview</h3>
-                                    <div className="space-y-2 max-h-60 overflow-y-auto">
-                                        {employees.map((employee) => (
-                                            <div key={employee.id} className="flex justify-between items-center p-2 bg-background rounded border">
-                                                <div>
-                                                    <p className="font-medium">{employee.name}</p>
-                                                    <p className="text-xs text-muted-foreground">{employee.email}</p>
-                                                </div>
-                                                <p className="font-semibold">
-                                                    {employee.salary_currency} {Number(employee.net_salary).toLocaleString()}
-                                                </p>
-                                            </div>
-                                        ))}
-                                    </div>
-                                    <div className="flex justify-between items-center p-2 border-t mt-2 pt-2">
-                                        <p className="font-semibold">Total Amount</p>
-                                        <p className="font-bold text-primary text-lg">
-                                            {employees[0]?.salary_currency || "NGN"} {employees.reduce((acc, emp) => acc + Number(emp.net_salary), 0).toLocaleString()}
-                                        </p>
-                                    </div>
-                                </div>
-                            </div>
-                        ) : (
-                            <div className="space-y-4">
-                                <div className="flex justify-between items-center">
-                                    <h3 className="font-semibold">Recipients</h3>
-                                    <Button type="button" size="sm" onClick={addRecipient} disabled={epicTransferMode === "single" && epicTransferItems.length >= 1}>
-                                        <Plus className="mr-1 h-4 w-4" /> Add Recipient
-                                    </Button>
-                                </div>
-                                <div className="space-y-3 max-h-80 overflow-y-auto">
-                                    {(() => {
-                                        const values = bulkTransferForm.getValues();
-                                        const selectedEpic = epics.find(e => e.id === values.epic_id);
-                                        return epicTransferItems.map((item, index) => {
-                                            const id = `recipient_${index}`;
-                                            const status = recipientLookupStatus[index];
-                                            return (
-                                                <div key={id} className="bg-muted p-3 rounded-lg border space-y-3">
-                                                    <div className="flex justify-between items-start">
-                                                        <div className="flex-1 space-y-3">
-                                                            <div className="flex flex-col">
-                                                                <Label>Bank</Label>
-                                                                <Popover open={openBankPopover === index} onOpenChange={(open) => setOpenBankPopover(open ? index : null)}>
-                                                                    <PopoverTrigger asChild>
-                                                                        <Button
-                                                                            variant="outline"
-                                                                            role="combobox"
-                                                                            aria-expanded={openBankPopover === index}
-                                                                            className="w-full justify-between"
-                                                                        >
-                                                                            {item.recipient_bank
-                                                                                ? banks.find((bank) => bank.code === item.recipient_bank)?.name
-                                                                                : "Select bank"}
-                                                                            <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                                                                        </Button>
-                                                                    </PopoverTrigger>
-                                                                    <PopoverContent className="w-[--radix-popover-trigger-width] p-0" side="bottom" align="start">
-                                                                        <Command className="h-auto">
-                                                                            <CommandInput placeholder="Search bank..." />
-                                                                            <CommandList className="max-h-[200px] overflow-y-auto">
-                                                                                <CommandEmpty>No bank found.</CommandEmpty>
-                                                                                <CommandGroup>
-                                                                                    {banks.map((bank) => (
-                                                                                        <CommandItem
-                                                                                            value={bank.name}
-                                                                                            key={bank.code}
-                                                                                            onSelect={() => {
-                                                                                                updateRecipient(id, "recipient_bank", bank.code);
-                                                                                                setOpenBankPopover(null);
-                                                                                            }}
-                                                                                        >
-                                                                                            <Check
-                                                                                                className={cn(
-                                                                                                    "mr-2 h-4 w-4",
-                                                                                                    bank.code === item.recipient_bank
-                                                                                                        ? "opacity-100"
-                                                                                                        : "opacity-0"
-                                                                                                )}
-                                                                                            />
-                                                                                            {bank.name}
-                                                                                        </CommandItem>
-                                                                                    ))}
-                                                                                </CommandGroup>
-                                                                            </CommandList>
-                                                                        </Command>
-                                                                    </PopoverContent>
-                                                                </Popover>
-                                                            </div>
-                                                            <div>
-                                                                <Label>Account Number</Label>
-                                                                <Input
-                                                                    value={item.recipient_account}
-                                                                    maxLength={10}
-                                                                    onChange={(e) => updateRecipient(id, "recipient_account", e.target.value)}
-                                                                />
-                                                            </div>
-                                                            
-                                                            {status?.loading && (
-                                                                <div className="text-sm text-muted-foreground flex items-center gap-1">
-                                                                    <Loader2 className="h-4 w-4 animate-spin" />
-                                                                    Verifying account...
-                                                                </div>
-                                                            )}
-                                                            
-                                                            {status?.success && status.name && (
-                                                                <div className="text-sm text-green-600 flex items-center gap-1">
-                                                                    <Check className="h-4 w-4" />
-                                                                    Verified: {status.name}
-                                                                </div>
-                                                            )}
-                                                            
-                                                            {status?.error && (
-                                                                <div className="text-sm text-destructive flex items-center gap-1">
-                                                                    <AlertCircle className="h-4 w-4" />
-                                                                    {status.error}
-                                                                </div>
-                                                            )}
-                                                            
-                                                            <div>
-                                                                <Label>Amount</Label>
-                                                                <Input
-                                                                    type="number"
-                                                                    value={item.amount}
-                                                                    onChange={(e) => updateRecipient(id, "amount", Number(e.target.value))}
-                                                                />
-                                                            </div>
-                                                            <div>
-                                                                <Label>Remark</Label>
-                                                                <Input
-                                                                    value={selectedEpic?.name || ""}
-                                                                    readOnly
-                                                                    className="bg-muted"
-                                                                />
-                                                            </div>
-                                                        </div>
-                                                        {epicTransferMode === "bulk" && (
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="icon"
-                                                                className="ml-2"
-                                                                onClick={() => removeRecipient(id)}
-                                                            >
-                                                                <Trash2 className="h-4 w-4 text-destructive" />
-                                                            </Button>
-                                                        )}
-                                                    </div>
-                                                </div>
-                                            );
-                                        });
-                                    })()}
-                                </div>
-                                {epicTransferItems.length === 0 && (
-                                    <div className="text-center text-muted-foreground">
-                                        No recipients added. Click "Add Recipient" to start.
-                                    </div>
-                                )}
-                                {epicTransferItems.length > 0 && (
-                                    <div className="bg-primary/10 p-3 rounded-lg border border-primary/20">
-                                        <div className="flex justify-between items-center">
-                                            <p className="font-semibold">Total Amount</p>
-                                            <p className="font-bold text-primary text-lg">
-                                                NGN {epicTransferItems.reduce((acc, item) => acc + (Number(item.amount) || 0), 0).toLocaleString()}
-                                            </p>
-                                        </div>
-                                    </div>
-                                )}
-                            </div>
-                        )}
-                        <DialogFooter>
-                            <Button
-                                variant="outline"
-                                onClick={() => setBulkTransferStep("select")}
-                            >
-                                Back
-                            </Button>
-                            <Button
-                                type="button"
-                                onClick={onRequestOtp}
-                                disabled={
-                                    (bulkTransferForm.watch("type") === "epic" && 
-                                        (epicTransferItems.length === 0 || 
-                                        epicTransferItems.some((_, index) => {
-                                            const status = recipientLookupStatus[index];
-                                            return status?.error || status?.loading || !status?.success;
-                                        }) 
-                                    )) 
-                                    || otpLoading
-                                }
-                            >
-                                {otpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                                Request OTP
-                            </Button>
-                        </DialogFooter>
-                    </div>
-                ) : bulkTransferStep === "otp" ? (
-                    <div className="space-y-4">
-                        <div className="space-y-2">
-                            <Label>Enter OTP</Label>
-                            <Input 
-                                placeholder="123456" 
-                                maxLength={6}
-                                onChange={(e) => bulkTransferForm.setValue("otp", e.target.value)}
-                            />
-                        </div>
-
-                        <Button 
-                            variant="ghost" 
-                            size="sm" 
-                            onClick={handleResendOTP} 
-                            disabled={isActive || otpLoading}
-                            className="w-full"
-                        >
-                            {otpLoading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : null}
-                            {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
-                        </Button>
-
-                        <DialogFooter>
-                            <Button 
-                                variant="outline" 
-                                onClick={() => {
-                                    setBulkTransferStep("review");
-                                    setOtpSent(false);
-                                }}
-                            >
-                                Back
-                            </Button>
-                            <Button 
-                                onClick={() => onFinalizeBulkTransfer(bulkTransferForm.getValues("otp") || "")}
-                            >
-                                Confirm Transfer
-                            </Button>
-                        </DialogFooter>
-                    </div>
-                ) : (
-                    // Success screen
-                    <div className="space-y-6">
-                        <div className="text-center space-y-2">
-                            <div className="w-16 h-16 bg-green-100 rounded-full flex items-center justify-center mx-auto">
-                                <Check className="w-8 h-8 text-green-600" />
-                            </div>
-                            <h3 className="text-xl font-bold">Transfer Successful!</h3>
-                            <p className="text-muted-foreground">{transferSuccessData?.message}</p>
-                        </div>
-
-                        <div className="bg-muted p-4 rounded-lg space-y-3">
-                            <div className="flex justify-between">
-                                <span className="text-muted-foreground">Queued Transfers:</span>
-                                <span className="font-semibold">{transferSuccessData?.queued}</span>
-                            </div>
-                            <div className="flex justify-between">
-                                <span className="text-muted-foreground">Type:</span>
-                                <span className="font-semibold">{transferSuccessData?.type}</span>
-                            </div>
-                            <div className="border-t pt-3 space-y-2">
-                                <div className="flex justify-between">
-                                    <span className="text-muted-foreground">Total Amount:</span>
-                                    <span className="font-semibold">{transferSuccessData?.totals?.amount?.toLocaleString()}</span>
-                                </div>
-                                <div className="flex justify-between">
-                                    <span className="text-muted-foreground">Fee:</span>
-                                    <span className="font-semibold">{transferSuccessData?.totals?.fee?.toLocaleString()}</span>
-                                </div>
-                                <div className="flex justify-between text-lg">
-                                    <span className="font-medium">Total:</span>
-                                    <span className="font-bold text-primary">{transferSuccessData?.totals?.total?.toLocaleString()}</span>
-                                </div>
-                            </div>
-                        </div>
-
-                        {transferSuccessData?.transfers && transferSuccessData.transfers.length > 0 && (
-                            <div className="max-h-[250px] overflow-y-auto">
-                                <h4 className="text-sm font-medium mb-2">Transfers:</h4>
-                                <div className="space-y-2">
-                                    {transferSuccessData.transfers.map((transfer: any) => (
-                                        <div key={transfer.id} className="p-3 bg-background border rounded-lg flex justify-between items-center">
-                                            <div>
-                                                <p className="font-medium">{transfer.recipient_name}</p>
-                                                <p className="text-xs text-muted-foreground">{transfer.reference}</p>
-                                            </div>
-                                            <div className="text-right">
-                                                <p className="font-semibold">{transfer.currency} {Number(transfer.amount).toLocaleString()}</p>
-                                                <Badge variant={transfer.status === "success" ? "default" : transfer.status === "failed" ? "destructive" : "secondary"}>
-                                                    {transfer.status}
-                                                </Badge>
-                                            </div>
-                                        </div>
-                                    ))}
-                                </div>
-                            </div>
-                        )}
-
-                        <DialogFooter>
-                            <Button onClick={() => {
-                                setBulkTransferDialogOpen(false);
-                                setBulkTransferStep("select");
-                                setOtpSent(false);
-                                setEpicTransferItems([]);
-                                setTransferSuccessData(null);
-                            }}>
-                                Done
-                            </Button>
-                        </DialogFooter>
-                    </div>
-                )}
-            </DialogContent>
-        </Dialog>
-
-        {/* Create PIN Modal */}
-        <Dialog open={showCreatePinModal} onOpenChange={setShowCreatePinModal}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Create Transaction PIN</DialogTitle>
-                    <DialogDescription>Create a 4-digit PIN for your transactions.</DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4">
-                    <div className="space-y-2">
-                        <Label>New PIN</Label>
-                        <Input 
-                            type="password" 
-                            placeholder="Enter 4-digit PIN" 
-                            value={newPin} 
-                            onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                            maxLength={4}
-                        />
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setShowCreatePinModal(false)}>Cancel</Button>
-                        <Button onClick={handleCreatePin}>Create PIN</Button>
-                    </DialogFooter>
-                </div>
-            </DialogContent>
-        </Dialog>
-
-        {/* Reset PIN Modal */}
-        <Dialog open={showResetPinModal} onOpenChange={setShowResetPinModal}>
-            <DialogContent>
-                <DialogHeader>
-                    <DialogTitle>Reset Transaction PIN</DialogTitle>
-                    <DialogDescription>Enter OTP to reset your PIN.</DialogDescription>
-                </DialogHeader>
-                <div className="space-y-4">
-                    <div className="space-y-2">
-                        <Label>OTP</Label>
-                        <Input 
-                            placeholder="Enter OTP" 
-                            value={resetPinOtp} 
-                            onChange={(e) => setResetPinOtp(e.target.value)} 
-                        />
-                        <Button variant="ghost" size="sm" onClick={handleSendResetPinOtp} className="p-0 h-auto">
-                            Send OTP
-                        </Button>
-                    </div>
-                    <div className="space-y-2">
-                        <Label>New PIN</Label>
-                        <Input 
-                            type="password" 
-                            placeholder="Enter 4-digit PIN" 
-                            value={newPin} 
-                            onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                            maxLength={4}
-                        />
-                    </div>
-                    <DialogFooter>
-                        <Button variant="outline" onClick={() => setShowResetPinModal(false)}>Cancel</Button>
-                        <Button onClick={handleResetPin}>Reset PIN</Button>
-                    </DialogFooter>
-                </div>
-            </DialogContent>
-        </Dialog>
-
-        {/* Import Employees Dialog */}
-        <ImportEmployeesDialog
-          open={importDialogOpen}
-          onOpenChange={setImportDialogOpen}
-          onImported={() => fetchEmployees(page)}
-        />
-
       </div>
+
+      {/* ------------------------------ Employee detail dialog ------------------------------ */}
+      <EmployeeDetailDialog
+        open={detailOpen}
+        onOpenChange={setDetailOpen}
+        employee={detailEmployee}
+        onEdit={(emp) => {
+          setEditingEmployee(emp);
+          setFormOpen(true);
+        }}
+        onVerified={afterVerifyRefresh}
+      />
+
+      {/* ------------------------------ Add / Edit employee dialog ------------------------------ */}
+      <EmployeeFormDialog
+        open={formOpen}
+        onOpenChange={setFormOpen}
+        employee={editingEmployee}
+        onSaved={refreshAll}
+      />
+
+      {/* ------------------------------ Import employees dialog ------------------------------ */}
+      <ImportEmployeesDialog open={importDialogOpen} onOpenChange={setImportDialogOpen} onImported={refreshAll} />
+
+      {/* ------------------------------ Configuration dialog ------------------------------ */}
+      <Dialog open={configDialogOpen} onOpenChange={setConfigDialogOpen}>
+        <DialogContent className="sm:max-w-[425px]">
+          <DialogHeader>
+            <DialogTitle>Payroll Configuration</DialogTitle>
+            <DialogDescription>Set the salary payment interval and other settings.</DialogDescription>
+          </DialogHeader>
+          <Form {...configForm}>
+            <form onSubmit={configForm.handleSubmit(onUpdateConfig)} className="space-y-4">
+              <FormField
+                control={configForm.control}
+                name="salary_interval"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Salary Interval</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Select interval" />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="daily">Daily</SelectItem>
+                        <SelectItem value="weekly">Weekly</SelectItem>
+                        <SelectItem value="monthly">Monthly</SelectItem>
+                        <SelectItem value="yearly">Yearly</SelectItem>
+                        <SelectItem value="custom">Custom</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              {watchInterval === "custom" && (
+                <FormField
+                  control={configForm.control}
+                  name="salary_custom_date"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Custom Pay Date</FormLabel>
+                      <FormControl>
+                        <Input type="date" {...field} value={field.value || ""} />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+              )}
+              {payrollConfig?.salary_custom_date && watchInterval !== "custom" && (
+                <p className="text-sm text-muted-foreground">Custom pay date is only used when the interval is set to Custom.</p>
+              )}
+              <DialogFooter>
+                <Button type="submit">Update</Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ------------------------------ Add adjustment dialog ------------------------------ */}
+      <Dialog open={adjustmentDialogOpen} onOpenChange={setAdjustmentDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Add Adjustment</DialogTitle>
+            <DialogDescription>
+              Bonuses and deductions are applied to the employee's next salary payout automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <Form {...adjustmentForm}>
+            <form onSubmit={adjustmentForm.handleSubmit(onAddAdjustment)} className="space-y-4">
+              <div className="grid gap-1.5">
+                <Label>Employee</Label>
+                <Select value={adjustmentUserId} onValueChange={setAdjustmentUserId}>
+                  <SelectTrigger aria-label="Select employee">
+                    <SelectValue placeholder="Select employee" />
+                  </SelectTrigger>
+                  <SelectContent className="max-h-64">
+                    {directory.map((emp) => (
+                      <SelectItem key={emp.id} value={emp.id}>
+                        {emp.name} {emp.salary_currency ? `(${emp.salary_currency})` : ""}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              </div>
+              <FormField
+                control={adjustmentForm.control}
+                name="type"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Type</FormLabel>
+                    <Select onValueChange={field.onChange} defaultValue={field.value}>
+                      <FormControl>
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                      </FormControl>
+                      <SelectContent>
+                        <SelectItem value="bonus">Bonus</SelectItem>
+                        <SelectItem value="deduction">Deduction</SelectItem>
+                      </SelectContent>
+                    </Select>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={adjustmentForm.control}
+                name="amount"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Amount</FormLabel>
+                    <FormControl>
+                      <Input type="number" placeholder="100" {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <FormField
+                control={adjustmentForm.control}
+                name="reason"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Reason</FormLabel>
+                    <FormControl>
+                      <Input {...field} />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+              <DialogFooter>
+                <Button type="submit">Add</Button>
+              </DialogFooter>
+            </form>
+          </Form>
+        </DialogContent>
+      </Dialog>
+
+      {/* ------------------------------ Epic / bulk one-off transfer dialog ------------------------------ */}
+      <Dialog
+        open={epicTransferDialogOpen}
+        onOpenChange={(open) => {
+          setEpicTransferDialogOpen(open);
+          if (!open) {
+            setEpicTransferStep("select");
+            setEpicTransferItems([]);
+            setEpicTransferSuccessData(null);
+            setEpicOtp("");
+          }
+        }}
+      >
+        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+          <DialogHeader>
+            <DialogTitle>Epic Transfer</DialogTitle>
+            <DialogDescription>Send one-off payments to recipients from an epic.</DialogDescription>
+          </DialogHeader>
+
+          {epicTransferStep === "select" ? (
+            <Form {...epicTransferForm}>
+              <form onSubmit={epicTransferForm.handleSubmit(onEpicGoToReview)} className="space-y-4">
+                <FormField
+                  control={epicTransferForm.control}
+                  name="epic_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Select Epic</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select epic" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {epics.map((epic) => (
+                            <SelectItem key={epic.id} value={epic.id}>
+                              {epic.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <div className="space-y-2">
+                  <Label>Transfer Mode</Label>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      variant={epicTransferMode === "single" ? "default" : "outline"}
+                      onClick={() => setEpicTransferMode("single")}
+                      className="flex-1"
+                    >
+                      Single
+                    </Button>
+                    <Button
+                      type="button"
+                      variant={epicTransferMode === "bulk" ? "default" : "outline"}
+                      onClick={() => setEpicTransferMode("bulk")}
+                      className="flex-1"
+                    >
+                      Bulk
+                    </Button>
+                  </div>
+                </div>
+
+                <FormField
+                  control={epicTransferForm.control}
+                  name="source_wallet_id"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Source Wallet</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select wallet" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {wallets?.business_wallet && (
+                            <SelectItem value={wallets.business_wallet.id}>
+                              Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
+                            </SelectItem>
+                          )}
+                          {wallets?.user_wallet && (
+                            <SelectItem value={wallets.user_wallet.id}>
+                              Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
+                            </SelectItem>
+                          )}
+                        </SelectContent>
+                      </Select>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+
+                {pinFields}
+                {otpMethodFields("epic")}
+
+                <DialogFooter>
+                  <Button type="submit" disabled={epicOtpLoading}>
+                    {epicOtpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                    Continue
+                  </Button>
+                </DialogFooter>
+              </form>
+            </Form>
+          ) : epicTransferStep === "review" ? (
+            <div className="space-y-4">
+              <div className="flex justify-between items-center">
+                <h3 className="font-semibold">Recipients</h3>
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={addRecipient}
+                  disabled={epicTransferMode === "single" && epicTransferItems.length >= 1}
+                >
+                  <Plus className="mr-1 h-4 w-4" /> Add Recipient
+                </Button>
+              </div>
+              <div className="space-y-3 max-h-80 overflow-y-auto">
+                {(() => {
+                  const values = epicTransferForm.getValues();
+                  const selectedEpic = epics.find((e) => e.id === values.epic_id);
+                  return epicTransferItems.map((item, index) => {
+                    const id = `recipient_${index}`;
+                    const status = recipientLookupStatus[index];
+                    return (
+                      <div key={id} className="bg-muted p-3 rounded-lg border space-y-3">
+                        <div className="flex justify-between items-start">
+                          <div className="flex-1 space-y-3">
+                            <div className="flex flex-col">
+                              <Label>Bank</Label>
+                              <Popover
+                                open={openBankPopover === index}
+                                onOpenChange={(open) => setOpenBankPopover(open ? index : null)}
+                              >
+                                <PopoverTrigger asChild>
+                                  <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                                    {item.recipient_bank
+                                      ? banks.find((b) => b.code === item.recipient_bank)?.name || item.recipient_bank
+                                      : "Select bank"}
+                                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                  </Button>
+                                </PopoverTrigger>
+                                <PopoverContent className="w-[300px] p-0">
+                                  <Command>
+                                    <CommandInput placeholder="Search bank..." />
+                                    <CommandList className="max-h-[200px] overflow-y-auto">
+                                      <CommandEmpty>No bank found.</CommandEmpty>
+                                      <CommandGroup>
+                                        {banks.map((bank) => (
+                                          <CommandItem
+                                            key={bank.code}
+                                            value={bank.name}
+                                            onSelect={() => {
+                                              updateRecipient(id, "recipient_bank", bank.code);
+                                              setOpenBankPopover(null);
+                                            }}
+                                          >
+                                            {bank.name}
+                                          </CommandItem>
+                                        ))}
+                                      </CommandGroup>
+                                    </CommandList>
+                                  </Command>
+                                </PopoverContent>
+                              </Popover>
+                            </div>
+                            <div className="flex flex-col">
+                              <Label>Account Number</Label>
+                              <Input
+                                value={item.recipient_account}
+                                onChange={(e) => updateRecipient(id, "recipient_account", e.target.value.replace(/\D/g, ""))}
+                                maxLength={10}
+                                placeholder="10-digit account number"
+                              />
+                            </div>
+                            <div className="flex flex-col">
+                              <Label>Amount</Label>
+                              <Input
+                                type="number"
+                                value={item.amount || ""}
+                                onChange={(e) => updateRecipient(id, "amount", Number(e.target.value))}
+                                placeholder="0"
+                              />
+                            </div>
+                          </div>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-8 w-8 shrink-0"
+                            onClick={() => removeRecipient(id)}
+                            aria-label="Remove recipient"
+                          >
+                            <Trash2 className="h-4 w-4 text-destructive" />
+                          </Button>
+                        </div>
+
+                        {status?.loading && (
+                          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                            <Loader2 className="h-3 w-3 animate-spin" /> Verifying account…
+                          </p>
+                        )}
+                        {!status?.loading && status?.success && status.name && (
+                          <p className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
+                            <Check className="h-3.5 w-3.5" /> Account name: {status.name}
+                          </p>
+                        )}
+                        {!status?.loading && status?.error && (
+                          <div className="flex items-center gap-2">
+                            <p className="text-xs text-destructive">{status.error}</p>
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-6 px-2 text-xs"
+                              onClick={() => verifyRecipientAccount(id)}
+                              disabled={!item.recipient_bank || !item.recipient_account}
+                            >
+                              Retry
+                            </Button>
+                          </div>
+                        )}
+                        {!status && (
+                          <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            onClick={() => verifyRecipientAccount(id)}
+                            disabled={!item.recipient_bank || !item.recipient_account}
+                          >
+                            Verify account
+                          </Button>
+                        )}
+                        <p className="text-xs text-muted-foreground">Remark: {selectedEpic?.name || "—"}</p>
+                      </div>
+                    );
+                  });
+                })()}
+                {epicTransferItems.length === 0 && (
+                  <div className="rounded-lg border border-dashed p-6 text-center text-sm text-muted-foreground">
+                    No recipients yet. Click "Add Recipient" to start.
+                  </div>
+                )}
+              </div>
+
+              <div className="flex items-center justify-between rounded-lg bg-muted p-3">
+                <p className="font-semibold">Total</p>
+                <p className="font-bold text-primary text-lg">
+                  NGN {epicTransferItems.reduce((acc, item) => acc + (Number(item.amount) || 0), 0).toLocaleString()}
+                </p>
+              </div>
+
+              <div className="flex justify-between">
+                <Button variant="ghost" onClick={() => setEpicTransferStep("select")}>
+                  Back
+                </Button>
+                <Button
+                  onClick={onEpicRequestOtp}
+                  disabled={
+                    epicOtpLoading ||
+                    epicTransferItems.length === 0 ||
+                    epicTransferItems.some((_, index) => {
+                      const item = epicTransferItems[index];
+                      const st = recipientLookupStatus[index];
+                      return !item.recipient_bank || !item.recipient_account || !item.amount || item.amount <= 0 || (st && !st.success && !!st.error);
+                    })
+                  }
+                >
+                  {epicOtpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  {otpEnabled ? "Send OTP" : "Continue"}
+                </Button>
+              </div>
+            </div>
+          ) : epicTransferStep === "otp" ? (
+            <div className="space-y-4">
+              <div className="space-y-2">
+                <Label>Enter OTP</Label>
+                <Input
+                  placeholder="123456"
+                  value={epicOtp}
+                  onChange={(e) => setEpicOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  maxLength={6}
+                />
+              </div>
+              <Button variant="ghost" size="sm" onClick={onEpicRequestOtp} disabled={isActive || epicOtpLoading} className="w-full">
+                {isActive ? `Resend OTP in ${seconds}s` : "Resend OTP"}
+              </Button>
+              <DialogFooter>
+                <Button variant="outline" onClick={() => setEpicTransferStep("review")}>
+                  Back
+                </Button>
+                <Button onClick={onFinalizeEpicTransfer} loading={epicOtpLoading}>
+                  Confirm Transfer
+                </Button>
+              </DialogFooter>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              <div className="rounded-xl border border-emerald-300 bg-emerald-50 p-4 dark:border-emerald-500/40 dark:bg-emerald-950/30">
+                <p className="text-sm font-semibold text-emerald-800 dark:text-emerald-300">
+                  {epicTransferSuccessData?.message || "Transfer completed"}
+                </p>
+                {epicTransferSuccessData?.totals && (
+                  <p className="mt-1 text-sm text-emerald-700/90 dark:text-emerald-400/90">
+                    Amount {Number(epicTransferSuccessData.totals.amount).toLocaleString()} · Fee{" "}
+                    {Number(epicTransferSuccessData.totals.fee).toLocaleString()} · Total{" "}
+                    {Number(epicTransferSuccessData.totals.total).toLocaleString()}
+                  </p>
+                )}
+              </div>
+              <div className="flex justify-end">
+                <Button variant="outline" onClick={() => setEpicTransferDialogOpen(false)}>
+                  Done
+                </Button>
+              </div>
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      {/* ------------------------------ Create PIN modal ------------------------------ */}
+      <Dialog open={showCreatePinModal} onOpenChange={setShowCreatePinModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Create Transaction PIN</DialogTitle>
+            <DialogDescription>Create a 4-digit PIN for your transactions.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>New PIN</Label>
+              <Input
+                type="password"
+                placeholder="Enter 4-digit PIN"
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                maxLength={4}
+              />
+            </div>
+            <DialogFooter>
+              <Button onClick={handleCreatePin}>Create PIN</Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      {/* ------------------------------ Reset PIN modal ------------------------------ */}
+      <Dialog open={showResetPinModal} onOpenChange={setShowResetPinModal}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Reset Transaction PIN</DialogTitle>
+            <DialogDescription>Verify with an OTP, then set a new PIN.</DialogDescription>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="space-y-2">
+              <Label>OTP</Label>
+              <div className="flex gap-2">
+                <Input
+                  placeholder="123456"
+                  value={resetPinOtp}
+                  onChange={(e) => setResetPinOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                  maxLength={6}
+                />
+                <Button variant="outline" onClick={handleSendResetPinOtp}>
+                  Send OTP
+                </Button>
+              </div>
+            </div>
+            <div className="space-y-2">
+              <Label>New PIN</Label>
+              <Input
+                type="password"
+                placeholder="Enter 4-digit PIN"
+                value={newPin}
+                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
+                maxLength={4}
+              />
+            </div>
+            <DialogFooter>
+              <Button onClick={handleResetPin}>Reset PIN</Button>
+            </DialogFooter>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Layout>
   );
 }

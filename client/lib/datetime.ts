@@ -5,8 +5,12 @@
 // timezone is honoured consistently.
 
 const TZ_STORAGE_KEY = 'metricorex:business-timezone';
+const TIME_FORMAT_STORAGE_KEY = 'metricorex:time-format';
+
+export type TimeFormat = '12h' | '24h';
 
 let cachedTimezone: string | null = null;
+let cachedTimeFormat: TimeFormat | null = null;
 
 function readStoredTimezone(): string | null {
   try {
@@ -41,6 +45,35 @@ export function setTimezone(tz: string): void {
   }
 }
 
+/**
+ * Current time format preference ("12h" | "24h"). Persisted alongside the
+ * business timezone (PUT /settings { time_format }); defaults to "24h".
+ */
+export function getTimeFormat(): TimeFormat {
+  if (cachedTimeFormat) return cachedTimeFormat;
+  try {
+    const stored = localStorage.getItem(TIME_FORMAT_STORAGE_KEY);
+    if (stored === '12h' || stored === '24h') {
+      cachedTimeFormat = stored;
+      return stored;
+    }
+  } catch {
+    /* storage unavailable */
+  }
+  return '24h';
+}
+
+/** Set the app-wide time format preference (called from Settings / app boot). */
+export function setTimeFormat(fmt: string | null | undefined): void {
+  const next: TimeFormat = fmt === '12h' ? '12h' : '24h';
+  cachedTimeFormat = next;
+  try {
+    localStorage.setItem(TIME_FORMAT_STORAGE_KEY, next);
+  } catch {
+    /* storage unavailable - keep in-memory only */
+  }
+}
+
 function formatter(options: Intl.DateTimeFormatOptions): Intl.DateTimeFormat {
   return new Intl.DateTimeFormat('en-US', { ...options, timeZone: getTimezone() });
 }
@@ -58,24 +91,31 @@ export function formatDate(value: Date | string | number | null | undefined): st
   return formatter({ year: 'numeric', month: 'short', day: 'numeric' }).format(d);
 }
 
-/** e.g. "3:45 PM" */
+/** Hour options honouring the 12h/24h preference (default "24h"). */
+function timeOptions(base: Intl.DateTimeFormatOptions): Intl.DateTimeFormatOptions {
+  return getTimeFormat() === '12h'
+    ? { ...base, hour12: true }
+    : { ...base, hour12: false, hour: '2-digit' as const };
+}
+
+/** e.g. "15:45" (24h) or "3:45 PM" (12h) */
 export function formatTime(value: Date | string | number | null | undefined): string {
   const d = toDate(value);
   if (!d) return '—';
-  return formatter({ hour: 'numeric', minute: '2-digit' }).format(d);
+  return formatter(timeOptions({ hour: 'numeric', minute: '2-digit' })).format(d);
 }
 
-/** e.g. "Sep 28, 2026, 3:45 PM" */
+/** e.g. "Sep 28, 2026, 15:45" (24h) or "Sep 28, 2026, 3:45 PM" (12h) */
 export function formatDateTime(value: Date | string | number | null | undefined): string {
   const d = toDate(value);
   if (!d) return '—';
-  return formatter({
+  return formatter(timeOptions({
     year: 'numeric',
     month: 'short',
     day: 'numeric',
     hour: 'numeric',
     minute: '2-digit',
-  }).format(d);
+  })).format(d);
 }
 
 /** e.g. "Mon, Sep 28, 2026" */

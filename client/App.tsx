@@ -28,6 +28,7 @@ import Wallet from "./pages/Wallet";
 import Payroll from "./pages/Payroll";
 import TransferHistory from "./pages/TransferHistory";
 import Settings from "./pages/Settings";
+import Profile from "./pages/Profile";
 import Board from "./pages/Board";
 import NotFound from "./pages/NotFound";
 import Meetings from "./pages/Meetings";
@@ -42,19 +43,24 @@ import { MaintenanceGate } from "./components/MaintenanceGate";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
-import { setTimezone, getTimezone } from "@/lib/datetime";
+import { setTimezone, getTimezone, setTimeFormat } from "@/lib/datetime";
 
 const queryClient = new QueryClient();
 
-// Hydrate the app-wide business timezone as early as possible (Settings page
-// keeps it updated afterwards). Best-effort: failure just keeps the default.
+// Hydrate the app-wide business timezone + time format as early as possible
+// (the Settings page keeps them updated afterwards). Best-effort: failure
+// just keeps the defaults.
 async function hydrateBusinessTimezone() {
   try {
     if (!localStorage.getItem("token")) return;
     const res = await api.get("/settings");
-    const tz = res?.data?.settings?.timezone || res?.data?.timezone;
+    const settings = res?.data?.settings || res?.data?.data || {};
+    const tz = settings?.timezone;
     if (tz && typeof tz === "string" && tz !== getTimezone()) {
       setTimezone(tz);
+    }
+    if (settings?.time_format === "12h" || settings?.time_format === "24h") {
+      setTimeFormat(settings.time_format);
     }
   } catch {
     /* non-fatal */
@@ -172,6 +178,10 @@ const App = () => (
             <Route
               path="/settings"
               element={<TokenProtectedRoute element={<Settings />} />}
+            />
+            <Route
+              path="/profile"
+              element={<TokenProtectedRoute element={<Profile />} />}
             />
             <Route
               path="/board"

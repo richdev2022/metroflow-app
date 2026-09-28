@@ -359,6 +359,7 @@ export interface PayrollDirectoryEmployee {
   verified_at?: string | null;
   verification_error?: string | null;
   avatar_url?: string | null;
+  contract_start_date?: string | null;
   created_at?: string;
 }
 
@@ -771,6 +772,8 @@ export interface BusinessProfile {
   currency: string;
   /** IANA timezone used to render dates/times across the app (default: UTC) */
   timezone?: string;
+  /** Clock format used to render times across the app (default: "24h") */
+  time_format?: "12h" | "24h";
 }
 
 export interface UpdateBusinessProfileInput {
@@ -779,6 +782,7 @@ export interface UpdateBusinessProfileInput {
   logo_url?: string;
   currency?: "NGN" | "USD";
   timezone?: string;
+  time_format?: "12h" | "24h";
 }
 
 // 2. Contact Information Updates
