@@ -215,3 +215,27 @@
     animation: none;
   }
 }
+
+/* Ask MetricAi floating widget — slide-up + fade panel entrance */
+@keyframes ask-widget-in {
+  from {
+    opacity: 0;
+    transform: translateY(14px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.ask-widget-in {
+  animation: ask-widget-in 0.22s cubic-bezier(0.32, 0.72, 0, 1);
+  transform-origin: bottom right;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ask-widget-in {
+    animation: none;
+  }
+}

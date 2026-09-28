@@ -9,8 +9,9 @@ import type { GifObject } from "@shared/api";
  * composer.
  *
  *  - Emoji    : categorized grid; clicking sends the emoji instantly.
- *  - Stickers : curated "big emoji" stickers; clicking sends a
- *               messageType='sticker' message (rendered ~96px, bubble-less).
+ *  - Stickers : ~200 curated "big emoji" stickers across 10 categories
+ *               (chip row); clicking sends a messageType='sticker' message
+ *               (rendered ~96px, bubble-less).
  *  - GIF      : Tenor proxy (GET /chat/gifs). Only shown when the backend
  *               reports configured=true. Trending by default + debounced
  *               search; clicking sends a gif attachment message.
@@ -209,32 +210,123 @@ function EmojiGrid({ onSelect }: { onSelect: (emoji: string) => void }) {
 }
 
 // ==========================================
-// Stickers tab — big-emoji stickers
+// Stickers tab — ~200 curated big-emoji stickers in 10 categories
 // ==========================================
 
-const STICKER_SET = [
-  "😂","🥹","😍","🤯","🥳","😎","🤩","😭","🤬","😱","🤗","🤫","🤔","🫡","🫠","😤",
-  "🤪","🥶","🥵","😈","👻","🤖","👽","🎃","🐝","🦄","🐙","🐸","🐬","🦖","🦋","🍀",
-  "🌵","🌈","⚡","🔥","💥","💎","🎉","🎊","🎈","🎁","🏆","🥇","🎯","🎸","🚀","🛸",
-  "💯","👀","💀","🤡","💔","💖","🙏","👏","💪","🫶","🤙","🖖","🍕","🍔","🍩","☕",
-  "🍺","🍰","🍉","⚽","🏀","🎮","🎲","🎤","🎧","📸","💡","🌙","☀️","⭐","🐱","🐶",
+const STICKER_CATEGORIES: { name: string; emojis: string[] }[] = [
+  {
+    name: "Happy",
+    emojis: [
+      "😄","😁","😆","🤣","😂","🙂","😊","😇","🥰","😍","🤩","😘","😋","🤗","🥳","😎",
+      "🤪","😌","🤠","🫠",
+    ],
+  },
+  {
+    name: "Love",
+    emojis: [
+      "🥰","😍","😘","😚","💕","💞","💓","💗","💖","💘","💝","❤️","🧡","💛","💚","💙",
+      "💜","🖤","🤍","🫶",
+    ],
+  },
+  {
+    name: "Reactions",
+    emojis: [
+      "👍","👎","👏","🙌","🤝","🫡","🤔","🤨","😮","🫢","🤯","😱","🤭","🤫","🙄","😴",
+      "🤦","🤷","💀","👀",
+    ],
+  },
+  {
+    name: "Sad",
+    emojis: [
+      "🙁","☹️","😟","🥺","😢","😭","😪","😞","😔","😕","😖","😣","😫","😩","🥲","😧",
+      "😨","😰","😥","😿",
+    ],
+  },
+  {
+    name: "Angry",
+    emojis: ["😠","😡","🤬","😤","😾","😒","💢","😑","🪓","💥","🙅","⛔"],
+  },
+  {
+    name: "Celebrate",
+    emojis: [
+      "🎉","🎊","🎈","🎁","🎀","🥳","🎂","🍰","🏆","🥇","🥈","🥉","🎯","🪅","🪩","🎆",
+      "🎇","🧨","✨","🌟","💫","🥂","🍾","🕺","💃",
+    ],
+  },
+  {
+    name: "Animals",
+    emojis: [
+      "🐶","🐱","🐭","🐹","🐰","🦊","🐻","🐼","🐨","🐯","🦁","🐮","🐷","🐸","🐵","🙈",
+      "🐔","🐧","🦄","🐝","🦋","🐢","🐙","🐬",
+    ],
+  },
+  {
+    name: "Food",
+    emojis: [
+      "🍕","🍔","🍟","🌭","🌮","🌯","🍜","🍣","🍩","🍪","🧁","🍫","🍭","🍎","🍌","🍉",
+      "🍇","🍓","🥑","🍞","🧀","☕","🍺","🍿",
+    ],
+  },
+  {
+    name: "Weather",
+    emojis: [
+      "☀️","⛅","☁️","🌦️","🌧️","⛈️","🌩️","❄️","⛄","🌪️","🌈","☔","🌫️","💨","🌡️","⚡",
+      "🔥","💧","🌊","🌙",
+    ],
+  },
+  {
+    name: "Work",
+    emojis: [
+      "💼","💻","🖥️","⌨️","🖱️","📝","📎","📌","📅","📊","📈","📉","🧾","💰","💵","📞",
+      "✉️","🗂️","🖊️","📋",
+    ],
+  },
 ];
 
 function StickerGrid({ onSelect }: { onSelect: (emoji: string) => void }) {
+  const [category, setCategory] = useState(STICKER_CATEGORIES[0].name);
+  const active = STICKER_CATEGORIES.find((c) => c.name === category) ?? STICKER_CATEGORIES[0];
+
   return (
-    <div className="max-h-[320px] overflow-y-auto p-2 chat-panel-scroll">
-      <div className="grid grid-cols-4 gap-1">
-        {STICKER_SET.map((emoji, idx) => (
+    <div className="flex max-h-[320px] flex-col">
+      {/* Horizontal category chips (scroll sideways, never wrap) */}
+      <div
+        role="tablist"
+        aria-label="Sticker categories"
+        className="flex gap-1 overflow-x-auto border-b border-border/50 px-2 py-1.5 chat-panel-scroll"
+      >
+        {STICKER_CATEGORIES.map((c) => (
           <button
-            key={`sticker-${idx}-${emoji}`}
+            key={c.name}
             type="button"
-            onClick={() => onSelect(emoji)}
-            title={`Send ${emoji} sticker`}
-            className="flex h-[74px] items-center justify-center rounded-xl text-[44px] leading-none transition-transform hover:scale-105 hover:bg-accent/60 active:scale-95"
+            role="tab"
+            aria-selected={category === c.name}
+            onClick={() => setCategory(c.name)}
+            className={cn(
+              "shrink-0 rounded-full px-2.5 py-1 text-[11px] font-medium transition-colors",
+              category === c.name
+                ? "bg-primary/15 text-primary"
+                : "bg-muted/60 text-muted-foreground hover:bg-muted hover:text-foreground"
+            )}
           >
-            {emoji}
+            {c.name}
           </button>
         ))}
+      </div>
+      <div className="flex-1 overflow-y-auto px-2 pb-2 chat-panel-scroll">
+        <div className="grid grid-cols-4 gap-1">
+          {active.emojis.map((emoji, idx) => (
+            <button
+              key={`${active.name}-${idx}-${emoji}`}
+              type="button"
+              onClick={() => onSelect(emoji)}
+              title={`Send ${emoji} sticker`}
+              className="flex h-[74px] items-center justify-center rounded-xl text-[44px] leading-none transition-transform hover:scale-105 hover:bg-accent/60 active:scale-95"
+            >
+              {emoji}
+            </button>
+          ))}
+        </div>
       </div>
     </div>
   );
