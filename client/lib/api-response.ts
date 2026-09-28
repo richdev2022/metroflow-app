@@ -9,24 +9,45 @@ type ApiEnvelope<T = unknown> = {
 
 export function getApiMessage(error: unknown, fallback: string) {
   if (error instanceof AxiosError) {
+    const status = error.response?.status;
     const data = error.response?.data;
 
     if (typeof data === "string" && data.trim()) {
+      // A stale/old backend or proxy answers with an HTML error page
+      // (e.g. "Cannot POST /api/...") — never show raw markup to users.
+      if (/<\/?[a-z][\s\S]*>/i.test(data) || /^Cannot (GET|POST|PUT|DELETE|PATCH) /i.test(data.trim())) {
+        return friendlyHttpMessage(status, fallback);
+      }
       return data;
     }
 
     if (data && typeof data === "object") {
       const envelope = data as ApiEnvelope;
-      return envelope.error || envelope.message || fallback;
+      return envelope.error || envelope.message || friendlyHttpMessage(status, fallback);
     }
 
-    return error.message || fallback;
+    return friendlyHttpMessage(status, error.message || fallback);
   }
 
   if (error instanceof Error) {
     return error.message || fallback;
   }
 
+  return fallback;
+}
+
+/**
+ * Human-friendly copy for bare HTTP statuses. 404 on a NEW endpoint almost
+ * always means the API server hasn't been updated yet (deploy lag), which
+ * previously surfaced as a confusing raw "Cannot POST ..." message.
+ */
+function friendlyHttpMessage(status: number | undefined, fallback: string) {
+  if (status === 404) {
+    return "This feature isn't available on our server yet — we're rolling it out. Please try again shortly.";
+  }
+  if (status === 502 || status === 503 || status === 504) {
+    return "Our service is briefly unavailable. Please try again in a moment.";
+  }
   return fallback;
 }
 

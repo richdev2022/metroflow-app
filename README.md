@@ -135,3 +135,9 @@ Metricorex/
 3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
 4. Push to the branch (`git push origin feature/AmazingFeature`)
 5. Open a Pull Request
+
+## Branching
+
+- `main` — production (deployed via Netlify).
+- `develop` — integration branch. Changes land here first and are verified, then a PR `develop → main` is merged for release.
+- Hotfixes may branch from `main` and be merged back into `develop` to keep them in sync.
