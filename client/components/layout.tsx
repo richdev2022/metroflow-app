@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, User, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic, Phone } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic, Phone } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
@@ -51,6 +51,9 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   const location = useLocation();
   const navigate = useNavigate();
   const userName = localStorage.getItem("userName") || "User";
+  const userAvatar = (() => {
+    try { return localStorage.getItem("userAvatar") || ""; } catch { return ""; }
+  })();
   const userId = localStorage.getItem("userId") || "";
   const businessId = localStorage.getItem("businessId") || "";
   const { theme, setTheme } = useTheme();
@@ -653,6 +656,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/profile")} tooltip="Profile">
+                <Link to="/profile">
+                  <UserCircle2 />
+                  <span>Profile</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/settings")} tooltip="Settings">
                 <Link to="/settings">
                   <Settings />
@@ -672,9 +683,18 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </SidebarMenuItem>
             <SidebarSeparator />
             <SidebarMenuItem>
-              <SidebarMenuButton tooltip={userName}>
-                <User />
-                <span>{userName}</span>
+              {/* Avatar menu entry -> Profile page */}
+              <SidebarMenuButton asChild tooltip="View profile">
+                <Link to="/profile" className="flex items-center gap-2 min-w-0">
+                  <span className="h-6 w-6 rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shrink-0 text-primary-foreground text-[10px] font-bold">
+                    {userAvatar ? (
+                      <img src={userAvatar} alt="" className="h-full w-full object-cover" />
+                    ) : (
+                      userName.substring(0, 2).toUpperCase()
+                    )}
+                  </span>
+                  <span className="truncate">{userName}</span>
+                </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
@@ -694,6 +714,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <div className="h-4 w-[1px] bg-border mx-2 hidden md:block" />
           </div>
           <div className="flex items-center gap-2">
+            {/* Avatar menu -> Profile page (all breakpoints, incl. mobile) */}
+            <Link
+              to="/profile"
+              title="View profile"
+              aria-label="View profile"
+              className="flex h-9 w-9 items-center justify-center rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 text-white text-xs font-bold shadow-sm ring-1 ring-border transition-transform hover:scale-105"
+            >
+              {userAvatar ? (
+                <img src={userAvatar} alt={`${userName} avatar`} className="h-full w-full object-cover" />
+              ) : (
+                userName.substring(0, 2).toUpperCase()
+              )}
+            </Link>
             <NotificationBell />
           </div>
         </header>

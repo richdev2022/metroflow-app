@@ -16,8 +16,9 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Switch } from "@/components/ui/switch";
 import { IndustryCombobox } from "@/components/industry-combobox";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
-import { setTimezone, formatDateTime } from "@/lib/datetime";
+import { setTimezone, setTimeFormat, formatDateTime, formatTime } from "@/lib/datetime";
 import { useCountdown } from "@/hooks/useCountdown";
+import { cn } from "@/lib/utils";
 
 export default function Settings() {
   const [profile, setProfile] = useState<BusinessProfile | null>(null);
@@ -196,6 +197,34 @@ export default function Settings() {
     setProfile(prev => (prev ? { ...prev, timezone: tz } : prev));
   };
 
+  // Time format (12h/24h) is applied instantly app-wide like the timezone and
+  // persisted through the same endpoint (PUT /settings { time_format }).
+  const [timeFormatSaving, setTimeFormatSaving] = useState(false);
+  const handleTimeFormatChange = async (fmt: "12h" | "24h") => {
+    if (profile?.time_format === fmt || timeFormatSaving) return;
+    const previous = profile;
+    setTimeFormat(fmt);
+    setProfile(prev => (prev ? { ...prev, time_format: fmt } : prev));
+    setTimeFormatSaving(true);
+    try {
+      const response = await api.put("/settings", { ...(previous || {}), time_format: fmt });
+      assertApiSuccess(response.data, "Failed to update time format");
+      toast({
+        title: "Time format updated",
+        description: fmt === "12h"
+          ? "Times across the app now use the 12-hour clock (3:45 PM)."
+          : "Times across the app now use the 24-hour clock (15:45).",
+      });
+    } catch (error) {
+      // Roll back the optimistic change on failure.
+      setTimeFormat(previous?.time_format === "12h" ? "12h" : "24h");
+      setProfile(previous);
+      toast({ title: "Error", description: getApiMessage(error, "Failed to update time format"), variant: "destructive" });
+    } finally {
+      setTimeFormatSaving(false);
+    }
+  };
+
   const handleUpdatePreference = async (val: string) => {
     try {
       const response = await api.put("/settings/otp-preference", { preference: val });
@@ -372,6 +401,45 @@ export default function Settings() {
                       </p>
                       <p className="text-muted-foreground">
                         Dates and times across the app will use this timezone.
+                      </p>
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="time-format">Time format</Label>
+                    <div
+                      role="radiogroup"
+                      aria-label="Time format"
+                      className="inline-flex w-fit items-center rounded-xl border border-border bg-muted/40 p-1"
+                    >
+                      {(["24h", "12h"] as const).map((fmt) => {
+                        const active = (profile?.time_format === "12h" ? "12h" : "24h") === fmt;
+                        return (
+                          <button
+                            key={fmt}
+                            id={fmt === "12h" ? "time-format-12h" : "time-format-24h"}
+                            type="button"
+                            role="radio"
+                            aria-checked={active}
+                            disabled={timeFormatSaving}
+                            onClick={() => handleTimeFormatChange(fmt)}
+                            className={cn(
+                              "min-w-[92px] rounded-lg px-4 py-1.5 text-sm font-medium transition-all",
+                              active
+                                ? "bg-background text-foreground shadow-sm ring-1 ring-border"
+                                : "text-muted-foreground hover:text-foreground"
+                            )}
+                          >
+                            {fmt === "12h" ? "12-hour" : "24-hour"}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    <div className="rounded-md border bg-muted/40 px-3 py-2 text-xs space-y-0.5">
+                      <p className="font-medium text-foreground">
+                        Preview: {formatTime(new Date())}
+                      </p>
+                      <p className="text-muted-foreground">
+                        Times across the app (meetings, tasks, chat) will use this clock format.
                       </p>
                     </div>
                   </div>

@@ -36,13 +36,20 @@ export interface ParsedEmployeeRow {
   row: number;
   name: string;
   email: string;
-  role: string;
+  jobTitle: string;
+  department: string;
+  phoneNumber: string;
   salary: string;
-  salaryCurrency: string;
+  currency: string;
   bankCode: string;
   bankAccountNumber: string;
   accountName: string;
-  contractStartDate: string;
+  bankName: string;
+  swiftCode: string;
+  routingNumber: string;
+  beneficiaryAddress: string;
+  beneficiaryCity: string;
+  beneficiaryCountry: string;
   errors: string[];
 }
 
@@ -80,27 +87,28 @@ const normalizeKey = (key: string) => String(key).toLowerCase().replace(/[^a-z0-
 const COLUMN_ALIASES: Record<string, string[]> = {
   name: ["name", "employeename", "fullname", "employee", "staffname"],
   email: ["email", "employeeemail", "emailaddress", "officialemail", "workemail"],
-  role: ["role", "jobtitle", "position", "designation", "department"],
+  jobTitle: ["jobtitle", "jobrole", "role", "position", "designation", "title"],
+  department: ["department", "dept", "team", "unit"],
+  phoneNumber: ["phonenumber", "phone", "mobile", "mobilenumber", "tel", "telephone"],
   salary: ["salary", "salaryamount", "netsalary", "basicsalary", "monthlysalary", "pay"],
-  salaryCurrency: ["salarycurrency", "currency", "currencysymbol", "currencycode"],
-  bankCode: ["bankcode", "bank", "bankname", "bankinstitution"],
+  currency: ["currency", "salarycurrency", "currencysymbol", "currencycode", "paycurrency"],
+  bankCode: ["bankcode", "bank", "bankinstitution"],
   bankAccountNumber: [
-    "bankaccountnumber",
     "accountnumber",
+    "bankaccountnumber",
     "accountno",
     "bankaccount",
     "account",
     "acctnumber",
+    "iban",
   ],
   accountName: ["accountname", "accounttitle", "acctname", "bankaccountname"],
-  contractStartDate: [
-    "contractstartdate",
-    "contractstartdateyyyymmdd",
-    "contractstart",
-    "startdate",
-    "employmentstartdate",
-    "commencementdate",
-  ],
+  bankName: ["bankname", "bankinstitution", "bank", "beneficiarybank"],
+  swiftCode: ["swiftcode", "swift", "bic", "swiftbic"],
+  routingNumber: ["routingnumber", "routing", "aba", "abanumber", "achroutingnumber"],
+  beneficiaryAddress: ["beneficiaryaddress", "address", "streetaddress", "beneficiarystreet"],
+  beneficiaryCity: ["beneficiarycity", "city", "town"],
+  beneficiaryCountry: ["beneficiarycountry", "country", "countrycode"],
 };
 
 function pickField(row: Record<string, any>, field: string): string {
@@ -145,6 +153,19 @@ function validateRow(row: ParsedEmployeeRow, seenEmails: Set<string>): string[] 
     const numeric = Number(row.salary.replace(/,/g, ""));
     if (isNaN(numeric) || numeric < 0) errors.push("Salary must be a number");
   }
+  if (row.currency) {
+    const c = row.currency.toUpperCase();
+    if (c !== "NGN" && c !== "USD") {
+      errors.push("Currency must be NGN or USD");
+    }
+  }
+  // NGN accounts are 10-digit Nigerian account numbers
+  if (row.bankAccountNumber && (!row.currency || row.currency.toUpperCase() === "NGN")) {
+    const acct = row.bankAccountNumber.replace(/[\s-]/g, "");
+    if (/^\d+$/.test(acct) && acct.length !== 10) {
+      errors.push("NGN account number must be 10 digits");
+    }
+  }
   return errors;
 }
 
@@ -172,18 +193,29 @@ function parseWorkbook(file: File): Promise<ParsedEmployeeRow[]> {
               row: index + 2, // +2 = 1-indexed rows after the header row
               name: formatValue(pickField(raw, "name")),
               email: formatValue(pickField(raw, "email")),
-              role: formatValue(pickField(raw, "role")),
+              jobTitle: formatValue(pickField(raw, "jobTitle")),
+              department: formatValue(pickField(raw, "department")),
+              phoneNumber: formatValue(pickField(raw, "phoneNumber")),
               salary: salary ? salary.replace(/,/g, "") : "",
-              salaryCurrency: formatValue(pickField(raw, "salaryCurrency")),
+              currency: formatValue(pickField(raw, "currency")).toUpperCase(),
               bankCode: formatValue(pickField(raw, "bankCode")),
               bankAccountNumber: formatValue(pickField(raw, "bankAccountNumber")),
               accountName: formatValue(pickField(raw, "accountName")),
-              contractStartDate: formatValue(pickField(raw, "contractStartDate")),
+              bankName: formatValue(pickField(raw, "bankName")),
+              swiftCode: formatValue(pickField(raw, "swiftCode")),
+              routingNumber: formatValue(pickField(raw, "routingNumber")),
+              beneficiaryAddress: formatValue(pickField(raw, "beneficiaryAddress")),
+              beneficiaryCity: formatValue(pickField(raw, "beneficiaryCity")),
+              beneficiaryCountry: formatValue(pickField(raw, "beneficiaryCountry")),
               errors: [],
             };
             return parsed;
           })
-          .filter((r) => Object.values(r).some((v) => typeof v === "string" && v !== ""));
+          .filter((r) =>
+            Object.entries(r)
+              .filter(([key]) => key !== "row" && key !== "errors")
+              .some(([, v]) => typeof v === "string" && v !== "")
+          );
 
         // Second pass so duplicate-email detection sees all rows
         for (const row of rows) {
@@ -210,39 +242,61 @@ function parseWorkbook(file: File): Promise<ParsedEmployeeRow[]> {
 const TEMPLATE_HEADERS = [
   "Name",
   "Email",
-  "Role",
+  "Phone Number",
+  "Department",
+  "Job Title",
   "Salary",
-  "Salary Currency",
+  "Currency",
   "Bank Code",
-  "Bank Account Number",
+  "Account Number",
   "Account Name",
-  "Contract Start Date (YYYY-MM-DD)",
+  "Bank Name",
+  "SWIFT Code",
+  "Routing Number",
+  "Beneficiary Address",
+  "Beneficiary City",
+  "Beneficiary Country",
 ];
 
 export function downloadEmployeeTemplate() {
-  const example = [
-    "Jane Doe",
-    "jane.doe@example.com",
-    "Manager",
+  const ngnExample = [
+    "Ada Obi",
+    "ada.obi@example.com",
+    "+2348012345678",
+    "Engineering",
+    "Backend Engineer",
     350000,
     "NGN",
     "044",
     "0123456789",
-    "Jane Doe",
-    "2025-01-01",
+    "Ada Obi",
+    "",
+    "",
+    "",
+    "",
+    "",
+    "",
   ];
-  const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS, example]);
-  ws["!cols"] = [
-    { wch: 20 },
-    { wch: 28 },
-    { wch: 14 },
-    { wch: 12 },
-    { wch: 16 },
-    { wch: 10 },
-    { wch: 22 },
-    { wch: 20 },
-    { wch: 30 },
+  const usdExample = [
+    "John Smith",
+    "john.smith@example.com",
+    "+14155550123",
+    "Design",
+    "Product Designer",
+    2500,
+    "USD",
+    "",
+    "10900000001234567890",
+    "John Smith",
+    "JPMorgan Chase",
+    "CHASUS33",
+    "021000021",
+    "100 Main Street, Apt 4",
+    "New York",
+    "US",
   ];
+  const ws = XLSX.utils.aoa_to_sheet([TEMPLATE_HEADERS, ngnExample, usdExample]);
+  ws["!cols"] = TEMPLATE_HEADERS.map((h) => ({ wch: Math.max(12, Math.min(24, h.length + 4)) }));
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, "Employees");
   XLSX.writeFile(wb, "payroll_employees_template.xlsx");
@@ -314,17 +368,24 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
         const payload: Record<string, any> = {
           name: row.name,
           email: row.email,
+          currency: row.currency || "NGN",
         };
-        if (row.role) payload.role = row.role;
+        if (row.jobTitle) payload.job_title = row.jobTitle;
+        if (row.department) payload.department = row.department;
+        if (row.phoneNumber) payload.phone_number = row.phoneNumber;
         if (row.salary !== "") {
           const numeric = Number(row.salary);
           if (!isNaN(numeric)) payload.salary = numeric;
         }
-        if (row.salaryCurrency) payload.salaryCurrency = row.salaryCurrency;
-        if (row.bankCode) payload.bankCode = row.bankCode;
-        if (row.bankAccountNumber) payload.bankAccountNumber = row.bankAccountNumber;
-        if (row.accountName) payload.accountName = row.accountName;
-        if (row.contractStartDate) payload.contractStartDate = row.contractStartDate;
+        if (row.bankCode) payload.bank_code = row.bankCode;
+        if (row.bankAccountNumber) payload.account_number = row.bankAccountNumber;
+        if (row.accountName) payload.account_name = row.accountName;
+        if (row.bankName) payload.bank_name = row.bankName;
+        if (row.swiftCode) payload.swift_code = row.swiftCode;
+        if (row.routingNumber) payload.routing_number = row.routingNumber;
+        if (row.beneficiaryAddress) payload.beneficiary_address = row.beneficiaryAddress;
+        if (row.beneficiaryCity) payload.beneficiary_city = row.beneficiaryCity;
+        if (row.beneficiaryCountry) payload.beneficiary_country = row.beneficiaryCountry;
         return payload;
       });
 
@@ -377,8 +438,11 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
           <Info className="h-4 w-4 text-primary" />
           <AlertDescription className="text-sm">
             <span className="font-medium">How it works:</span> download the template, fill one
-            row per employee (Name and Email are required, Salary must be a number), then upload
-            it below. Existing employees (matched by email) are updated instead of duplicated.
+            row per employee (Name, Email and Currency are required), then upload it below. Use
+            <span className="font-medium"> NGN</span> rows for Nigerian bank fields (Bank Code,
+            Account Number) and <span className="font-medium">USD</span> rows for international
+            fields (Bank Name, SWIFT, Routing Number, Beneficiary address). Existing employees
+            (matched by email) are updated instead of duplicated.
           </AlertDescription>
         </Alert>
 
@@ -562,8 +626,9 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
                         <th className="w-10 px-3 py-2 font-medium">#</th>
                         <th className="px-3 py-2 font-medium">Name</th>
                         <th className="px-3 py-2 font-medium">Email</th>
-                        <th className="px-3 py-2 font-medium">Role</th>
+                        <th className="px-3 py-2 font-medium">Job title</th>
                         <th className="px-3 py-2 font-medium">Salary</th>
+                        <th className="px-3 py-2 font-medium">Currency</th>
                         <th className="px-3 py-2 font-medium">Status</th>
                       </tr>
                     </thead>
@@ -579,10 +644,24 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
                           <td className="px-3 py-2 font-mono text-xs text-muted-foreground">
                             {row.row}
                           </td>
-                          <td className="max-w-[120px] truncate px-3 py-2">{row.name || "—"}</td>
-                          <td className="max-w-[160px] truncate px-3 py-2">{row.email || "—"}</td>
-                          <td className="px-3 py-2 text-muted-foreground">{row.role || "—"}</td>
+                          <td className="max-w-[110px] truncate px-3 py-2">{row.name || "—"}</td>
+                          <td className="max-w-[150px] truncate px-3 py-2">{row.email || "—"}</td>
+                          <td className="max-w-[110px] truncate px-3 py-2 text-muted-foreground">
+                            {row.jobTitle || "—"}
+                          </td>
                           <td className="px-3 py-2 text-muted-foreground">{row.salary || "—"}</td>
+                          <td className="px-3 py-2">
+                            {row.currency ? (
+                              <Badge
+                                variant="outline"
+                                className="px-1.5 py-0 text-[10px] font-semibold"
+                              >
+                                {row.currency}
+                              </Badge>
+                            ) : (
+                              <span className="text-xs text-muted-foreground">NGN</span>
+                            )}
+                          </td>
                           <td className="px-3 py-2">
                             {row.errors.length === 0 ? (
                               <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400">

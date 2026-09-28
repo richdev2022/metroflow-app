@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -77,8 +77,10 @@ import {
 import { useSocket } from "@/hooks/useSocket";
 import { AudioUtils } from "@/lib/audio-utils";
 import { cn } from "@/lib/utils";
+import { formatTime as formatTimePref } from "@/lib/datetime";
 import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
+import { ChatProfileModal, ChatProfilePerson } from "@/components/chat/ChatProfileModal";
 import { resolveMediaUrl } from "@/lib/media-url";
 
 // ==========================================
@@ -123,6 +125,11 @@ type ConversationView = Conversation & {
   last_message_at?: string;
   lastmessageat?: string;
   unreadCount?: number;
+  /** Backend display helpers (GET /chat/conversations): direct -> other user's
+   *  name/avatar; group -> group name. Used for list rows + chat header. */
+  displayName?: string | null;
+  displayAvatarUrl?: string | null;
+  isGroup?: boolean;
 };
 
 // ==========================================
@@ -154,12 +161,26 @@ const getDirectParticipant = (conv: ConversationView) => {
 };
 
 const getConversationName = (members: TeamMember[], conv: ConversationView) => {
+  // Backend-provided display name wins: direct chats already resolve to the
+  // OTHER participant's name, groups to the group name.
+  const backendName = conv.displayName?.trim();
+  if (backendName) return backendName;
   if (conv.name?.trim()) return conv.name;
   if (conv.type === "direct") {
     const p = getDirectParticipant(conv);
     return getParticipantName(members, getParticipantUserId(p), p);
   }
   return "Group Chat";
+};
+
+/** Best avatar for a conversation row/header: backend display avatar (direct
+ *  chats) resolved to an absolute URL, else the other participant's avatar. */
+const getConversationAvatarUrl = (conv: ConversationView) => {
+  const raw =
+    conv.displayAvatarUrl ||
+    (conv.type === "direct" ? getDirectParticipant(conv)?.avatarUrl : null) ||
+    "";
+  return resolveMediaUrl(raw);
 };
 
 const getInitials = (name: string) => name.substring(0, 2).toUpperCase();
@@ -258,8 +279,9 @@ const isAudioAttachment = (m: ChatMessage) => {
   return /\.(webm|mp3|m4a|aac|ogg|opus|wav)(\?|#|$)/i.test(url);
 };
 
-const formatTime = (dateStr: string) =>
-  new Date(dateStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+// Message timestamps honour the app-wide 12h/24h preference
+// (Settings -> Time format, persisted via PUT /settings { time_format }).
+const formatTime = (dateStr: string) => formatTimePref(dateStr);
 
 // Compact list timestamp: 4:32 PM / Yesterday / Tue / Mar 4
 const formatListTime = (dateStr: string) => {
@@ -420,6 +442,8 @@ const MessageBubble = ({
   isGrouped,
   showSender,
   senderName,
+  senderAvatarUrl,
+  onSenderClick,
   onRetry,
 }: {
   message: ChatMessage;
@@ -427,6 +451,9 @@ const MessageBubble = ({
   isGrouped: boolean;
   showSender: boolean;
   senderName: string;
+  senderAvatarUrl?: string;
+  /** Opens the sender's profile modal (chat header/bubble click). */
+  onSenderClick?: () => void;
   members: TeamMember[];
   onRetry?: () => void;
 }) => {
@@ -446,11 +473,23 @@ const MessageBubble = ({
       {!isOwn && (
         <div className="w-7 shrink-0 flex items-end">
           {!isGrouped && (
-            <Avatar className="h-7 w-7">
-              <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-[10px]", getAvatarGradient(senderName || "?"))}>
-                {getInitials(senderName || "?")}
-              </AvatarFallback>
-            </Avatar>
+            <button
+              type="button"
+              onClick={onSenderClick}
+              disabled={!onSenderClick}
+              aria-label={`View ${senderName || "sender"} profile`}
+              className={cn(
+                "rounded-full transition-all",
+                onSenderClick && "cursor-pointer hover:ring-2 hover:ring-blue-500/40 active:scale-95"
+              )}
+            >
+              <Avatar className="h-7 w-7">
+                {senderAvatarUrl && <AvatarImage src={senderAvatarUrl} alt={senderName || "Sender"} />}
+                <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-[10px]", getAvatarGradient(senderName || "?"))}>
+                  {getInitials(senderName || "?")}
+                </AvatarFallback>
+              </Avatar>
+            </button>
           )}
         </div>
       )}
@@ -470,7 +509,17 @@ const MessageBubble = ({
         )}
       >
         {showSender && !isOwn && (
-          <p className="text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400">{senderName}</p>
+          <button
+            type="button"
+            onClick={onSenderClick}
+            disabled={!onSenderClick}
+            className={cn(
+              "block max-w-full truncate text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400 text-left",
+              onSenderClick && "cursor-pointer hover:underline underline-offset-2"
+            )}
+          >
+            {senderName}
+          </button>
         )}
 
         {isAudio && (
@@ -552,6 +601,7 @@ const ConversationListItem = ({
   const name = getConversationName(members, conversation);
   const lastMsg = getLastMsg(conversation);
   const lastTime = getLastMsgTime(conversation);
+  const avatarUrl = getConversationAvatarUrl(conversation);
   const directParticipant = getDirectParticipant(conversation);
   const presenceUid = getParticipantUserId(directParticipant);
   const statusInfo = getParticipantStatusLine(directParticipant, presence[presenceUid]);
@@ -590,6 +640,7 @@ const ConversationListItem = ({
       <div className="flex items-center gap-3">
         <div className="relative shrink-0">
           <Avatar className="h-12 w-12">
+            {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
             <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-sm shadow-sm", getAvatarGradient(name))}>
               {getInitials(name)}
             </AvatarFallback>
@@ -742,7 +793,13 @@ export default function Chat() {
   const [isRecording, setIsRecording] = useState(false);
   const [voiceUploading, setVoiceUploading] = useState(false);
 
+  // Profile view modal (header avatar/name or message bubble sender click)
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
+  const [profilePerson, setProfilePerson] = useState<ChatProfilePerson | null>(null);
+  const [profileIsGroup, setProfileIsGroup] = useState(false);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const composerRef = useRef<HTMLTextAreaElement>(null);
   const activeCallRingbackRef = useRef<{ callId: string; stop: () => void } | null>(null);
   activeCallRingbackRef.current = activeCallRingback;
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -1278,6 +1335,77 @@ export default function Chat() {
   const hasInputContent = !!newMessage.trim();
 
   // ==========================================
+  // Profile modal helpers
+  // ==========================================
+  const focusComposer = useCallback(() => {
+    // Wait for the modal to unmount so focus is not stolen back.
+    window.setTimeout(() => composerRef.current?.focus(), 80);
+  }, []);
+
+  /** Participant lookup table for the open conversation (avatar/email/...). */
+  const participantById = useMemo(() => {
+    const map = new Map<string, ChatParticipant>();
+    ((selectedConversation as ConversationView | null)?.participants as ChatParticipant[] | undefined)?.forEach((p) => {
+      const uid = getParticipantUserId(p);
+      if (uid) map.set(uid, p);
+    });
+    return map;
+  }, [selectedConversation]);
+
+  const buildPerson = useCallback(
+    (userId: string, fallbackName: string): ChatProfilePerson => {
+      const p = participantById.get(userId);
+      const member = teamMembers.find((m) => m.id === userId);
+      return {
+        userId,
+        name: getParticipantName(teamMembers, userId, p) || fallbackName,
+        email: p?.email ?? member?.email ?? null,
+        avatarUrl: p?.avatarUrl ?? null,
+        role: member?.role ?? null,
+        lastSeen: getParticipantLastSeen(p),
+      };
+    },
+    [participantById, teamMembers]
+  );
+
+  const openConversationProfile = useCallback(() => {
+    const conv = selectedConversation as ConversationView | null;
+    if (!conv) return;
+    setProfileIsGroup(conv.type === "group");
+    if (conv.type !== "group") {
+      const p = getDirectParticipant(conv);
+      const uid = getParticipantUserId(p);
+      const person = buildPerson(uid, getParticipantName(teamMembers, uid, p));
+      setProfilePerson(person);
+    } else {
+      setProfilePerson(null);
+    }
+    setProfileModalOpen(true);
+  }, [selectedConversation, buildPerson, teamMembers]);
+
+  const openMessageSenderProfile = useCallback(
+    (msg: ChatMessage) => {
+      const senderId = getMsgSenderId(msg);
+      if (!senderId) return;
+      setProfileIsGroup(false);
+      setProfilePerson(buildPerson(senderId, getMsgSenderName(teamMembers, msg)));
+      setProfileModalOpen(true);
+    },
+    [buildPerson, teamMembers]
+  );
+
+  const getSenderAvatarUrl = useCallback(
+    (msg: ChatMessage) => resolveMediaUrl(participantById.get(getMsgSenderId(msg))?.avatarUrl || ""),
+    [participantById]
+  );
+
+  const profilePresenceLabel = useMemo(() => {
+    if (profileIsGroup || !profilePerson) return null;
+    const p = participantById.get(profilePerson.userId);
+    return getParticipantStatusLine(p, userPresence[profilePerson.userId]).line;
+  }, [profileIsGroup, profilePerson, participantById, userPresence]);
+
+  // ==========================================
   // Render
   // ==========================================
   return (
@@ -1421,6 +1549,7 @@ export default function Chat() {
                     {(() => {
                       const convView = selectedConversation as ConversationView;
                       const convName = getConversationName(teamMembers, convView);
+                      const avatarUrl = getConversationAvatarUrl(convView);
                       const directP = convView.type === "direct" ? getDirectParticipant(convView) : undefined;
                       const directPid = convView.type === "direct" ? getParticipantUserId(directP) : "";
                       const statusInfo = directP
@@ -1432,9 +1561,16 @@ export default function Chat() {
                           : "bg-gray-400"
                         : undefined;
                       return (
-                        <>
+                        <button
+                          type="button"
+                          onClick={openConversationProfile}
+                          aria-label="View profile"
+                          title="View profile"
+                          className="flex items-center gap-2.5 min-w-0 text-left rounded-xl px-1 py-0.5 -mx-1 transition-colors hover:bg-muted/60 focus-visible:ring-2 focus-visible:ring-blue-500/40"
+                        >
                           <div className="relative shrink-0">
                             <Avatar className="h-10 w-10">
+                              {avatarUrl && <AvatarImage src={avatarUrl} alt={convName} />}
                               <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-xs shadow-sm", getAvatarGradient(convName))}>
                                 {getInitials(convName)}
                               </AvatarFallback>
@@ -1451,7 +1587,7 @@ export default function Chat() {
                                 : `${convView.participants.length} members`}
                             </p>
                           </div>
-                        </>
+                        </button>
                       );
                     })()}
                   </div>
@@ -1484,7 +1620,9 @@ export default function Chat() {
                       </Button>
                     </DropdownMenuTrigger>
                     <DropdownMenuContent align="end">
-                      <DropdownMenuItem><Users className="h-4 w-4 mr-2" />View Members</DropdownMenuItem>
+                      <DropdownMenuItem onClick={openConversationProfile}>
+                        <Users className="h-4 w-4 mr-2" />View Members
+                      </DropdownMenuItem>
                       <DropdownMenuItem><Search className="h-4 w-4 mr-2" />Search in Chat</DropdownMenuItem>
                       <DropdownMenuSeparator />
                       <DropdownMenuItem className="text-red-600">Mute Conversation</DropdownMenuItem>
@@ -1524,6 +1662,8 @@ export default function Chat() {
                           isGrouped={!!item.isGrouped}
                           showSender={!!item.showSender}
                           senderName={item.senderName || ""}
+                          senderAvatarUrl={getSenderAvatarUrl(msg)}
+                          onSenderClick={() => openMessageSenderProfile(msg)}
                           members={teamMembers}
                           onRetry={msg.status === "failed" ? () => handleRetryMessage(msg) : undefined}
                         />
@@ -1549,6 +1689,7 @@ export default function Chat() {
                       <EmojiPicker onSelect={handleEmojiSelect} />
                       <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                         <Textarea
+                          ref={composerRef}
                           placeholder="Type a message..."
                           value={newMessage}
                           onChange={(e) => handleInputChange(e.target.value)}
@@ -1609,6 +1750,33 @@ export default function Chat() {
           </div>
         </div>
       </div>
+
+      {/* Profile view modal (direct partner / group + members) */}
+      <ChatProfileModal
+        open={profileModalOpen}
+        onOpenChange={setProfileModalOpen}
+        person={profilePerson}
+        isGroup={profileIsGroup}
+        groupName={
+          profileIsGroup
+            ? getConversationName(teamMembers, selectedConversation as ConversationView)
+            : null
+        }
+        groupAvatarUrl={
+          profileIsGroup
+            ? getConversationAvatarUrl(selectedConversation as ConversationView)
+            : null
+        }
+        members={
+          profileIsGroup
+            ? ((selectedConversation as ConversationView | null)?.participants as ChatParticipant[] | undefined)?.map((p) =>
+                buildPerson(getParticipantUserId(p), getParticipantName(teamMembers, getParticipantUserId(p), p))
+              )
+            : undefined
+        }
+        presenceLabel={profilePresenceLabel}
+        onMessage={focusComposer}
+      />
     </Layout>
   );
 }
