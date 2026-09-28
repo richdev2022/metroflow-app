@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Upload, Trash2, Check, AlertCircle, Download, X, Loader2, Edit, Users, MessageSquare, Send, Copy, Search, Smile, Link, Heart, ThumbsUp } from "lucide-react";
+import { Plus, Upload, Trash2, Check, AlertCircle, Download, X, Loader2, Edit, Users, MessageSquare, Send, Copy, Search, Smile, Link, Heart, ThumbsUp, ClipboardList } from "lucide-react";
 import EmojiPicker from 'emoji-picker-react';
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -58,6 +58,9 @@ import {
 import Layout from "@/components/layout";
 import { toast } from "@/hooks/use-toast";
 import * as XLSX from "xlsx";
+import { SectionHeader } from "@/components/dashboard/SectionHeader";
+import { TaskCardMobile, TaskTableRow } from "@/components/dashboard/TaskListViews";
+import { cn } from "@/lib/utils";
 
 export default function Tasks() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -233,6 +236,8 @@ export default function Tasks() {
   const [selectedEpicFilter, setSelectedEpicFilter] = useState<string>("all");
   const [selectedMemberFilter, setSelectedMemberFilter] = useState<string>("all");
   const [dateFilter, setDateFilter] = useState<{ start: string; end: string }>({ start: "", end: "" });
+  const [statusFilter, setStatusFilter] = useState<"all" | "mine" | "overdue" | "completed">("all");
+  const [showTitleErrors, setShowTitleErrors] = useState(false);
 
   const [epicsList, setEpicsList] = useState<Epic[]>([]);
 
@@ -311,6 +316,15 @@ export default function Tasks() {
   const handleAddTask = async () => {
     const tasksToCreate: CreateTaskInput[] = [];
 
+    // Inline validation feedback for empty titles
+    const missingTitle = taskList.some((task) => !task.title || !task.title.trim());
+    if (missingTitle) {
+      setShowTitleErrors(true);
+      setError("Please fill in a title for each task");
+      return;
+    }
+    setShowTitleErrors(false);
+
     for (const task of taskList) {
       if (!task.title) {
         setError("Please fill in title for each task");
@@ -378,6 +392,7 @@ export default function Tasks() {
         setImageUrls([]);
         setIsFormOpen(false);
         setError(null);
+        setShowTitleErrors(false);
       } else {
         setError(data.error || "Failed to create tasks");
       }
@@ -895,6 +910,17 @@ export default function Tasks() {
     setPendingPasteTaskIndex(0);
   };
 
+  const currentUserId = localStorage.getItem("userId") || "";
+
+  const statusCounts = React.useMemo(() => {
+    return {
+      all: tasks.length,
+      mine: tasks.filter((t) => t.assignedTo?.includes(currentUserId)).length,
+      overdue: tasks.filter((t) => t.isOverdue && t.status !== "completed").length,
+      completed: tasks.filter((t) => t.status === "completed").length,
+    };
+  }, [tasks, currentUserId]);
+
   const { paginatedTasks, filteredTotal, allEpics, filteredTasks } = React.useMemo(() => {
     // 1. Sort by createdAt to establish stable order
     const sortedAll = [...tasks].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());
@@ -921,7 +947,13 @@ export default function Tasks() {
       const matchesDate = (!dateFilter.start || new Date(task.startDate) >= new Date(dateFilter.start)) &&
                           (!dateFilter.end || new Date(task.endDate) <= new Date(dateFilter.end));
 
-      return matchesSearch && matchesId && matchesEpic && matchesMember && matchesDate;
+      const matchesStatus =
+        statusFilter === "all" ||
+        (statusFilter === "mine" && !!task.assignedTo?.includes(currentUserId)) ||
+        (statusFilter === "overdue" && task.isOverdue && task.status !== "completed") ||
+        (statusFilter === "completed" && task.status === "completed");
+
+      return matchesSearch && matchesId && matchesEpic && matchesMember && matchesDate && matchesStatus;
     });
 
     // Get unique epics for filter dropdown
@@ -943,7 +975,7 @@ export default function Tasks() {
       allEpics: epics,
       filteredTasks: filtered
     };
-  }, [tasks, searchQuery, searchId, selectedEpicFilter, selectedMemberFilter, dateFilter, currentPage, pageSize]);
+  }, [tasks, searchQuery, searchId, selectedEpicFilter, selectedMemberFilter, dateFilter, statusFilter, currentUserId, currentPage, pageSize]);
 
   const handleExportTasks = () => {
     if (!filteredTasks.length) {
@@ -1052,15 +1084,28 @@ export default function Tasks() {
 
         {/* Add Task Form */}
         {isFormOpen && (
-          <Card className="border border-primary/20 bg-primary/5">
-            <CardHeader>
-              <CardTitle>Add Tasks to Epic</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-6">
-              {/* Epic Level Fields */}
-              <div className="border-b pb-4">
-                <h3 className="text-lg font-semibold mb-4">Epic Details</h3>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <Card className="rounded-2xl border-0 shadow-sm ring-1 ring-primary/20">
+            {/* Header */}
+            <div className="flex flex-col gap-3 rounded-t-2xl bg-gradient-to-r from-primary/10 via-primary/5 to-transparent px-6 py-5 sm:flex-row sm:items-center sm:justify-between">
+              <div className="space-y-1">
+                <CardTitle className="flex items-center gap-2 text-lg">
+                  <ClipboardList className="h-5 w-5 text-primary" />
+                  Add Tasks
+                </CardTitle>
+                <p className="text-sm text-muted-foreground">
+                  Create one or more tasks inside a shared epic. Paste multi-line content to split it into tasks.
+                </p>
+              </div>
+              <Badge variant="secondary" className="w-fit shrink-0">
+                {taskList.length} task{taskList.length === 1 ? "" : "s"} queued
+              </Badge>
+            </div>
+
+            <CardContent className="space-y-6 p-6">
+              {/* Section: Epic & Schedule */}
+              <div className="space-y-4">
+                <SectionHeader title="Epic & Schedule" subtitle="Applied to all tasks below unless overridden" />
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <Label htmlFor="epic">Epic</Label>
                     <Input
@@ -1070,7 +1115,7 @@ export default function Tasks() {
                       onChange={(e) =>
                         setEpicForm({ ...epicForm, epic: e.target.value })
                       }
-                      className="mt-1"
+                      className="mt-1.5"
                     />
                   </div>
                   <div>
@@ -1082,11 +1127,11 @@ export default function Tasks() {
                       onChange={(e) =>
                         setEpicForm({ ...epicForm, sprint: e.target.value })
                       }
-                      className="mt-1"
+                      className="mt-1.5"
                     />
                   </div>
                 </div>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
+                <div className="grid grid-cols-1 gap-4 md:grid-cols-2">
                   <div>
                     <Label htmlFor="epicStartDate">Start Date</Label>
                     <Input
@@ -1096,7 +1141,7 @@ export default function Tasks() {
                       onChange={(e) =>
                         setEpicForm({ ...epicForm, startDate: e.target.value })
                       }
-                      className="mt-1"
+                      className="mt-1.5"
                     />
                   </div>
                   <div>
@@ -1108,11 +1153,11 @@ export default function Tasks() {
                       onChange={(e) =>
                         setEpicForm({ ...epicForm, endDate: e.target.value })
                       }
-                      className="mt-1"
+                      className="mt-1.5"
                     />
                   </div>
                 </div>
-                <div className="mt-4">
+                <div>
                   <Label>Assign Team Members (Epic Level)</Label>
                   <div className="mt-2">
                     <TeamMemberMultiSelect
@@ -1124,13 +1169,16 @@ export default function Tasks() {
                 </div>
               </div>
 
-              {/* Tasks */}
-              <div>
-                <div className="flex justify-between items-center mb-4">
-                  <h3 className="text-lg font-semibold">Tasks</h3>
-                  <Button
-                    onClick={() =>
-                      setTaskList([
+              <Separator />
+
+              {/* Section: Tasks */}
+              <div className="space-y-4">
+                <SectionHeader
+                  title="Tasks"
+                  action={
+                    <Button
+                      onClick={() =>
+                        setTaskList([
                           ...taskList,
                           {
                             title: "",
@@ -1140,171 +1188,207 @@ export default function Tasks() {
                             assignedTo: [],
                           },
                         ])
-                    }
-                    variant="outline"
-                    size="sm"
-                  >
-                    <Plus className="h-4 w-4 mr-2" />
-                    Add Task
-                  </Button>
-                </div>
-                {taskList.map((task, index) => (
-                  <Card key={index} className="mb-4 p-4">
-                    <div className="space-y-4">
-                      <div className="flex justify-between">
-                        <h4 className="font-medium">Task {index + 1}</h4>
+                      }
+                      variant="outline"
+                      size="sm"
+                      className="gap-1.5"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Add Task
+                    </Button>
+                  }
+                />
+                {taskList.map((task, index) => {
+                  const titleInvalid = showTitleErrors && (!task.title || !task.title.trim());
+                  return (
+                    <div
+                      key={index}
+                      className={cn(
+                        "rounded-xl border bg-card p-4 shadow-sm transition-colors",
+                        titleInvalid ? "border-red-500/40" : "border-border hover:border-primary/30"
+                      )}
+                    >
+                      <div className="mb-3 flex items-center justify-between">
+                        <Badge variant="secondary" className="text-xs font-medium">
+                          Task {index + 1}
+                        </Badge>
                         {taskList.length > 1 && (
                           <Button
                             onClick={() =>
                               setTaskList(taskList.filter((_, i) => i !== index))
                             }
                             variant="ghost"
-                            size="sm"
+                            size="icon"
+                            className="h-7 w-7 text-muted-foreground hover:bg-red-500/10 hover:text-red-600"
+                            aria-label={`Remove task ${index + 1}`}
+                            title="Remove task"
                           >
-                            <Trash2 className="h-4 w-4" />
+                            <X className="h-4 w-4" />
                           </Button>
                         )}
                       </div>
-                      <div>
-                        <Label>Title</Label>
-                        <Input
-                          placeholder="Task title"
-                          value={task.title}
-                          onChange={(e) =>
-                            setTaskList(
-                              taskList.map((t, i) =>
-                                i === index ? { ...t, title: e.target.value } : t
-                              )
-                            )
-                          }
-                          onPaste={(e) => handlePaste(e, 'title', index)}
-                        />
-                      </div>
-                      <div>
-                        <Label>Description</Label>
-                        <Textarea
-                          placeholder="Task description"
-                          value={task.description}
-                          onChange={(e) =>
-                            setTaskList(
-                              taskList.map((t, i) =>
-                                i === index ? { ...t, description: e.target.value } : t
-                              )
-                            )
-                          }
-                          onPaste={(e) => handlePaste(e, 'description', index)}
-                          rows={2}
-                        />
-                      </div>
-                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                      <div className="space-y-4">
                         <div>
-                          <Label>Start Date</Label>
+                          <Label>Title</Label>
                           <Input
-                            type="date"
-                            value={task.startDate}
+                            placeholder="Task title"
+                            value={task.title}
                             onChange={(e) =>
                               setTaskList(
                                 taskList.map((t, i) =>
-                                  i === index ? { ...t, startDate: e.target.value } : t
+                                  i === index ? { ...t, title: e.target.value } : t
                                 )
                               )
                             }
+                            onPaste={(e) => handlePaste(e, 'title', index)}
+                            className={cn("mt-1.5", titleInvalid && "border-red-500/60 focus-visible:ring-red-500/40")}
+                            aria-invalid={titleInvalid || undefined}
                           />
-                        </div>
-                        <div>
-                          <Label>End Date</Label>
-                          <Input
-                            type="date"
-                            value={task.endDate}
-                            onChange={(e) =>
-                              setTaskList(
-                                taskList.map((t, i) =>
-                                  i === index ? { ...t, endDate: e.target.value } : t
-                                )
-                              )
-                            }
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <Label>Assign Team Members (Override Epic Assignment)</Label>
-                        <div className="mt-2">
-                          <TeamMemberMultiSelect
-                            selected={task.assignedTo}
-                            onChange={(selected) =>
-                              setTaskList(
-                                taskList.map((t, i) =>
-                                  i === index ? { ...t, assignedTo: selected } : t
-                                )
-                              )
-                            }
-                            placeholder="Select team members for this task..."
-                          />
-                        </div>
-                      </div>
-                      <div>
-                        <Label>Images (Optional)</Label>
-                        <div className="mt-2">
-                          <Input
-                            type="file"
-                            accept="image/*"
-                            multiple
-                            onChange={(e) => {
-                              const files = Array.from(e.target.files || []);
-                              const newImages = [...images, ...files];
-                              setImages(newImages);
-                              // Create preview URLs
-                              const newUrls = files.map(file => URL.createObjectURL(file));
-                              setImageUrls([...imageUrls, ...newUrls]);
-                            }}
-                            className="mt-1"
-                          />
-                          {imageUrls.length > 0 && (
-                            <div className="mt-2 flex flex-wrap gap-2">
-                              {imageUrls.map((url, imgIndex) => (
-                                <div key={imgIndex} className="relative">
-                                  <img
-                                    src={url}
-                                    alt={`Preview ${imgIndex + 1}`}
-                                    className="w-20 h-20 object-cover rounded border"
-                                  />
-                                  <button
-                                    type="button"
-                                    aria-label="Remove image"
-                                    title="Remove image"
-                                    onClick={() => {
-                                      const newUrls = imageUrls.filter((_, i) => i !== imgIndex);
-                                      const newImages = images.filter((_, i) => i !== imgIndex);
-                                      setImageUrls(newUrls);
-                                      setImages(newImages);
-                                    }}
-                                    className="absolute -top-2 -right-2 bg-red-500 text-white rounded-full w-5 h-5 flex items-center justify-center text-xs"
-                                  >
-                                    ×
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
+                          {titleInvalid && (
+                            <p className="mt-1.5 flex items-center gap-1 text-xs text-red-600 dark:text-red-400">
+                              <AlertCircle className="h-3 w-3" />
+                              Title is required
+                            </p>
                           )}
+                        </div>
+                        <div>
+                          <Label>Description</Label>
+                          <Textarea
+                            placeholder="Task description"
+                            value={task.description}
+                            onChange={(e) =>
+                              setTaskList(
+                                taskList.map((t, i) =>
+                                  i === index ? { ...t, description: e.target.value } : t
+                                )
+                              )
+                            }
+                            onPaste={(e) => handlePaste(e, 'description', index)}
+                            rows={2}
+                            className="mt-1.5"
+                          />
+                        </div>
+                        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                          <div>
+                            <Label>Start Date</Label>
+                            <Input
+                              type="date"
+                              value={task.startDate}
+                              onChange={(e) =>
+                                setTaskList(
+                                  taskList.map((t, i) =>
+                                    i === index ? { ...t, startDate: e.target.value } : t
+                                  )
+                                )
+                              }
+                              className="mt-1.5"
+                            />
+                          </div>
+                          <div>
+                            <Label>End Date</Label>
+                            <Input
+                              type="date"
+                              value={task.endDate}
+                              onChange={(e) =>
+                                setTaskList(
+                                  taskList.map((t, i) =>
+                                    i === index ? { ...t, endDate: e.target.value } : t
+                                  )
+                                )
+                              }
+                              className="mt-1.5"
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <Label>Assign Team Members (Override Epic Assignment)</Label>
+                          <div className="mt-2">
+                            <TeamMemberMultiSelect
+                              selected={task.assignedTo}
+                              onChange={(selected) =>
+                                setTaskList(
+                                  taskList.map((t, i) =>
+                                    i === index ? { ...t, assignedTo: selected } : t
+                                  )
+                                )
+                              }
+                              placeholder="Select team members for this task..."
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <Label>Images (Optional)</Label>
+                          <div className="mt-2">
+                            <Input
+                              type="file"
+                              accept="image/*"
+                              multiple
+                              onChange={(e) => {
+                                const files = Array.from(e.target.files || []);
+                                const newImages = [...images, ...files];
+                                setImages(newImages);
+                                // Create preview URLs
+                                const newUrls = files.map(file => URL.createObjectURL(file));
+                                setImageUrls([...imageUrls, ...newUrls]);
+                              }}
+                              className="mt-1"
+                            />
+                            {imageUrls.length > 0 && (
+                              <div className="mt-2 flex flex-wrap gap-2">
+                                {imageUrls.map((url, imgIndex) => (
+                                  <div key={imgIndex} className="relative">
+                                    <img
+                                      src={url}
+                                      alt={`Preview ${imgIndex + 1}`}
+                                      className="w-20 h-20 rounded-lg border object-cover"
+                                    />
+                                    <button
+                                      type="button"
+                                      aria-label="Remove image"
+                                      title="Remove image"
+                                      onClick={() => {
+                                        const newUrls = imageUrls.filter((_, i) => i !== imgIndex);
+                                        const newImages = images.filter((_, i) => i !== imgIndex);
+                                        setImageUrls(newUrls);
+                                        setImages(newImages);
+                                      }}
+                                      className="absolute -right-2 -top-2 flex h-5 w-5 items-center justify-center rounded-full bg-red-500 text-xs text-white"
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
-                  </Card>
-                ))}
+                  );
+                })}
               </div>
+            </CardContent>
 
-              <div className="flex gap-2 justify-end pt-4">
-                <Button variant="outline" onClick={() => setIsFormOpen(false)}>
+            {/* Sticky action footer */}
+            <div className="sticky bottom-0 z-10 flex flex-col gap-3 rounded-b-2xl border-t border-border bg-background/95 px-6 py-4 backdrop-blur sm:flex-row sm:items-center sm:justify-between">
+              <p className="hidden text-xs text-muted-foreground sm:block">
+                {showTitleErrors
+                  ? "Some tasks are missing a title"
+                  : `${taskList.length} task${taskList.length === 1 ? "" : "s"} ready to be created`}
+              </p>
+              <div className="flex gap-2">
+                <Button variant="outline" className="flex-1 sm:flex-none" onClick={() => setIsFormOpen(false)}>
                   Cancel
                 </Button>
-                <Button onClick={handleAddTask} loading={isCreatingTasks} className="gap-2">
+                <Button onClick={handleAddTask} loading={isCreatingTasks} className="flex-1 gap-2 sm:flex-none">
                   <Check className="h-4 w-4" />
                   Create Tasks
                 </Button>
               </div>
-            </CardContent>
+            </div>
           </Card>
         )}
+
 
         {/* Paste Detection Modal */}
         <Dialog open={showPasteDetectionModal} onOpenChange={() => {}}>
@@ -1948,6 +2032,44 @@ export default function Tasks() {
           </CardContent>
         </Card>
 
+
+        {/* Status filter chips */}
+        <div className="flex flex-wrap items-center gap-2" role="tablist" aria-label="Task status filters">
+          {([
+            { value: "all", label: "All" },
+            { value: "mine", label: "My Tasks" },
+            { value: "overdue", label: "Overdue" },
+            { value: "completed", label: "Completed" },
+          ] as const).map((chip) => {
+            const isActive = statusFilter === chip.value;
+            const count = statusCounts[chip.value];
+            return (
+              <button
+                key={chip.value}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => { setStatusFilter(chip.value); setCurrentPage(1); }}
+                className={cn(
+                  "inline-flex items-center gap-1.5 rounded-full border px-3.5 py-1.5 text-sm font-medium transition-all",
+                  isActive
+                    ? "border-transparent bg-primary text-primary-foreground shadow-sm"
+                    : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                )}
+              >
+                {chip.label}
+                <span
+                  className={cn(
+                    "rounded-full px-1.5 text-xs",
+                    isActive ? "bg-primary-foreground/20 text-primary-foreground" : "bg-muted text-muted-foreground"
+                  )}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+        </div>
         {/* Tasks List */}
         <Card className="border border-border">
           <CardHeader>
@@ -1999,13 +2121,54 @@ export default function Tasks() {
           </CardHeader>
           <CardContent>
             {paginatedTasks.length === 0 ? (
-              <div className="text-center py-8">
-                <p className="text-muted-foreground">No tasks found matching your filters</p>
-                {filteredTotal === 0 && tasks.length === 0 && (
-                   <p className="text-sm text-muted-foreground mt-1">
-                     Create your first task using the form above
-                   </p>
+              <div className="flex flex-col items-center justify-center py-16 text-center">
+                <div className="relative mb-5">
+                  <div className="absolute inset-0 -m-4 rounded-full bg-primary/10 blur-2xl" aria-hidden="true" />
+                  <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-primary/15 to-primary/5 ring-1 ring-primary/20">
+                    <ClipboardList className="h-9 w-9 text-primary/70" aria-hidden="true" />
+                  </div>
+                </div>
+                {tasks.length === 0 ? (
+                  <>
+                    <h3 className="text-lg font-semibold">No tasks yet</h3>
+                    <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                      Create your first task to start tracking your team&apos;s work. You can add tasks one by one or import them from Excel.
+                    </p>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-lg font-semibold">No tasks match your filters</h3>
+                    <p className="mt-1 max-w-sm text-sm text-muted-foreground">
+                      Try adjusting or clearing some filters to see more results.
+                    </p>
+                  </>
                 )}
+                <Button
+                  className="mt-5 gap-2"
+                  onClick={() => {
+                    if (tasks.length === 0) {
+                      setIsFormOpen(true);
+                      window.scrollTo({ top: 0, behavior: "smooth" });
+                    } else {
+                      setStatusFilter("all");
+                      setSearchQuery("");
+                      setSearchId("");
+                      setSelectedEpicFilter("all");
+                      setSelectedMemberFilter("all");
+                      setDateFilter({ start: "", end: "" });
+                      setCurrentPage(1);
+                    }
+                  }}
+                >
+                  {tasks.length === 0 ? (
+                    <>
+                      <Plus className="h-4 w-4" />
+                      Add your first task
+                    </>
+                  ) : (
+                    "Clear filters"
+                  )}
+                </Button>
               </div>
             ) : (
               <Accordion type="multiple" className="w-full" defaultValue={selectedEpicFilter !== "all" ? [selectedEpicFilter] : []}>
@@ -2072,11 +2235,33 @@ export default function Tasks() {
                       </div>
                     </AccordionTrigger>
                     <AccordionContent>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-sm min-w-[1000px]">
+                      {/* Mobile: compact task cards */}
+                      <div className="space-y-3 p-1 md:hidden">
+                        {epicTasks.map((task) => (
+                          <TaskCardMobile
+                            key={task.id}
+                            task={task}
+                            teamMembers={teamMembers}
+                            handlers={{
+                              isSelected: selectedTasks.includes(task.id),
+                              onSelectToggle: (checked) => handleSelectTask(task.id, checked),
+                              onOpen: openTaskDetail,
+                              onDelete: deleteTask,
+                              onCopyId: (id) => {
+                                navigator.clipboard.writeText(String(id));
+                                toast({ title: "Copied", description: "Task ID copied to clipboard" });
+                              },
+                            }}
+                          />
+                        ))}
+                      </div>
+
+                      {/* md+: polished table */}
+                      <div className="hidden overflow-x-auto md:block">
+                        <table className="w-full text-sm min-w-[900px]">
                           <thead>
-                            <tr className="border-b border-border">
-                              <th className="text-left py-3 px-4 font-semibold w-[50px]">
+                            <tr className="border-b border-border text-left text-muted-foreground">
+                              <th className="w-[50px] px-4 py-3 font-medium">
                                 <span className="sr-only">Select all tasks</span>
                                 <Checkbox
                                   aria-label="Select all tasks"
@@ -2084,110 +2269,33 @@ export default function Tasks() {
                                   onCheckedChange={handleSelectAll}
                                 />
                               </th>
-                              <th className="text-left py-3 px-4 font-semibold w-[100px]">ID</th>
-                              <th className="text-left py-3 px-4 font-semibold">
-                                Title
-                              </th>
-                              <th className="text-left py-3 px-4 font-semibold">
-                                Sprint
-                              </th>
-                              <th className="text-left py-3 px-4 font-semibold">
-                                Status
-                              </th>
-                              <th className="text-left py-3 px-4 font-semibold">
-                                Assigned To
-                              </th>
-                              <th className="text-left py-3 px-4 font-semibold">
-                                Date Range
-                              </th>
-                              <th className="text-center py-3 px-4 font-semibold">
-                                Actions
-                              </th>
+                              <th className="w-[100px] px-4 py-3 font-medium">ID</th>
+                              <th className="px-4 py-3 font-medium">Title</th>
+                              <th className="px-4 py-3 font-medium">Sprint</th>
+                              <th className="px-4 py-3 font-medium">Status</th>
+                              <th className="px-4 py-3 font-medium">Assigned To</th>
+                              <th className="px-4 py-3 font-medium">Date Range</th>
+                              <th className="px-4 py-3 text-center font-medium">Actions</th>
                             </tr>
                           </thead>
                           <tbody>
-                            {epicTasks.map((task) => {
-                              const assignedNames = task.assignedTo
-                                ?.map((id) => teamMembers.find((d) => d.id === id)?.name)
-                                .filter(Boolean)
-                                .join(", ") || "-";
-                              return (
-                                <tr
-                                  key={task.id}
-                                  className="border-b border-border hover:bg-muted/50 cursor-pointer"
-                                  onClick={() => openTaskDetail(task)}
-                                >
-                                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                                    <Checkbox
-                                      checked={selectedTasks.includes(task.id)}
-                                      onCheckedChange={(checked) => handleSelectTask(task.id, checked as boolean)}
-                                    />
-                                  </td>
-                                  <td className="py-3 px-4" onClick={(e) => e.stopPropagation()}>
-                                    <div className="flex items-center gap-2 group">
-                                      <span className="font-mono text-muted-foreground">#{(task as any).displayId}</span>
-                                      <Button
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-6 w-6 opacity-0 group-hover:opacity-100 transition-opacity"
-                                        onClick={(e) => {
-                                          e.stopPropagation();
-                                          navigator.clipboard.writeText((task as any).displayId.toString());
-                                          toast({ title: "Copied", description: "Task ID copied to clipboard" });
-                                        }}
-                                      >
-                                        <Copy className="h-3 w-3" />
-                                      </Button>
-                                    </div>
-                                  </td>
-                                  <td className="py-3 px-4 font-medium max-w-[200px]">
-                                    <div className="break-words whitespace-normal" title={task.title}>
-                                      {task.title}
-                                    </div>
-                                  </td>
-                                  <td className="py-3 px-4">{task.sprint || "-"}</td>
-                                  <td className="py-3 px-4">
-                                    <span
-                                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize whitespace-nowrap ${
-                                        task.status === "completed"
-                                          ? "bg-green-100 text-green-700"
-                                          : task.status === "in_progress"
-                                            ? "bg-blue-100 text-blue-700"
-                                            : "bg-yellow-100 text-yellow-700"
-                                      }`}
-                                    >
-                                      {task.status.replace('_', ' ')}
-                                    </span>
-                                  </td>
-                                  <td className="py-3 px-4">{assignedNames}</td>
-                                  <td className="py-3 px-4">
-                                    {new Date(task.startDate).toLocaleDateString()} - {new Date(task.endDate).toLocaleDateString()}
-                                  </td>
-                                  <td className="py-3 px-4 text-center" onClick={(e) => e.stopPropagation()}>
-                                    <div className="flex items-center justify-center gap-2">
-                                      <button
-                                        type="button"
-                                        aria-label="Edit task"
-                                        title="Edit task"
-                                        onClick={() => openTaskDetail(task)}
-                                        className="text-blue-500 hover:text-blue-700 transition-colors"
-                                      >
-                                        <Edit className="h-4 w-4" />
-                                      </button>
-                                      <button
-                                        type="button"
-                                        aria-label="Delete task"
-                                        title="Delete task"
-                                        onClick={() => deleteTask(task.id)}
-                                        className="text-red-500 hover:text-red-700 transition-colors"
-                                      >
-                                        <Trash2 className="h-4 w-4" />
-                                      </button>
-                                    </div>
-                                  </td>
-                                </tr>
-                              );
-                            })}
+                            {epicTasks.map((task) => (
+                              <TaskTableRow
+                                key={task.id}
+                                task={task}
+                                teamMembers={teamMembers}
+                                handlers={{
+                                  isSelected: selectedTasks.includes(task.id),
+                                  onSelectToggle: (checked) => handleSelectTask(task.id, checked),
+                                  onOpen: openTaskDetail,
+                                  onDelete: deleteTask,
+                                  onCopyId: (id) => {
+                                    navigator.clipboard.writeText(String(id));
+                                    toast({ title: "Copied", description: "Task ID copied to clipboard" });
+                                  },
+                                }}
+                              />
+                            ))}
                           </tbody>
                         </table>
                       </div>

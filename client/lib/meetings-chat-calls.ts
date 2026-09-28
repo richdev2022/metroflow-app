@@ -193,6 +193,28 @@ export const useSendMessage = () => {
   });
 };
 
+export interface ChatMediaUploadResult {
+  url: string;
+  mimeType: string;
+  size: number;
+  attachmentType: string;
+}
+
+/**
+ * Upload a chat media file (voice-note audio etc.) to POST /chat/media.
+ * Multipart field name must be `file`; the backend accepts webm/mp3/m4a/aac/
+ * ogg/opus/wav up to 25MB and returns { url, mimeType, size, attachmentType }.
+ * The returned object feeds straight into useSendMessage as
+ * { attachmentUrl: url, attachmentType }.
+ */
+export const uploadChatMedia = async (file: File): Promise<ChatMediaUploadResult> => {
+  const formData = new FormData();
+  formData.append('file', file);
+  // Axios detects FormData and sets the multipart boundary header itself.
+  const response = await api.post('/chat/media', formData);
+  return unwrapApiData<ChatMediaUploadResult>(response.data, 'Failed to upload media');
+};
+
 // --- Calls ---
 
 export const useCalls = (page = 1, limit = 10) => {

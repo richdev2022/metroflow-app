@@ -24,6 +24,8 @@ import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountdown } from "@/hooks/useCountdown";
+import ImportEmployeesDialog from "@/components/payroll/ImportEmployeesDialog";
+import { Upload } from "lucide-react";
 
 const updatePayrollSchema = z.object({
   salary: z.string().min(1, "Salary is required"),
@@ -115,6 +117,7 @@ export default function Payroll() {
   const [showResetPinModal, setShowResetPinModal] = useState(false);
   const [resetPinOtp, setResetPinOtp] = useState("");
   const [newPin, setNewPin] = useState("");
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
   
   // Effect to auto-lookup recipient accounts
   useEffect(() => {
@@ -817,7 +820,10 @@ export default function Payroll() {
             <h2 className="text-3xl font-bold tracking-tight">Payroll</h2>
             <p className="text-muted-foreground">Manage payroll, transfers, and employee salaries.</p>
           </div>
-          <div className="flex gap-2">
+          <div className="flex flex-wrap justify-end gap-2">
+             <Button variant="outline" onClick={() => setImportDialogOpen(true)}>
+               <Upload className="mr-2 h-4 w-4" /> Import Employees
+             </Button>
              <Button variant="outline" onClick={() => setConfigDialogOpen(true)}>
                <Settings className="mr-2 h-4 w-4" /> Configuration
              </Button>
@@ -2264,6 +2270,13 @@ export default function Payroll() {
                 </div>
             </DialogContent>
         </Dialog>
+
+        {/* Import Employees Dialog */}
+        <ImportEmployeesDialog
+          open={importDialogOpen}
+          onOpenChange={setImportDialogOpen}
+          onImported={() => fetchEmployees(page)}
+        />
 
       </div>
     </Layout>

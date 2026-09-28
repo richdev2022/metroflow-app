@@ -40,6 +40,7 @@ import {
   Menu,
   Phone,
   Video,
+  Mic,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -48,6 +49,7 @@ import {
   useMessages,
   useSendMessage,
   useCreateCall,
+  uploadChatMedia,
 } from "@/lib/meetings-chat-calls";
 import { Conversation, CreateConversationInput, TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
@@ -75,6 +77,8 @@ import {
 import { useSocket } from "@/hooks/useSocket";
 import { AudioUtils } from "@/lib/audio-utils";
 import { cn } from "@/lib/utils";
+import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
+import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
 
 // ==========================================
 // Types & Interfaces
@@ -233,6 +237,20 @@ const getParticipantStatusLine = (
 const getAttachmentUrl = (m: ChatMessage) => m.attachment_url || m.attachmentUrl || "";
 const getAttachmentType = (m: ChatMessage) => m.attachment_type || m.attachmentType || "";
 const isImageAttachment = (m: ChatMessage) => getAttachmentType(m).startsWith("image/");
+
+const isVoiceNoteContent = (content?: string) =>
+  !!content && (content === "Voice note" || content === "🎤 Voice note");
+
+// A message carrying a voice note: backend tags uploads as `audio`, and we
+// fall back to sniffing the attachment URL for legacy rows.
+const isAudioAttachment = (m: ChatMessage) => {
+  const url = getAttachmentUrl(m);
+  if (!url) return false;
+  const type = getAttachmentType(m);
+  if (type.startsWith("audio")) return true;
+  if (type.startsWith("image/") || type.startsWith("video/")) return false;
+  return /\.(webm|mp3|m4a|aac|ogg|opus|wav)(\?|#|$)/i.test(url);
+};
 
 const formatTime = (dateStr: string) =>
   new Date(dateStr).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
@@ -411,7 +429,11 @@ const MessageBubble = ({
   const isRead = message.status === "read";
   const attachmentUrl = getAttachmentUrl(message);
   const isImage = isImageAttachment(message);
-  const isFile = !!attachmentUrl && !isImage;
+  const isAudio = isAudioAttachment(message);
+  const isFile = !!attachmentUrl && !isImage && !isAudio;
+  // Voice-note placeholder text (“🎤 Voice note”) is represented by the
+  // player itself, so don't render it twice.
+  const hideContent = isAudio && isVoiceNoteContent(message.content);
 
   return (
     <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
@@ -443,6 +465,12 @@ const MessageBubble = ({
       >
         {showSender && !isOwn && (
           <p className="text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400">{senderName}</p>
+        )}
+
+        {isAudio && (
+          <div className={cn("-mx-0.5", message.content && !hideContent && "mb-1.5")}>
+            <VoiceNotePlayer src={attachmentUrl} isOwn={isOwn} />
+          </div>
         )}
 
         {isImage && (
@@ -477,7 +505,7 @@ const MessageBubble = ({
           </a>
         )}
 
-        {message.content && (
+        {message.content && !hideContent && (
           <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
         )}
 
@@ -705,6 +733,8 @@ export default function Chat() {
   });
   const [activeCallRingback, setActiveCallRingback] = useState<{ callId: string; stop: () => void } | null>(null);
   const [startingCall, setStartingCall] = useState(false);
+  const [isRecording, setIsRecording] = useState(false);
+  const [voiceUploading, setVoiceUploading] = useState(false);
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const activeCallRingbackRef = useRef<{ callId: string; stop: () => void } | null>(null);
@@ -870,7 +900,11 @@ export default function Chat() {
         }
         return [...prev, { ...message, id: message.id || Date.now().toString(), status: "sent" }];
       });
-      AudioUtils.playNotification();
+      // The layout handles the hidden-tab case (OS notification + sound);
+      // playing here as well would double the sound while the tab is hidden.
+      if (typeof document === "undefined" || !document.hidden) {
+        AudioUtils.playNotification();
+      }
       scrollToBottom(true);
     };
 
@@ -1160,6 +1194,80 @@ export default function Chat() {
     }
   };
 
+  // Voice notes: upload the recorded audio, then send it as an attachment.
+  // An optimistic bubble shows the “🎤 Voice note” placeholder until the real
+  // message (with attachmentUrl) replaces it and renders the audio player.
+  const handleSendVoiceNote = async (file: File) => {
+    if (!selectedConversation || voiceUploading) return;
+    const convId = selectedConversation.id;
+    setIsRecording(false);
+
+    const tempId = `temp_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const optimisticMsg: ChatMessage = {
+      id: tempId,
+      conversationId: convId,
+      conversation_id: convId,
+      senderId: CURRENT_USER_ID(),
+      sender_id: CURRENT_USER_ID(),
+      senderName: CURRENT_USER_NAME(),
+      sender_name: CURRENT_USER_NAME(),
+      content: "🎤 Voice note",
+      createdAt: new Date().toISOString(),
+      created_at: new Date().toISOString(),
+      status: "sending",
+      isOptimistic: true,
+    };
+
+    setLocalMessages((prev) => [...prev, optimisticMsg]);
+    pendingMessageIdsRef.current.add(tempId);
+    scrollToBottom(true);
+    setVoiceUploading(true);
+
+    try {
+      const media = await uploadChatMedia(file);
+      const result = await sendMessage.mutateAsync({
+        conversationId: convId,
+        data: { content: "🎤 Voice note", attachmentUrl: media.url, attachmentType: "audio" },
+      });
+
+      const realId = (result as any)?.id || (result as any)?.messageId || tempId;
+      pendingMessageIdsRef.current.delete(tempId);
+      setLocalMessages((prev) =>
+        prev.map((m) =>
+          m.id === tempId
+            ? {
+                ...(result as any),
+                id: realId,
+                status: "sent",
+                isOptimistic: false,
+                conversationId: convId,
+                conversation_id: convId,
+                senderId: CURRENT_USER_ID(),
+                sender_id: CURRENT_USER_ID(),
+                senderName: CURRENT_USER_NAME(),
+                sender_name: CURRENT_USER_NAME(),
+                content: (result as any)?.content || "🎤 Voice note",
+                attachmentUrl: (result as any)?.attachmentUrl || media.url,
+                attachment_url: (result as any)?.attachment_url || media.url,
+                attachmentType: (result as any)?.attachmentType || "audio",
+                attachment_type: (result as any)?.attachment_type || "audio",
+                createdAt: (result as any)?.createdAt || (result as any)?.created_at || new Date().toISOString(),
+                created_at: (result as any)?.created_at || (result as any)?.createdAt || new Date().toISOString(),
+              }
+            : m
+        )
+      );
+      refetchConv();
+      try { AudioUtils.playMessageSent(); } catch {}
+    } catch (err) {
+      pendingMessageIdsRef.current.delete(tempId);
+      setLocalMessages((prev) => prev.map((m) => (m.id === tempId ? { ...m, status: "failed" } : m)));
+      toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to send voice note") });
+    } finally {
+      setVoiceUploading(false);
+    }
+  };
+
   const isTyping = Object.keys(typingUsers).length > 0;
   const hasInputContent = !!newMessage.trim();
 
@@ -1422,33 +1530,58 @@ export default function Chat() {
 
                 {/* Input Area */}
                 <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0">
-                  <div className="flex items-end gap-2">
-                    <EmojiPicker onSelect={handleEmojiSelect} />
-                    <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
-                      <Textarea
-                        placeholder="Type a message..."
-                        value={newMessage}
-                        onChange={(e) => handleInputChange(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            handleSendMessage();
-                          }
-                        }}
-                        className="flex-1 min-h-[36px] max-h-[128px] resize-none bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 py-1.5 px-0 text-sm"
-                        rows={1}
-                      />
-                      <Button
-                        onClick={handleSendMessage}
-                        disabled={!hasInputContent}
-                        size="icon"
-                        className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 shadow-sm shadow-blue-600/30 disabled:opacity-30 shrink-0 mb-0.5"
-                        title="Send message"
-                      >
-                        <Send className="h-4 w-4" />
-                      </Button>
+                  {isRecording ? (
+                    <VoiceRecorderPill
+                      onSend={handleSendVoiceNote}
+                      onCancel={() => setIsRecording(false)}
+                      onError={(msg) =>
+                        toast({ variant: "destructive", title: "Voice note", description: msg })
+                      }
+                    />
+                  ) : (
+                    <div className="flex items-end gap-2">
+                      <EmojiPicker onSelect={handleEmojiSelect} />
+                      <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
+                        <Textarea
+                          placeholder="Type a message..."
+                          value={newMessage}
+                          onChange={(e) => handleInputChange(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter" && !e.shiftKey) {
+                              e.preventDefault();
+                              handleSendMessage();
+                            }
+                          }}
+                          className="flex-1 min-h-[36px] max-h-[128px] resize-none bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 py-1.5 px-0 text-sm"
+                          rows={1}
+                        />
+                        <div className="flex items-center gap-1 shrink-0 mb-0.5">
+                          {!hasInputContent && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent"
+                              onClick={() => setIsRecording(true)}
+                              disabled={voiceUploading}
+                              title="Record voice note"
+                              aria-label="Record voice note"
+                            >
+                              <Mic className="h-4 w-4" />
+                            </Button>
+                          )}
+                          <Button
+                            onClick={handleSendMessage}
+                            disabled={!hasInputContent}
+                            size="icon"
+                            className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 shadow-sm shadow-blue-600/30 disabled:opacity-30 shrink-0"
+                            title="Send message"
+                          >
+                            <Send className="h-4 w-4" />
+                          </Button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
+                  )}
                 </div>
               </>
             ) : (
