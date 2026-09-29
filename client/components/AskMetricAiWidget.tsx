@@ -64,7 +64,7 @@ import {
  *    "Resume support chat" chip.
  */
 
-const METRIC_AI_LOGO = "/Assets/logo.png";
+const METRIC_AI_LOGO = "/icon-192.png"; // square brand mark — the wide wordmark gets cropped to blank inside rounded-full avatar circles
 const ASK_PANEL_ANIMATION = "ask-widget-in";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 

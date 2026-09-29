@@ -52,12 +52,16 @@ import {
 } from "@/lib/metric-ai";
 import {
   METRIC_AI_SUPPORT_KEY,
+  askPublicMetricAi,
   clearStoredSupportThread,
   closeMySupportConversation,
   escalateToSupport,
   getMySupportMessages,
   postMySupportMessage,
+  readAskSessionId,
   readStoredSupportThread,
+  writeAskSessionId,
+  writeAskSessionId,
   writeStoredSupportThread,
   type SupportMessage,
   type SupportThreadStatus,
@@ -88,7 +92,7 @@ type MetricAiMessage = MetricAiHistoryMessage & {
   kind?: "chat" | "handoff";
 };
 
-const METRIC_AI_LOGO = "/Assets/logo.png";
+const METRIC_AI_LOGO = "/icon-192.png"; // square brand mark — the wide wordmark gets cropped to blank inside rounded-full avatar circles
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export default function MetricAiChat() {
@@ -98,6 +102,11 @@ export default function MetricAiChat() {
   const [status, setStatus] = useState<MetricAiStatus | null>(null);
   const [statusLoading, setStatusLoading] = useState(true);
   const [statusDenied, setStatusDenied] = useState(false);
+  // Help mode: free MetricAi via the PUBLIC endpoint (Metricorex-scoped +
+  // human handoff). Used when the visitor is not logged in (401) or their
+  // plan does not include the full assistant (403 metric_ai_not_enabled).
+  const [helpMode, setHelpMode] = useState(false);
+  const helpSessionRef = useRef<string | null>(null);
 
   const [messages, setMessages] = useState<MetricAiMessage[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
@@ -124,7 +133,7 @@ export default function MetricAiChat() {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const available = !!status?.available;
+  const available = !!status?.available || helpMode;
 
   // ------------------------------------------
   // Boot: status gate + history
@@ -138,6 +147,11 @@ export default function MetricAiChat() {
         if (disposed) return;
         setStatus(s);
         setStatusDenied(false);
+        if (!s.available) {
+          // Plan without the full assistant -> free public help mode.
+          setHelpMode(true);
+          helpSessionRef.current = readAskSessionId();
+        }
         if (s.available) {
           setHistoryLoading(true);
           try {
@@ -160,8 +174,11 @@ export default function MetricAiChat() {
         if (disposed) return;
         // 403 metric_ai_not_enabled (or a wrapped failure) -> locked state.
         const code = (err?.response?.data?.code || err?.response?.data?.data?.code || "").toString();
-        if (err?.response?.status === 403 || code === "metric_ai_not_enabled") {
-          setStatusDenied(true);
+        if (err?.response?.status === 401 || err?.response?.status === 403 || code === "metric_ai_not_enabled") {
+          // Not logged in (401) or plan without the full assistant (403):
+          // fall back to the free public MetricAi (Metricorex-scoped).
+          setHelpMode(true);
+          helpSessionRef.current = readAskSessionId();
         } else {
           toast({
             variant: "destructive",
@@ -273,7 +290,37 @@ export default function MetricAiChat() {
         // The /ai/chat endpoint is text-only; when an image is attached we
         // pass its public URL along as context (the bubble stays clean).
         const apiText = pendingImage?.url ? `${text}\n\n(Image attached: ${pendingImage.url})` : text;
-        const result = await sendMetricAiChat(apiText);
+        let result: any;
+        if (!helpMode) {
+          try {
+            result = await sendMetricAiChat(apiText);
+          } catch (err: any) {
+            const gcode = (err?.response?.data?.code || err?.response?.data?.data?.code || "").toString();
+            const gated =
+              err?.response?.status === 401 ||
+              err?.response?.status === 403 ||
+              gcode === "metric_ai_not_enabled";
+            if (!gated) throw err;
+            // Seamless downgrade: retry through the free public endpoint.
+            setHelpMode(true);
+            helpSessionRef.current = readAskSessionId();
+            toast({
+              title: "Free help mode",
+              description: "You are now chatting with MetricAi in free Metricorex-help mode. Sign in for the full assistant.",
+            });
+            result = await askPublicMetricAi(apiText, helpSessionRef.current || undefined);
+            if (result.sessionId) {
+              helpSessionRef.current = result.sessionId;
+              writeAskSessionId(result.sessionId);
+            }
+          }
+        } else {
+          result = await askPublicMetricAi(apiText, helpSessionRef.current || undefined);
+          if (result.sessionId) {
+            helpSessionRef.current = result.sessionId;
+            writeAskSessionId(result.sessionId);
+          }
+        }
         const assistantMsg: MetricAiMessage = {
           id: result.id || `assistant-${Date.now()}`,
           role: "assistant",
@@ -421,7 +468,7 @@ export default function MetricAiChat() {
   // ------------------------------------------
   // Render
   // ------------------------------------------
-  const showLocked = statusLoading ? false : (statusDenied || (status ? !status.available : false));
+  const showLocked = statusLoading ? false : !helpMode && (statusDenied || (status ? !status.available : false));
 
   return (
     <Layout>
@@ -489,8 +536,9 @@ export default function MetricAiChat() {
                   <div className="min-w-0">
                     <h1 className="font-semibold text-foreground truncate">MetricAi</h1>
                     <p className="text-[11px] text-muted-foreground truncate">
-                      Always on · Powered by Metricorex
-                      {status?.chatModel ? ` · ${status.chatModel}` : ""}
+                      {helpMode
+                        ? "Free help mode · Metricorex questions · sign in for the full MetricAi"
+                        : `Always on · Powered by Metricorex${status?.chatModel ? ` · ${status.chatModel}` : ""}`}
                     </p>
                   </div>
                 </div>
