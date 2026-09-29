@@ -715,7 +715,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </SidebarFooter>
         <SidebarRail />
       </Sidebar>
-      <SidebarInset>
+      {/* min-w-0: MAIN is a flex item of the sidebar wrapper — without it the
+          automatic minimum size propagates the widest intrinsic child (e.g. the
+          MetricAi header's nowrap subtitle) and the whole app scrolls
+          horizontally on phones (measured: 433px on a 390px viewport). */}
+      <SidebarInset className="min-w-0">
         <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b px-4 flex-row">
           <div className="flex items-center gap-2">
             <SidebarTrigger className="-ml-1" />
@@ -741,7 +745,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         {/* Announcement bar (polls /public/app-config; renders nothing when
             there is no active announcement or it was dismissed) */}
         <AnnouncementTicker />
-        <div className="flex-1 space-y-4 p-4 md:p-8 pt-6 overflow-x-hidden">
+        <div className="flex-1 space-y-4 p-4 md:p-8 pt-6 overflow-x-hidden min-w-0">
           {children}
         </div>
       </SidebarInset>

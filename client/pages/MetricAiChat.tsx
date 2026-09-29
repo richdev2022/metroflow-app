@@ -641,8 +641,8 @@ export default function MetricAiChat() {
 
   return (
     <Layout>
-      <div className="flex flex-col h-[calc(100dvh-118px)] sm:h-[calc(100dvh-78px)] min-h-[420px]">
-        <div className="flex-1 overflow-hidden rounded-2xl border bg-card shadow-sm relative">
+      <div className="flex flex-col h-[calc(100dvh-118px)] sm:h-[calc(100dvh-78px)] min-h-[420px] w-full min-w-0">
+        <div className="flex-1 overflow-hidden rounded-2xl border bg-card shadow-sm relative w-full min-w-0">
           {/* Dot-grid backdrop matching the chat page */}
           <div
             className="absolute inset-0 pointer-events-none"
@@ -695,10 +695,10 @@ export default function MetricAiChat() {
             />
           ) : (
             /* ---------- Active MetricAi chat ---------- */
-            <div className="relative h-full flex flex-col">
+            <div className="relative h-full flex flex-col w-full min-w-0">
               {/* Header */}
-              <div className="px-3 sm:px-5 py-3 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0">
-                <div className="flex items-center gap-3 min-w-0">
+              <div className="px-3 sm:px-5 py-3 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0 min-w-0 max-w-full">
+                <div className="flex items-center gap-3 min-w-0 flex-1 w-0">
                   <div className="metric-ai-glow flex h-11 w-11 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#4F46E5] to-[#2563EB] ring-1 ring-indigo-500/40">
                     <img src={METRIC_AI_LOGO} alt="MetricAi logo" className="h-7 w-7 rounded-full object-cover" />
                   </div>
@@ -1117,10 +1117,10 @@ function SupportConversation({
   }, [conversationId, poll, toast]);
 
   return (
-    <div className="relative h-full flex flex-col">
+    <div className="relative h-full flex flex-col w-full min-w-0">
       {/* Header */}
-      <div className="px-3 sm:px-5 py-3 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0">
-        <div className="flex items-center gap-2.5 min-w-0">
+      <div className="px-3 sm:px-5 py-3 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0 min-w-0 max-w-full">
+        <div className="flex items-center gap-2.5 min-w-0 flex-1 w-0">
           <Button
             variant="ghost"
             size="icon"
