@@ -1307,9 +1307,44 @@ export interface MetricAiStatus {
   planName: string | null;
   chatModel: string | null;
   imageModel: string | null;
+  /** Per-feature daily/monthly caps configured by admins for this plan (null = unlimited). */
+  limits?: MetricAiLimits;
+  /** Live usage vs the caps (drives the quota chips in the chat header). */
+  usage?: Record<string, MetricAiFeatureUsage>;
   /** Error code, e.g. 'metric_ai_not_enabled' on 403. */
   code?: string;
   upgradeRequired?: boolean;
+}
+
+export interface MetricAiFeatureLimit {
+  daily: number | null;
+  monthly: number | null;
+}
+
+export interface MetricAiLimits {
+  chat: MetricAiFeatureLimit;
+  image: MetricAiFeatureLimit;
+  video: MetricAiFeatureLimit;
+}
+
+export interface MetricAiFeatureUsage {
+  daily: { used: number; limit: number | null; resetsAt: string };
+  monthly: { used: number; limit: number | null; resetsAt: string };
+}
+
+export interface MetricAiUsageResult {
+  usage: Record<string, MetricAiFeatureUsage>;
+  limits: MetricAiLimits;
+  planName: string | null;
+}
+
+export interface MetricAiAttachmentResult {
+  url: string;
+  filename: string | null;
+  mimeType: string;
+  size: number;
+  attachmentType: 'image' | 'video' | 'file';
+  storage?: string;
 }
 
 export interface MetricAiChatResult {
@@ -1317,6 +1352,9 @@ export interface MetricAiChatResult {
   reply: string;
   /** Present when the assistant generated an image (CogView/Pollinations) for the ask. */
   imageUrl: string | null;
+  /** Echo of the user's attachment for optimistic rendering. */
+  attachmentUrl?: string | null;
+  attachmentType?: string | null;
   /** Present when the ask started an async video job — poll GET /ai/video/{id}. */
   videoJob?: { id: string; status: string } | null;
   model: string;
@@ -1341,6 +1379,9 @@ export interface MetricAiHistoryMessage {
   imageUrl: string | null;
   videoUrl?: string | null;
   videoCoverUrl?: string | null;
+  /** User attachment (image paste/attach or video attach). */
+  attachmentUrl?: string | null;
+  attachmentType?: string | null;
   createdAt: string;
 }
 

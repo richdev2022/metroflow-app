@@ -14,6 +14,8 @@ import type {
   MetricAiHistoryMessage,
   MetricAiHistoryResult,
   MetricAiVideoJobResult,
+  MetricAiUsageResult,
+  MetricAiAttachmentResult,
 } from "@shared/api";
 
 export type {
@@ -22,6 +24,8 @@ export type {
   MetricAiHistoryMessage,
   MetricAiHistoryResult,
   MetricAiVideoJobResult,
+  MetricAiUsageResult,
+  MetricAiAttachmentResult,
 };
 
 /** GET /ai/status — availability + plan/model info for the UI gate. */
@@ -31,13 +35,42 @@ export async function getMetricAiStatus(): Promise<MetricAiStatus> {
 }
 
 /**
- * POST /ai/chat { message } — one user turn; the server keeps its own
- * 24-message context window. `imageUrl` is present when the assistant
- * generated an image (e.g. the user asked "generate an image of …").
+ * POST /ai/chat { message, imageUrl?, attachmentUrl?, attachmentType? } — one
+ * user turn; the server keeps its own 24-message context window and can SEE
+ * attached images (OCR/vision) plus extracted video frames. `imageUrl` on the
+ * RESULT is present when the assistant GENERATED an image for the ask.
  */
-export async function sendMetricAiChat(message: string): Promise<MetricAiChatResult> {
-  const response = await api.post("/ai/chat", { message });
+export async function sendMetricAiChat(
+  message: string,
+  attachment?: { imageUrl?: string; attachmentUrl?: string; attachmentType?: string },
+): Promise<MetricAiChatResult> {
+  const response = await api.post("/ai/chat", {
+    message,
+    ...(attachment?.imageUrl ? { imageUrl: attachment.imageUrl } : {}),
+    ...(attachment?.attachmentUrl ? { attachmentUrl: attachment.attachmentUrl } : {}),
+    ...(attachment?.attachmentType ? { attachmentType: attachment.attachmentType } : {}),
+  });
   return unwrapApiData<MetricAiChatResult>(response.data, "MetricAi could not answer");
+}
+
+/**
+ * POST /ai/attachments — upload an image/video for MetricAi chat (multipart).
+ * Returns a persistent URL to pass into sendMetricAiChat as imageUrl
+ * (images) or attachmentUrl+attachmentType (videos/files).
+ */
+export async function uploadMetricAiAttachment(file: File): Promise<MetricAiAttachmentResult> {
+  const form = new FormData();
+  form.append("file", file);
+  const response = await api.post("/ai/attachments", form, {
+    headers: { "Content-Type": "multipart/form-data" },
+  });
+  return unwrapApiData<MetricAiAttachmentResult>(response.data, "Attachment upload failed");
+}
+
+/** GET /ai/usage — per-feature daily/monthly usage vs this plan's caps. */
+export async function getMetricAiUsage(): Promise<MetricAiUsageResult> {
+  const response = await api.get("/ai/usage");
+  return unwrapApiData<MetricAiUsageResult>(response.data, "Failed to load MetricAi usage");
 }
 
 /** GET /ai/history?page=&limit= — newest-last list of previous turns. */
