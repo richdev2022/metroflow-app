@@ -55,6 +55,15 @@ const transferSchema = z.object({
   accountName: z.string().min(3, "Account name is required"),
   amount: z.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, "Amount must be greater than 0"),
   remark: z.string().optional(),
+  // International payout beneficiary details (Flutterwave rails)
+  bankName: z.string().optional(),
+  swiftCode: z.string().optional(),
+  routingNumber: z.string().optional(),
+  recipientAddress: z.string().optional(),
+  recipientCity: z.string().optional(),
+  recipientState: z.string().optional(),
+  recipientPostalCode: z.string().optional(),
+  recipientCountry: z.string().optional(),
 }).superRefine((data, ctx) => {
   if (data.currency === "NGN" && !/^\d{10}$/.test(data.accountNumber)) {
     ctx.addIssue({
@@ -63,7 +72,47 @@ const transferSchema = z.object({
       message: "Account number must be 10 digits",
     });
   }
+  if (data.currency === "USD") {
+    const required: Array<[keyof typeof data, string]> = [
+      ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientAddress", "Street address is required for international payouts"],
+      ["recipientCity", "City is required for international payouts"],
+      ["recipientPostalCode", "Postal code is required for international payouts"],
+      ["bankName", "Bank name is required for international payouts"],
+    ];
+    for (const [path, message] of required) {
+      if (!String(data[path] || "").trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+      }
+    }
+  }
 });
+
+// Common Flutterwave USD/GBP payout corridors (ISO-3166-1 alpha-2)
+const INTL_PAYOUT_COUNTRIES: { code: string; name: string }[] = [
+  { code: "US", name: "United States" },
+  { code: "GB", name: "United Kingdom" },
+  { code: "CA", name: "Canada" },
+  { code: "AU", name: "Australia" },
+  { code: "IE", name: "Ireland" },
+  { code: "FR", name: "France" },
+  { code: "DE", name: "Germany" },
+  { code: "IT", name: "Italy" },
+  { code: "ES", name: "Spain" },
+  { code: "NL", name: "Netherlands" },
+  { code: "BE", name: "Belgium" },
+  { code: "AT", name: "Austria" },
+  { code: "PT", name: "Portugal" },
+  { code: "FI", name: "Finland" },
+  { code: "GR", name: "Greece" },
+  { code: "LU", name: "Luxembourg" },
+  { code: "KE", name: "Kenya" },
+  { code: "GH", name: "Ghana" },
+  { code: "ZA", name: "South Africa" },
+  { code: "TZ", name: "Tanzania" },
+  { code: "UG", name: "Uganda" },
+  { code: "RW", name: "Rwanda" },
+];
 
 export default function Wallet() {
   const [searchParams, setSearchParams] = useSearchParams();
@@ -123,11 +172,76 @@ export default function Wallet() {
       accountName: "",
       amount: "",
       remark: "",
+      bankName: "",
+      swiftCode: "",
+      routingNumber: "",
+      recipientAddress: "",
+      recipientCity: "",
+      recipientState: "",
+      recipientPostalCode: "",
+      recipientCountry: "US",
     },
   });
 
   const watchedCurrency = transferForm.watch("currency");
   const watchedAmount = transferForm.watch("amount");
+
+  // ---- International payout: address autofill (OpenStreetMap Nominatim) ----
+  // As the user picks the recipient country and types the street address,
+  // debounced queries suggest matching addresses and fill city/state/postcode.
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [addressSuggestOpen, setAddressSuggestOpen] = useState(false);
+  const [addressSearching, setAddressSearching] = useState(false);
+  const addressPickLockRef = useRef(false);
+  const watchedRecipientAddress = transferForm.watch("recipientAddress");
+  const watchedRecipientCountry = transferForm.watch("recipientCountry");
+
+  useEffect(() => {
+    if (watchedCurrency !== "USD") { setAddressSuggestOpen(false); return; }
+    const q = (watchedRecipientAddress || "").trim();
+    const cc = (watchedRecipientCountry || "").toLowerCase();
+    // Skip lookups right after a suggestion was picked (value just changed).
+    if (q.length < 3 || !cc || addressPickLockRef.current) {
+      setAddressSuggestOpen(false);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      setAddressSearching(true);
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=\${cc}&q=\${encodeURIComponent(q)}`;
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const data = res.ok ? await res.json() : [];
+        setAddressSuggestions(Array.isArray(data) ? data : []);
+        setAddressSuggestOpen(Array.isArray(data) && data.length > 0);
+      } catch {
+        setAddressSuggestions([]);
+        setAddressSuggestOpen(false);
+      } finally {
+        setAddressSearching(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [watchedRecipientAddress, watchedRecipientCountry, watchedCurrency]);
+
+  const pickAddressSuggestion = (item: any) => {
+    const a = item?.address || {};
+    addressPickLockRef.current = true;
+    const street =
+      [a.house_number, a.road].filter(Boolean).join(" ") ||
+      item?.name ||
+      String(item?.display_name || "").split(",")[0] ||
+      "";
+    transferForm.setValue("recipientAddress", street, { shouldValidate: true });
+    transferForm.setValue(
+      "recipientCity",
+      a.city || a.town || a.village || a.suburb || a.county || "",
+      { shouldValidate: true }
+    );
+    transferForm.setValue("recipientState", a.state || "", { shouldValidate: false });
+    transferForm.setValue("recipientPostalCode", a.postcode || "", { shouldValidate: true });
+    setAddressSuggestOpen(false);
+    window.setTimeout(() => { addressPickLockRef.current = false; }, 500);
+  };
 
   // Flutterwave checkout outcome: the backend verify page redirects here with
   // ?status=success|cancelled|pending_settlement&reference=...&token=...
@@ -348,6 +462,16 @@ export default function Wallet() {
               payload.debitAmount = quote.total_debit;
               payload.debitCurrency = "NGN";
           }
+          if (values.currency === "USD") {
+              payload.recipientAddress = values.recipientAddress?.trim() || undefined;
+              payload.recipientCity = values.recipientCity?.trim() || undefined;
+              payload.recipientState = values.recipientState?.trim() || undefined;
+              payload.recipientPostalCode = values.recipientPostalCode?.trim() || undefined;
+              payload.recipientCountry = values.recipientCountry?.trim()?.toUpperCase() || undefined;
+              payload.bankName = values.bankName?.trim() || undefined;
+              payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
+              payload.routingNumber = values.routingNumber?.trim() || undefined;
+          }
           if (otpEnabled) {
               payload.otp = otp;
           }
@@ -418,6 +542,16 @@ export default function Wallet() {
       if (values.currency === "USD" && quote) {
           payload.debitAmount = quote.total_debit;
           payload.debitCurrency = "NGN";
+      }
+      if (values.recipientAddress !== undefined) {
+          payload.recipientAddress = values.recipientAddress?.trim() || undefined;
+          payload.recipientCity = values.recipientCity?.trim() || undefined;
+          payload.recipientState = values.recipientState?.trim() || undefined;
+          payload.recipientPostalCode = values.recipientPostalCode?.trim() || undefined;
+          payload.recipientCountry = values.recipientCountry?.trim()?.toUpperCase() || undefined;
+          payload.bankName = values.bankName?.trim() || undefined;
+          payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
+          payload.routingNumber = values.routingNumber?.trim() || undefined;
       }
 
       const response = await api.post("/transfers/single", payload);
@@ -1020,19 +1154,72 @@ export default function Wallet() {
                       )}
                     />
                     ) : (
+                      <>
                       <FormField
                         control={transferForm.control}
                         name="bankCode"
                         render={({ field }) => (
                           <FormItem>
-                            <FormLabel>Bank Name / SWIFT Code</FormLabel>
+                            <FormLabel>Payout rail</FormLabel>
+                            <Select value={field.value} onValueChange={(v) => field.onChange(v)}>
+                              <FormControl>
+                                <SelectTrigger>
+                                  <SelectValue placeholder="Choose payout rail" />
+                                </SelectTrigger>
+                              </FormControl>
+                              <SelectContent>
+                                <SelectItem value="ACH">ACH — U.S. bank account (local rails)</SelectItem>
+                                <SelectItem value="SWIFT">SWIFT — International wire transfer</SelectItem>
+                              </SelectContent>
+                            </Select>
+                            <FormMessage />
+                          </FormItem>
+                        )}
+                      />
+                      <FormField
+                        control={transferForm.control}
+                        name="bankName"
+                        render={({ field }) => (
+                          <FormItem>
+                            <FormLabel>Bank name</FormLabel>
                             <FormControl>
-                              <Input placeholder="e.g. CHASUS33" {...field} />
+                              <Input placeholder="e.g. JPMorgan Chase Bank" {...field} />
                             </FormControl>
                             <FormMessage />
                           </FormItem>
                         )}
                       />
+                      {watchedBankCode === "SWIFT" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="swiftCode"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>SWIFT / BIC code</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. CHASUS33" {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedBankCode === "ACH" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="routingNumber"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Routing number (ABA)</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. 021000021" maxLength={12} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      </>
                     )}
 
                     <FormField
@@ -1082,6 +1269,117 @@ export default function Wallet() {
                         </FormItem>
                       )}
                     />
+
+                    {watchedCurrency === "USD" && (
+                      <div className="rounded-xl border p-3 space-y-3 bg-muted/20">
+                        <p className="text-sm font-medium">
+                          Recipient address <span className="text-destructive">*</span>
+                          <span className="ml-2 text-xs font-normal text-muted-foreground">
+                            used by Flutterwave for international payouts
+                          </span>
+                        </p>
+
+                        <FormField
+                          control={transferForm.control}
+                          name="recipientCountry"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Country</FormLabel>
+                              <Select
+                                value={field.value}
+                                onValueChange={(v) => field.onChange(v)}
+                              >
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select recipient country" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent className="max-h-64">
+                                  {INTL_PAYOUT_COUNTRIES.map((c) => (
+                                    <SelectItem key={c.code} value={c.code}>
+                                      {c.name} ({c.code})
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+
+                        <FormItem>
+                          <FormLabel>Street address</FormLabel>
+                          <div className="relative">
+                            <FormControl>
+                              <Input
+                                placeholder="Start typing the street address…"
+                                value={transferForm.watch("recipientAddress") || ""}
+                                onChange={(e) => {
+                                  transferForm.setValue("recipientAddress", e.target.value, { shouldValidate: false });
+                                }}
+                                autoComplete="off"
+                              />
+                            </FormControl>
+                            {addressSearching && (
+                              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground absolute right-3 top-2.5" />
+                            )}
+                            {addressSuggestOpen && addressSuggestions.length > 0 && (
+                              <div className="absolute z-30 mt-1 w-full rounded-md border bg-popover shadow-md max-h-56 overflow-y-auto">
+                                {addressSuggestions.map((item, idx) => (
+                                  <button
+                                    key={item.place_id || idx}
+                                    type="button"
+                                    className="w-full text-left px-3 py-2 text-sm hover:bg-accent hover:text-accent-foreground border-b last:border-b-0"
+                                    onClick={() => pickAddressSuggestion(item)}
+                                  >
+                                    {item.display_name}
+                                  </button>
+                                ))}
+                                <p className="px-3 py-1.5 text-[11px] text-muted-foreground">
+                                  Address data © OpenStreetMap contributors
+                                </p>
+                              </div>
+                            )}
+                          </div>
+                          <FormMessage>{transferForm.formState.errors.recipientAddress?.message}</FormMessage>
+                        </FormItem>
+
+                        <div className="grid grid-cols-2 gap-3">
+                          <FormItem>
+                            <FormLabel>City</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="City"
+                                value={transferForm.watch("recipientCity") || ""}
+                                onChange={(e) => transferForm.setValue("recipientCity", e.target.value, { shouldValidate: false })}
+                              />
+                            </FormControl>
+                            <FormMessage>{transferForm.formState.errors.recipientCity?.message}</FormMessage>
+                          </FormItem>
+                          <FormItem>
+                            <FormLabel>State / Province</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="State"
+                                value={transferForm.watch("recipientState") || ""}
+                                onChange={(e) => transferForm.setValue("recipientState", e.target.value, { shouldValidate: false })}
+                              />
+                            </FormControl>
+                          </FormItem>
+                          <FormItem className="col-span-2 sm:col-span-1">
+                            <FormLabel>Postal code</FormLabel>
+                            <FormControl>
+                              <Input
+                                placeholder="ZIP / postcode"
+                                value={transferForm.watch("recipientPostalCode") || ""}
+                                onChange={(e) => transferForm.setValue("recipientPostalCode", e.target.value, { shouldValidate: false })}
+                              />
+                            </FormControl>
+                            <FormMessage>{transferForm.formState.errors.recipientPostalCode?.message}</FormMessage>
+                          </FormItem>
+                        </div>
+                      </div>
+                    )}
 
                     {lookupError && watchedCurrency === "NGN" && (
                         <p className="text-sm text-destructive mt-1">
