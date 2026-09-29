@@ -11,6 +11,7 @@ import {
   Lock,
   Sparkles,
   Trash2,
+  Video,
   X,
   XCircle,
 } from "lucide-react";
@@ -40,16 +41,14 @@ import { useToast } from "@/components/ui/use-toast";
 import { MarkdownRenderer } from "@/components/markdown-renderer";
 import { cn } from "@/lib/utils";
 import { formatTime } from "@/lib/datetime";
-import { uploadChatMedia } from "@/lib/meetings-chat-calls";
-import { api } from "@/lib/api-client";
-import { getApiErrorCode, getApiMessage } from "@/lib/api-response";
-import { resolveMediaUrl } from "@/lib/media-url";
 import {
   clearMetricAiHistory,
   getMetricAiHistory,
   getMetricAiStatus,
+  getMetricAiUsage,
   getMetricAiVideoJob,
   sendMetricAiChat,
+  uploadMetricAiAttachment,
 } from "@/lib/metric-ai";
 import {
   METRIC_AI_SUPPORT_KEY,
@@ -67,6 +66,9 @@ import {
   type SupportThreadStatus,
   type SupportTranscriptTurn,
 } from "@/lib/support-api";
+import { api } from "@/lib/api-client";
+import { getApiErrorCode, getApiMessage } from "@/lib/api-response";
+import { resolveMediaUrl } from "@/lib/media-url";
 import type { MetricAiHistoryMessage, MetricAiStatus } from "@shared/api";
 
 /**
@@ -89,9 +91,11 @@ type MetricAiMessage = MetricAiHistoryMessage & {
   /** Local-only pending flag for optimistic messages. */
   pending?: boolean;
   /** Local-only marker for the human-handoff card pseudo-message. */
-  kind?: "chat" | "handoff";
+  kind?: "chat" | "handoff" | "limit";
   /** Local-only marker for an in-flight async video job placeholder. */
   videoPending?: boolean;
+  /** For kind="limit" — the plan cap that was hit. */
+  limit?: { feature: string; period: string; limit: number; resetsAt?: string };
 };
 
 const METRIC_AI_LOGO = "/icon-192.png"; // square brand mark — the wide wordmark gets cropped to blank inside rounded-full avatar circles
@@ -117,7 +121,9 @@ export default function MetricAiChat() {
   const [clearDialogOpen, setClearDialogOpen] = useState(false);
   const [clearing, setClearing] = useState(false);
   const [pendingImage, setPendingImage] = useState<{ url: string; name: string } | null>(null);
+  const [pendingVideo, setPendingVideo] = useState<{ url: string; name: string } | null>(null);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
 
   // ---- Human handoff / support state ----
   const [handoffDialogOpen, setHandoffDialogOpen] = useState(false);
@@ -131,6 +137,7 @@ export default function MetricAiChat() {
   supportRef.current = support;
 
   const photoInputRef = useRef<HTMLInputElement>(null);
+  const videoInputRef = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
@@ -344,35 +351,83 @@ export default function MetricAiChat() {
     );
   }, []);
 
+  /** Refresh the header quota chips after each turn (non-fatal). */
+  const refreshUsage = useCallback(async () => {
+    try {
+      const u = await getMetricAiUsage();
+      setStatus((prev) => (prev ? { ...prev, usage: u.usage, limits: u.limits } : prev));
+    } catch {
+      /* chips are best-effort */
+    }
+  }, []);
+
   const send = useCallback(
     async (textOverride?: string) => {
       const text = (textOverride ?? draft).trim();
-      if (!text || waiting || !available) return;
+      if ((!text && !pendingImage && !pendingVideo) || waiting || !available) return;
 
+      const sentImage = pendingImage;
+      const sentVideo = pendingVideo;
       const userMsg: MetricAiMessage = {
         id: `local-user-${Date.now()}`,
         role: "user",
         content: text,
-        imageUrl: pendingImage?.url || null,
+        imageUrl: sentImage?.url || null,
+        attachmentUrl: sentVideo?.url || null,
+        attachmentType: sentVideo ? "video" : sentImage ? "image" : null,
         createdAt: new Date().toISOString(),
         pending: true,
       };
       setMessages((prev) => [...prev, userMsg]);
       setDraft("");
       setPendingImage(null);
+      setPendingVideo(null);
       if (textareaRef.current) textareaRef.current.style.height = "0px";
       setWaiting(true);
 
       try {
-        // The /ai/chat endpoint is text-only; when an image is attached we
-        // pass its public URL along as context (the bubble stays clean).
-        const apiText = pendingImage?.url ? `${text}\n\n(Image attached: ${pendingImage.url})` : text;
+        // Attachments ride along as separate fields — the server OCRs/vision-
+        // analyzes images (and video frames) and feeds the report to the model.
+        const attachment = sentVideo
+          ? { attachmentUrl: sentVideo.url, attachmentType: "video" }
+          : sentImage
+            ? { imageUrl: sentImage.url, attachmentType: "image" }
+            : undefined;
         let result: any;
         if (!helpMode) {
           try {
-            result = await sendMetricAiChat(apiText);
+            result = await sendMetricAiChat(text, attachment);
           } catch (err: any) {
             const gcode = (err?.response?.data?.code || err?.response?.data?.data?.code || "").toString();
+
+            // Plan usage cap reached — friendly inline card + upgrade CTA.
+            if (err?.response?.status === 429 || gcode === "ai_limit_reached") {
+              const d = err?.response?.data?.data || {};
+              setMessages((prev) => [
+                ...prev,
+                {
+                  id: `limit-${Date.now()}`,
+                  role: "assistant" as const,
+                  content: "",
+                  imageUrl: null,
+                  createdAt: new Date().toISOString(),
+                  kind: "limit" as const,
+                  limit: {
+                    feature: String(d.feature || "chat"),
+                    period: String(d.period || "daily"),
+                    limit: Number(d.limit) || 0,
+                    resetsAt: d.resetsAt ? String(d.resetsAt) : undefined,
+                  },
+                },
+              ]);
+              toast({
+                title: "Plan limit reached",
+                description: getApiMessage(err, "You've hit your plan's usage limit for this feature."),
+              });
+              void refreshUsage();
+              return;
+            }
+
             const gated =
               err?.response?.status === 401 ||
               err?.response?.status === 403 ||
@@ -385,14 +440,14 @@ export default function MetricAiChat() {
               title: "Free help mode",
               description: "You are now chatting with MetricAi in free Metricorex-help mode. Sign in for the full assistant.",
             });
-            result = await askPublicMetricAi(apiText, helpSessionRef.current || undefined);
+            result = await askPublicMetricAi(text, helpSessionRef.current || undefined);
             if (result.sessionId) {
               helpSessionRef.current = result.sessionId;
               writeAskSessionId(result.sessionId);
             }
           }
         } else {
-          result = await askPublicMetricAi(apiText, helpSessionRef.current || undefined);
+          result = await askPublicMetricAi(text, helpSessionRef.current || undefined);
           if (result.sessionId) {
             helpSessionRef.current = result.sessionId;
             writeAskSessionId(result.sessionId);
@@ -425,6 +480,7 @@ export default function MetricAiChat() {
         if (result.videoJob?.id) {
           pollVideoJob(result.videoJob.id);
         }
+        void refreshUsage();
         if (result.suggestHumanSupport && supportRef.current) {
           toast({
             title: "MetricAi",
@@ -446,7 +502,7 @@ export default function MetricAiChat() {
         setWaiting(false);
       }
     },
-    [draft, waiting, available, pendingImage, toast]
+    [draft, waiting, available, pendingImage, pendingVideo, helpMode, toast, refreshUsage]
   );
 
   const handlePhotoPicked = useCallback(
@@ -456,14 +512,14 @@ export default function MetricAiChat() {
         toast({ variant: "destructive", title: "MetricAi", description: "Please pick an image file." });
         return;
       }
-      if (file.size > 8 * 1024 * 1024) {
-        toast({ variant: "destructive", title: "Image too large", description: "Images are limited to 8 MB." });
+      if (file.size > 12 * 1024 * 1024) {
+        toast({ variant: "destructive", title: "Image too large", description: "Images are limited to 12 MB." });
         return;
       }
       setUploadingImage(true);
       try {
-        const media = await uploadChatMedia(file);
-        setPendingImage({ url: resolveMediaUrl(media.url), name: media.name || file.name });
+        const media = await uploadMetricAiAttachment(file);
+        setPendingImage({ url: resolveMediaUrl(media.url), name: media.filename || file.name });
         if (!draft.trim()) {
           // Give the user a sensible starting prompt for the attached image.
           setDraft("What do you see in this image?");
@@ -477,6 +533,38 @@ export default function MetricAiChat() {
         });
       } finally {
         setUploadingImage(false);
+      }
+    },
+    [draft, toast]
+  );
+
+  const handleVideoPicked = useCallback(
+    async (file?: File | null) => {
+      if (!file) return;
+      if (!file.type.startsWith("video/")) {
+        toast({ variant: "destructive", title: "MetricAi", description: "Please pick a video file (mp4, webm, mov...)." });
+        return;
+      }
+      if (file.size > 60 * 1024 * 1024) {
+        toast({ variant: "destructive", title: "Video too large", description: "Videos are limited to 60 MB in MetricAi." });
+        return;
+      }
+      setUploadingVideo(true);
+      try {
+        const media = await uploadMetricAiAttachment(file);
+        setPendingVideo({ url: resolveMediaUrl(media.url), name: media.filename || file.name });
+        if (!draft.trim()) {
+          setDraft("What happens in this video?");
+          window.setTimeout(() => textareaRef.current?.focus(), 50);
+        }
+      } catch (err) {
+        toast({
+          variant: "destructive",
+          title: "Upload failed",
+          description: getApiMessage(err, "Could not upload the video."),
+        });
+      } finally {
+        setUploadingVideo(false);
       }
     },
     [draft, toast]
@@ -621,6 +709,11 @@ export default function MetricAiChat() {
                         ? "Free help mode · Metricorex questions · sign in for the full MetricAi"
                         : `Always on · Powered by Metricorex${status?.chatModel ? ` · ${status.chatModel}` : ""}`}
                     </p>
+                    {formatUsageLine(helpMode ? null : status?.usage) && (
+                      <p className="text-[10px] text-muted-foreground/80 truncate" title="Daily usage vs your plan limits">
+                        Today: {formatUsageLine(helpMode ? null : status?.usage)}
+                      </p>
+                    )}
                   </div>
                 </div>
                 <Button
@@ -656,7 +749,9 @@ export default function MetricAiChat() {
                   messages.map((msg) =>
                     msg.kind === "handoff" && !support ? (
                       <HandoffRow key={msg.id} onOpen={() => setHandoffDialogOpen(true)} />
-                    ) : msg.kind === "handoff" ? null : (
+                    ) : msg.kind === "handoff" ? null : msg.kind === "limit" ? (
+                      <LimitRow key={msg.id} limit={msg.limit} onUpgrade={() => navigate("/subscription")} />
+                    ) : (
                       <MetricAiBubble key={msg.id} message={msg} />
                     ),
                   )
@@ -683,15 +778,26 @@ export default function MetricAiChat() {
               )}
 
               {/* Composer */}
-              <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0">
-                {pendingImage && (
+              <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0 pb-[max(0.75rem,env(safe-area-inset-bottom))]">
+                {(pendingImage || pendingVideo) && (
                   <div className="mb-2 inline-flex items-center gap-2 rounded-xl border border-border/70 bg-muted/60 p-1.5 pr-2">
-                    <img src={pendingImage.url} alt={pendingImage.name} className="h-10 w-10 rounded-lg object-cover" />
-                    <span className="max-w-[160px] truncate text-xs text-muted-foreground">{pendingImage.name}</span>
+                    {pendingVideo ? (
+                      <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-black/80">
+                        <Video className="h-4 w-4 text-white" />
+                      </span>
+                    ) : (
+                      <img src={pendingImage!.url} alt={pendingImage!.name} className="h-10 w-10 rounded-lg object-cover" />
+                    )}
+                    <span className="max-w-[160px] truncate text-xs text-muted-foreground">
+                      {(pendingVideo || pendingImage)!.name}
+                    </span>
                     <button
                       type="button"
-                      onClick={() => setPendingImage(null)}
-                      aria-label="Remove attached image"
+                      onClick={() => {
+                        setPendingImage(null);
+                        setPendingVideo(null);
+                      }}
+                      aria-label="Remove attachment"
                       className="rounded-full p-0.5 text-muted-foreground hover:text-foreground"
                     >
                       <X className="h-3.5 w-3.5" />
@@ -699,18 +805,33 @@ export default function MetricAiChat() {
                   </div>
                 )}
                 <div className="flex items-end gap-2">
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
-                    onClick={() => photoInputRef.current?.click()}
-                    disabled={uploadingImage || waiting}
-                    title="Attach a photo"
-                    aria-label="Attach a photo"
-                  >
-                    {uploadingImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
-                  </Button>
-                  <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-indigo-500/50 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all">
+                  {!helpMode && (
+                    <>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
+                        onClick={() => photoInputRef.current?.click()}
+                        disabled={uploadingImage || uploadingVideo || waiting}
+                        title="Attach a photo (or paste one)"
+                        aria-label="Attach a photo"
+                      >
+                        {uploadingImage ? <Loader2 className="h-4 w-4 animate-spin" /> : <ImageIcon className="h-4 w-4" />}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 rounded-xl text-muted-foreground hover:text-foreground hover:bg-accent shrink-0"
+                        onClick={() => videoInputRef.current?.click()}
+                        disabled={uploadingImage || uploadingVideo || waiting}
+                        title="Attach a video"
+                        aria-label="Attach a video"
+                      >
+                        {uploadingVideo ? <Loader2 className="h-4 w-4 animate-spin" /> : <Video className="h-4 w-4" />}
+                      </Button>
+                    </>
+                  )}
+                  <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-indigo-500/50 focus-within:ring-2 focus-within:ring-indigo-500/20 transition-all min-w-0">
                     <textarea
                       ref={textareaRef}
                       value={draft}
@@ -718,6 +839,15 @@ export default function MetricAiChat() {
                       onChange={(e) => {
                         setDraft(e.target.value);
                         autoGrow();
+                      }}
+                      onPaste={(e) => {
+                        // Direct image paste — screenshots, copied photos, etc.
+                        const files = Array.from(e.clipboardData?.files || []);
+                        const img = files.find((f) => f.type.startsWith("image/"));
+                        if (img) {
+                          e.preventDefault();
+                          if (!helpMode) handlePhotoPicked(img);
+                        }
                       }}
                       onKeyDown={(e) => {
                         if (e.key === "Enter" && !e.shiftKey) {
@@ -727,11 +857,11 @@ export default function MetricAiChat() {
                       }}
                       rows={1}
                       aria-label="Message MetricAi"
-                      className="flex-1 min-h-[36px] max-h-[140px] resize-none bg-transparent border-0 outline-none py-1.5 px-0 text-sm text-foreground placeholder:text-muted-foreground"
+                      className="flex-1 min-h-[36px] max-h-[140px] resize-none bg-transparent border-0 outline-none py-1.5 px-0 text-sm text-foreground placeholder:text-muted-foreground min-w-0"
                     />
                     <Button
                       onClick={() => send()}
-                      disabled={!draft.trim() || waiting}
+                      disabled={(!draft.trim() && !pendingImage && !pendingVideo) || waiting}
                       size="icon"
                       className="metric-ai-glow h-9 w-9 rounded-xl bg-gradient-to-br from-[#4F46E5] to-[#2563EB] text-white shadow-sm hover:from-[#4338CA] hover:to-[#1D4ED8] disabled:opacity-30 shrink-0 mb-0.5"
                       title="Send"
@@ -750,6 +880,17 @@ export default function MetricAiChat() {
                     const f = e.target.files?.[0];
                     e.target.value = "";
                     handlePhotoPicked(f);
+                  }}
+                />
+                <input
+                  ref={videoInputRef}
+                  type="file"
+                  accept="video/mp4,video/webm,video/quicktime,video/*"
+                  className="hidden"
+                  onChange={(e) => {
+                    const f = e.target.files?.[0];
+                    e.target.value = "";
+                    handleVideoPicked(f);
                   }}
                 />
               </div>
@@ -1217,6 +1358,15 @@ function MetricAiBubble({ message }: { message: MetricAiMessage }) {
               className="max-h-60 w-auto max-w-[280px] rounded-xl object-cover"
             />
           )}
+          {message.attachmentType === "video" && message.attachmentUrl && (
+            <video
+              src={message.attachmentUrl}
+              controls
+              playsInline
+              preload="metadata"
+              className="max-h-60 w-auto max-w-[280px] rounded-xl bg-black/80"
+            />
+          )}
           {message.content && (
             <div className="px-3.5 py-2.5 rounded-2xl rounded-br-md bg-gradient-to-br from-blue-600 via-blue-600 to-violet-600 text-white shadow-md shadow-blue-600/15">
               <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
@@ -1292,6 +1442,65 @@ function HandoffRow({ onOpen }: { onOpen: () => void }) {
       </div>
     </div>
   );
+}
+
+/** Inline card shown when a plan usage cap is hit (429 ai_limit_reached). */
+function LimitRow({
+  limit,
+  onUpgrade,
+}: {
+  limit?: { feature: string; period: string; limit: number; resetsAt?: string };
+  onUpgrade: () => void;
+}) {
+  const featureLabel =
+    limit?.feature === "image" ? "image generations" : limit?.feature === "video" ? "video generations" : "chats";
+  const periodLabel = limit?.period === "monthly" ? "this month" : "today";
+  let resetLabel = "";
+  if (limit?.resetsAt) {
+    const d = new Date(limit.resetsAt);
+    if (!Number.isNaN(d.getTime())) {
+      resetLabel = ` — it resets ${d.toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })}`;
+    }
+  }
+  return (
+    <div className="flex items-start gap-2 animate-in fade-in slide-in-from-bottom-1 duration-200">
+      <MetricAiGlowAvatar />
+      <div className="max-w-[88%] sm:max-w-[76%] rounded-2xl rounded-bl-md border border-amber-500/30 bg-amber-500/5 p-3.5 shadow-sm">
+        <p className="text-sm font-semibold text-foreground">Plan limit reached</p>
+        <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+          You've used all {limit?.limit || "the"} {featureLabel} included in your plan {periodLabel}
+          {resetLabel}. Upgrade for a higher allowance.
+        </p>
+        <Button
+          size="sm"
+          onClick={onUpgrade}
+          className="mt-2.5 h-8 rounded-lg bg-gradient-to-r from-[#4F46E5] to-[#2563EB] px-3 text-xs text-white shadow-sm hover:from-[#4338CA] hover:to-[#1D4ED8]"
+        >
+          <Crown className="mr-1.5 h-3.5 w-3.5" />
+          Upgrade plan
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** Compact "Today: 12/200 chats · 3/15 images · 1/5 videos" line for the header. */
+function formatUsageLine(
+  usage?: Record<string, { daily: { used: number; limit: number | null } }> | null,
+): string | null {
+  if (!usage) return null;
+  const parts: string[] = [];
+  for (const [feature, label] of [
+    ["chat", "chats"],
+    ["image", "img"],
+    ["video", "vid"],
+  ] as const) {
+    const u = usage[feature];
+    if (u?.daily?.limit != null) {
+      parts.push(`${u.daily.used}/${u.daily.limit} ${label}`);
+    }
+  }
+  return parts.length > 0 ? parts.join(" · ") : null;
 }
 
 function TypingDots() {

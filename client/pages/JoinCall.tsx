@@ -74,6 +74,9 @@ const JoinCall = () => {
   } | null>(null);
   const [waitingRoomScreen, setWaitingRoomScreen] = useState(false);
   const [notStartedCountdown, setNotStartedCountdown] = useState<number>(0);
+  // Watchdog: if nothing has resolved (joined / error / password / waiting
+  // room) within 20s, offer a retry instead of an infinite "Preparing" spinner.
+  const [joinStuck, setJoinStuck] = useState(false);
 
   const CURRENT_USER_ID = () => localStorage.getItem('userId') || '';
 
@@ -315,6 +318,16 @@ const JoinCall = () => {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accessState, validateData]);
+
+  // Join watchdog: resolve or offer a retry within 20s.
+  useEffect(() => {
+    if (isJoined || errorScreen || passwordRequired || waitingRoomScreen) {
+      setJoinStuck(false);
+      return;
+    }
+    const t = setTimeout(() => setJoinStuck(true), 20000);
+    return () => clearTimeout(t);
+  }, [isJoined, errorScreen, passwordRequired, waitingRoomScreen, validateLoading, guestValidating]);
 
   useEffect(() => {
     // Guests have no session - skip the authed team fetch (a 401 here would
@@ -759,10 +772,26 @@ const JoinCall = () => {
 
   return (
     <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
-      <div className="flex flex-col items-center gap-4 text-white">
-        <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
-        <p className="text-muted-foreground">Preparing to join…</p>
-      </div>
+      {joinStuck ? (
+        <div className="mx-6 w-full max-w-sm rounded-2xl border border-white/10 bg-white/5 p-6 text-center text-white shadow-xl">
+          <p className="font-semibold">Having trouble joining?</p>
+          <p className="mt-2 text-sm text-white/70">
+            This is taking longer than usual. Check your connection, then try again.
+          </p>
+          <button
+            type="button"
+            onClick={() => window.location.reload()}
+            className="mt-5 w-full rounded-xl bg-indigo-600 py-2.5 text-sm font-semibold text-white hover:bg-indigo-500 active:bg-indigo-700"
+          >
+            Try again
+          </button>
+        </div>
+      ) : (
+        <div className="flex flex-col items-center gap-4 text-white">
+          <Loader2 className="h-10 w-10 animate-spin text-indigo-400" />
+          <p className="text-muted-foreground">Preparing to join…</p>
+        </div>
+      )}
     </div>
   );
 };
