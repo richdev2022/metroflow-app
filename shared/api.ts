@@ -1315,11 +1315,22 @@ export interface MetricAiStatus {
 export interface MetricAiChatResult {
   id: string;
   reply: string;
-  /** Present when the assistant generated an image (CogView) for the ask. */
+  /** Present when the assistant generated an image (CogView/Pollinations) for the ask. */
   imageUrl: string | null;
+  /** Present when the ask started an async video job — poll GET /ai/video/{id}. */
+  videoJob?: { id: string; status: string } | null;
   model: string;
   /** True when MetricAi couldn't help and suggests handing off to human support. */
   suggestHumanSupport: boolean;
+  createdAt: string;
+}
+
+export interface MetricAiVideoJobResult {
+  id: string;
+  status: 'processing' | 'success' | 'failed';
+  videoUrl: string | null;
+  coverUrl: string | null;
+  error: string | null;
   createdAt: string;
 }
 
@@ -1328,6 +1339,8 @@ export interface MetricAiHistoryMessage {
   role: 'user' | 'assistant';
   content: string;
   imageUrl: string | null;
+  videoUrl?: string | null;
+  videoCoverUrl?: string | null;
   createdAt: string;
 }
 
