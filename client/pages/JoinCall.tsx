@@ -175,7 +175,10 @@ const JoinCall = () => {
   const accessState: ValidateAccessState | null = validateData?.accessState ?? null;
   const hasPassword = validateData?.hasPassword ?? call?.hasPassword ?? Boolean(call?.password);
 
-  const effectiveCall = call ?? validateData?.call ?? null;
+  // Backend validate returns call fields FLAT (no nested `call` key) —
+  // effectiveCall was null forever -> auto-join never fired ("Preparing to join…").
+  const effectiveCall =
+    call ?? validateData?.call ?? ((validateData as any)?.id ? (validateData as any) : null) ?? null;
   const effectiveIsHost =
     validateData?.isHost ??
     (effectiveCall

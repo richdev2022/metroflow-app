@@ -179,7 +179,11 @@ const JoinMeeting = () => {
   const hasPassword =
     validateData?.hasPassword ?? meeting?.hasPassword ?? Boolean(meeting?.password);
 
-  const effectiveMeeting = meeting ?? validateData?.meeting ?? null;
+  // The backend validate endpoint returns the meeting fields FLAT (no nested
+  // `meeting` key) — effectiveMeeting was null forever, so the auto-join
+  // effect never fired and participants sat on "Preparing to join…".
+  const effectiveMeeting =
+    meeting ?? validateData?.meeting ?? ((validateData as any)?.id ? (validateData as any) : null) ?? null;
   const effectiveIsHost =
     validateData?.isHost ??
     (effectiveMeeting
