@@ -61,7 +61,6 @@ import {
   readAskSessionId,
   readStoredSupportThread,
   writeAskSessionId,
-  writeAskSessionId,
   writeStoredSupportThread,
   type SupportMessage,
   type SupportThreadStatus,
