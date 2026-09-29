@@ -13,6 +13,7 @@ import type {
   MetricAiChatResult,
   MetricAiHistoryMessage,
   MetricAiHistoryResult,
+  MetricAiVideoJobResult,
 } from "@shared/api";
 
 export type {
@@ -20,6 +21,7 @@ export type {
   MetricAiChatResult,
   MetricAiHistoryMessage,
   MetricAiHistoryResult,
+  MetricAiVideoJobResult,
 };
 
 /** GET /ai/status — availability + plan/model info for the UI gate. */
@@ -47,4 +49,13 @@ export async function getMetricAiHistory(page = 1, limit = 50): Promise<MetricAi
 /** DELETE /ai/history — wipes the server-side history for the caller. */
 export async function clearMetricAiHistory(): Promise<void> {
   await api.delete("/ai/history");
+}
+
+/**
+ * GET /ai/video/{jobId} — poll an async MetricAi video job while it is
+ * "processing". On success videoUrl points at our own storage (never expires).
+ */
+export async function getMetricAiVideoJob(jobId: string): Promise<MetricAiVideoJobResult> {
+  const response = await api.get(`/ai/video/${encodeURIComponent(jobId)}`);
+  return unwrapApiData<MetricAiVideoJobResult>(response.data, "Failed to load video status");
 }

@@ -48,6 +48,7 @@ import {
   clearMetricAiHistory,
   getMetricAiHistory,
   getMetricAiStatus,
+  getMetricAiVideoJob,
   sendMetricAiChat,
 } from "@/lib/metric-ai";
 import {
@@ -89,6 +90,8 @@ type MetricAiMessage = MetricAiHistoryMessage & {
   pending?: boolean;
   /** Local-only marker for the human-handoff card pseudo-message. */
   kind?: "chat" | "handoff";
+  /** Local-only marker for an in-flight async video job placeholder. */
+  videoPending?: boolean;
 };
 
 const METRIC_AI_LOGO = "/icon-192.png"; // square brand mark — the wide wordmark gets cropped to blank inside rounded-full avatar circles
@@ -266,6 +269,81 @@ export default function MetricAiChat() {
     el.style.height = `${Math.min(el.scrollHeight, 140)}px`;
   }, []);
 
+  /**
+   * Poll an async MetricAi video job (10s interval, ~12.5min cap). A
+   * placeholder bubble is swapped in place for the finished video (or a
+   * friendly retry note on failure) — the result also lands in history.
+   */
+  const pollVideoJob = useCallback(async (jobId: string) => {
+    const placeholderId = `video-job-${jobId}`;
+    setMessages((prev) =>
+      prev.some((m) => m.id === placeholderId)
+        ? prev
+        : [
+            ...prev,
+            {
+              id: placeholderId,
+              role: "assistant" as const,
+              content: "Generating your video — it will appear here in a few minutes.",
+              imageUrl: null,
+              createdAt: new Date().toISOString(),
+              videoPending: true,
+            },
+          ],
+    );
+    const deadline = Date.now() + 12.5 * 60 * 1000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10_000));
+      try {
+        const job = await getMetricAiVideoJob(jobId);
+        if (job.status === "success" && job.videoUrl) {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId
+                ? {
+                    ...m,
+                    videoPending: false,
+                    content: "Your video is ready.",
+                    videoUrl: resolveMediaUrl(job.videoUrl!),
+                    videoCoverUrl: job.coverUrl ? resolveMediaUrl(job.coverUrl) : null,
+                  }
+                : m,
+            ),
+          );
+          return;
+        }
+        if (job.status === "failed") {
+          setMessages((prev) =>
+            prev.map((m) =>
+              m.id === placeholderId
+                ? {
+                    ...m,
+                    videoPending: false,
+                    content:
+                      "The video didn't finish this time. You can ask me to try again — or I can generate an image of the same idea instead.",
+                  }
+                : m,
+            ),
+          );
+          return;
+        }
+      } catch {
+        // transient error — keep polling until the deadline
+      }
+    }
+    setMessages((prev) =>
+      prev.map((m) =>
+        m.id === placeholderId
+          ? {
+              ...m,
+              videoPending: false,
+              content: "The video is taking longer than expected. It may still arrive here in a few minutes.",
+            }
+          : m,
+      ),
+    );
+  }, []);
+
   const send = useCallback(
     async (textOverride?: string) => {
       const text = (textOverride ?? draft).trim();
@@ -343,6 +421,10 @@ export default function MetricAiChat() {
           }
           return next;
         });
+        // Async video job kicked off by this ask — poll until it lands.
+        if (result.videoJob?.id) {
+          pollVideoJob(result.videoJob.id);
+        }
         if (result.suggestHumanSupport && supportRef.current) {
           toast({
             title: "MetricAi",
@@ -1158,8 +1240,25 @@ function MetricAiBubble({ message }: { message: MetricAiMessage }) {
               className="mb-2 max-h-72 w-auto max-w-[320px] rounded-xl object-cover"
             />
           )}
+          {message.videoUrl && (
+            <video
+              src={message.videoUrl}
+              poster={message.videoCoverUrl || undefined}
+              controls
+              playsInline
+              preload="metadata"
+              className="mb-2 max-h-72 w-auto max-w-[320px] rounded-xl bg-black/80"
+            />
+          )}
           {message.content ? (
-            <MarkdownRenderer content={message.content} className="text-sm" />
+            message.videoPending ? (
+              <div className="flex items-center gap-2">
+                <Loader2 className="h-4 w-4 animate-spin text-blue-500" />
+                <p className="text-sm text-muted-foreground">{message.content}</p>
+              </div>
+            ) : (
+              <MarkdownRenderer content={message.content} className="text-sm" />
+            )
           ) : (
             <p className="text-sm italic text-muted-foreground">(empty reply)</p>
           )}
