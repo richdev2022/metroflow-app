@@ -79,8 +79,12 @@ export default function AskMetricAiWidget() {
 
   // Hidden on the fullscreen call-room routes (JoinMeeting / JoinCall render
   // VideoCallRoom edge-to-edge there; the Meetings/Calls list pages open the
-  // room in a z-50 dialog that covers the widget anyway).
-  const onCallRoomRoute = /^\/(meetings|calls)\/[^/]+/i.test(location.pathname || "");
+  // room in a z-50 dialog that covers the widget anyway) and on the MetricAi
+  // chat page itself — the floating avatar sat exactly on top of the send
+  // button on mobile, blocking the send CTA.
+  const onCallRoomRoute =
+    /^\/(meetings|calls)\/[^/]+/i.test(location.pathname || "") ||
+    /^\/metric-ai\/?$/i.test(location.pathname || "");
 
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"ai" | "support">("ai");

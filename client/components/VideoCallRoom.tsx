@@ -1290,31 +1290,44 @@ export default function VideoCallRoom({
     const initializeDevice = async () => {
       try {
         const newDevice = new Device();
-        
-        socket.emit('mediasoup:getRouterRtpCapabilities', { roomId }, (response: any) => {
-          if (!isMountedRef.current) return;
-          
-          if (response?.error) {
-            setConnectionError(response.error);
-            return;
-          }
 
-          const routerRtpCapabilities = response.routerRtpCapabilities || response.rtpCapabilities;
-          
-          newDevice.load({ routerRtpCapabilities })
-            .then(() => {
-              if (isMountedRef.current) {
-                setDevice(newDevice);
-                setConnectionError('');
+        // The backend answers with retryable:true while the mediasoup workers
+        // are still booting (or the router is being created) — retry instead of
+        // stranding the participant on a permanent error.
+        const requestCaps = (attempt = 0) => {
+          socket.emit('mediasoup:getRouterRtpCapabilities', { roomId }, (response: any) => {
+            if (!isMountedRef.current) return;
+
+            if (response?.error) {
+              if (response.retryable && attempt < 5) {
+                console.warn(`Router not ready (attempt ${attempt + 1}) — retrying in 2s...`);
+                setTimeout(() => {
+                  if (isMountedRef.current) requestCaps(attempt + 1);
+                }, 2000);
+                return;
               }
-            })
-            .catch((error) => {
-              if (isMountedRef.current) {
-                console.error('Error loading device:', error);
-                setConnectionError('Unable to initialize media device for this room.');
-              }
-            });
-        });
+              setConnectionError(response.error);
+              return;
+            }
+
+            const routerRtpCapabilities = response.routerRtpCapabilities || response.rtpCapabilities;
+
+            newDevice.load({ routerRtpCapabilities })
+              .then(() => {
+                if (isMountedRef.current) {
+                  setDevice(newDevice);
+                  setConnectionError('');
+                }
+              })
+              .catch((error) => {
+                if (isMountedRef.current) {
+                  console.error('Error loading device:', error);
+                  setConnectionError('Unable to initialize media device for this room.');
+                }
+              });
+          });
+        };
+        requestCaps();
       } catch (error) {
         if (isMountedRef.current) {
           console.error('Error initializing device:', error);
@@ -3779,7 +3792,7 @@ export default function VideoCallRoom({
       </div>
 
       {/* Control bar */}
-      <div className="shrink-0 touch-manipulation select-none border-t border-gray-800 bg-gray-900/95 px-2 py-2 backdrop-blur-sm sm:px-4 sm:py-3">
+      <div className="shrink-0 touch-manipulation select-none border-t border-gray-800 bg-gray-900/95 px-2 py-2 backdrop-blur-sm sm:px-4 sm:py-3 pb-[max(0.5rem,env(safe-area-inset-bottom))]">
         {/* Mobile: compact wrapping rows (nothing clipped, all buttons fully tappable,
             end-call always on the first row). sm+: original single centered row. */}
         <div className="mx-auto flex w-full max-w-4xl flex-wrap items-center justify-center gap-x-1.5 gap-y-2 sm:flex-nowrap sm:justify-between sm:gap-2">
