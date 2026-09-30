@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "@/components/layout";
-import { CallRoom } from "@/components/call-room/CallRoom";
+import { startCall } from "@/lib/active-call";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
 import {
   Card,
@@ -318,7 +318,6 @@ export default function Meetings() {
         });
 
         setSelectedMeeting(joinedMeeting);
-        setIsMeetingRoomOpen(true);
         setPasswordMeeting(null);
         setJoinPassword("");
         setJoinPasswordError("");
@@ -327,6 +326,9 @@ export default function Meetings() {
           title: "Joined Meeting",
           description: "You have joined the meeting",
         });
+
+        // Join succeeded — launch the room (App-root ActiveCallHost).
+        launchMeetingRoom(joinedMeeting);
       } catch (err: any) {
         const code = err?.response?.data?.code;
         if (code === "PASSWORD_REQUIRED" || code === "INVALID_PASSWORD") {
@@ -371,8 +373,9 @@ export default function Meetings() {
         return;
       }
       setSelectedMeeting(meeting);
-      setIsMeetingRoomOpen(true);
+      launchMeetingRoom(meeting);
     },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     [handleJoinMeeting]
   );
 
@@ -411,6 +414,41 @@ export default function Meetings() {
       isHost: meeting.hostId === a.userId || (meeting as any).coHostId === a.userId,
       userName: teamMembers.find((m) => m.id === a.userId)?.name,
     }));
+
+  // The CallRoom instance lives in the App root (ActiveCallHost) so it can be
+  // minimized into a floating bubble and survive navigation.
+  const launchMeetingRoom = useCallback(
+    (meeting: Meeting) => {
+      startCall(
+        {
+          roomId: meeting.meetingCode,
+          meetingId: meeting.id,
+          callType: "video",
+          onLeave: () => {
+            handleLeaveMeeting(meeting);
+          },
+          userName: localStorage.getItem("userName") || "User",
+          isHost: isCurrentUserHost(meeting),
+          waitingRoomEnabled: meeting.waitingRoomEnabled,
+          calling: (meeting as any)?.calling || null,
+          title: meeting.title,
+          inviteDetails: {
+            title: meeting.title,
+            code: meeting.meetingCode,
+            password: isCurrentUserHost(meeting) ? (meeting as any).password || null : null,
+            waitingRoomEnabled: meeting.waitingRoomEnabled,
+            startTime: meeting.startTime,
+          },
+          teamMembers,
+          currentParticipantIds: (meeting.attendees ?? []).map((attendee) => attendee.userId),
+          initialParticipants: transformAttendeesToInitialParticipants(meeting),
+        },
+        "video"
+      );
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [handleLeaveMeeting, isCurrentUserHost, teamMembers]
+  );
 
   const formatDateTime = (dateStr: string) => {
     const date = new Date(dateStr);
@@ -1144,54 +1182,8 @@ export default function Meetings() {
         </Dialog>
       )}
 
-      {selectedMeeting && (
-        <Dialog
-          open={isMeetingRoomOpen}
-          onOpenChange={(open) => {
-            if (!open && selectedMeeting) {
-              handleLeaveMeeting(selectedMeeting);
-              return;
-            }
-            setIsMeetingRoomOpen(open);
-          }}
-        >
-          <DialogContent
-            className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0"
-            onEscapeKeyDown={(e) => e.preventDefault()}
-            onPointerDownOutside={(e) => e.preventDefault()}
-            onInteractOutside={(e) => e.preventDefault()}
-            onFocusOutside={(e) => e.preventDefault()}
-          >
-            <DialogTitle className="sr-only">Meeting Room: {selectedMeeting.title}</DialogTitle>
-            <div className="min-h-0 flex-1 h-full">
-              <CallRoom
-                roomId={selectedMeeting.meetingCode}
-                meetingId={selectedMeeting.id}
-                onLeave={() => handleLeaveMeeting(selectedMeeting)}
-                userName={localStorage.getItem("userName") || "User"}
-                isHost={isCurrentUserHost(selectedMeeting)}
-                waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
-                calling={(selectedMeeting as any)?.calling || null}
-                title={selectedMeeting.title}
-                inviteDetails={{
-                  title: selectedMeeting.title,
-                  code: selectedMeeting.meetingCode,
-                  password: isCurrentUserHost(selectedMeeting) ? (selectedMeeting as any).password || null : null,
-                  waitingRoomEnabled: selectedMeeting.waitingRoomEnabled,
-                  startTime: selectedMeeting.startTime,
-                }}
-                teamMembers={teamMembers}
-                currentParticipantIds={(
-                  selectedMeeting.attendees ?? []
-                ).map((attendee) => attendee.userId)}
-                initialParticipants={transformAttendeesToInitialParticipants(
-                  selectedMeeting
-                )}
-              />
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
+      {/* The Meeting Room no longer mounts here — it lives in the App root
+          (ActiveCallHost) via startCall(), enabling minimize-to-bubble. */}
 
       {/* ==========================================
           Dialog: Password Entry

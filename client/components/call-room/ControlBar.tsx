@@ -1,5 +1,19 @@
 import { cn } from "@/lib/utils";
-import { Mic, MicOff, Video, VideoOff, MonitorUp, MonitorX, MessageSquare, Users, Captions, MoreVertical, PhoneOff } from "lucide-react";
+import {
+  Mic,
+  MicOff,
+  Video,
+  VideoOff,
+  MonitorUp,
+  MonitorX,
+  MessageSquare,
+  Users,
+  Captions,
+  MoreVertical,
+  PhoneOff,
+  PictureInPicture2,
+  SwitchCamera,
+} from "lucide-react";
 
 interface ControlButtonSpec {
   key: string;
@@ -28,24 +42,18 @@ interface ControlBarProps {
   onToggleParticipants: () => void;
   onToggleCaptions: () => void;
   onMore?: () => void;
+  /** Collapse the call into a floating bubble (call keeps running). */
+  onMinimize?: () => void;
   onLeave: () => void;
   leaveLabel?: string;
   /** Mobile: swap video between front/back camera. */
   onSwitchCamera?: () => void;
   showSwitchCamera?: boolean;
-  /** Compact layout for small screens. */
-  compactMode?: boolean;
   /** Audio-only room — camera control disabled. */
   audioOnlyRoom?: boolean;
 }
 
-function CtrlButton({
-  spec,
-  compact,
-}: {
-  spec: ControlButtonSpec;
-  compact?: boolean;
-}) {
+function CtrlButton({ spec, small }: { spec: ControlButtonSpec; small?: boolean }) {
   return (
     <button
       type="button"
@@ -55,16 +63,15 @@ function CtrlButton({
       aria-label={spec.label}
       aria-pressed={spec.active}
       className={cn(
-        "relative flex items-center justify-center rounded-full transition-all",
-        compact ? "h-11 w-11" : "h-12 w-12",
-        "border border-white/10 bg-white/10 text-white backdrop-blur hover:bg-white/20",
-        spec.active && "bg-white text-[#0B0F1A] hover:bg-white/90",
+        "relative flex h-12 w-12 shrink-0 items-center justify-center rounded-full border transition-all sm:h-11 sm:w-11",
+        "phone-landscape:h-10 phone-landscape:w-10",
+        "border-white/10 bg-white/10 text-white backdrop-blur hover:bg-white/20 active:scale-95",
+        spec.active && "border-transparent bg-white text-[#0B0F1A] hover:bg-white/90",
         spec.danger && "border-transparent bg-red-600 text-white hover:bg-red-500",
         spec.disabled && "cursor-not-allowed opacity-40 hover:bg-white/10",
       )}
     >
       {spec.icon}
-      {!compact && (spec.active ? spec.label : spec.label)}
       {spec.badge ? (
         <span className="absolute -right-0.5 -top-0.5 flex h-5 min-w-5 items-center justify-center rounded-full bg-red-600 px-1 text-[10px] font-bold text-white">
           {spec.badge > 9 ? "9+" : spec.badge}
@@ -75,23 +82,23 @@ function CtrlButton({
 }
 
 /**
- * The room's bottom control dock. Provider-agnostic — every action maps to a
- * CallingClient call or an app-level socket event handled by the container.
+ * The room's bottom control dock. Icon-only buttons that wrap onto extra rows
+ * on narrow screens — nothing is ever clipped (fixes iOS Safari cutoffs).
+ * Safe-area padding is applied by the footer wrapper.
  */
 export function ControlBar(props: ControlBarProps) {
-  const compact = props.compactMode;
   const buttons: ControlButtonSpec[] = [
     {
       key: "mic",
       icon: props.audioEnabled ? <Mic className="h-5 w-5" /> : <MicOff className="h-5 w-5" />,
-      label: props.audioEnabled ? "Mute" : "Unmute",
+      label: props.audioEnabled ? "Mute microphone" : "Unmute microphone",
       active: !props.audioEnabled,
       onClick: props.onToggleAudio,
     },
     {
       key: "cam",
       icon: props.videoEnabled ? <Video className="h-5 w-5" /> : <VideoOff className="h-5 w-5" />,
-      label: props.videoEnabled ? "Stop video" : "Start video",
+      label: props.videoEnabled ? "Turn camera off" : "Turn camera on",
       active: !props.videoEnabled,
       disabled: props.audioOnlyRoom,
       onClick: props.onToggleVideo,
@@ -102,6 +109,14 @@ export function ControlBar(props: ControlBarProps) {
       label: props.screenSharing ? "Stop sharing" : "Share screen",
       active: props.screenSharing,
       onClick: props.onToggleScreenShare,
+    },
+    {
+      key: "captions",
+      icon: <Captions className="h-5 w-5" />,
+      label: props.captionsEnabled ? "Hide captions" : "Live captions",
+      active: props.captionsEnabled,
+      disabled: !props.captionsSupported,
+      onClick: props.onToggleCaptions,
     },
     {
       key: "chat",
@@ -118,44 +133,39 @@ export function ControlBar(props: ControlBarProps) {
       active: props.participantsOpen,
       onClick: props.onToggleParticipants,
     },
-    {
-      key: "captions",
-      icon: <Captions className="h-5 w-5" />,
-      label: props.captionsEnabled ? "Hide captions" : "Captions",
-      active: props.captionsEnabled,
-      disabled: !props.captionsSupported,
-      onClick: props.onToggleCaptions,
-    },
   ];
 
   return (
-    <div
-      className={cn(
-        "pointer-events-auto flex items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-3 py-2 backdrop-blur-xl",
-        "max-w-full overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
-      )}
-    >
+    <div className="pointer-events-auto flex w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
       {buttons.map((spec) => (
-        <CtrlButton key={spec.key} spec={spec} compact={compact} />
+        <CtrlButton key={spec.key} spec={spec} />
       ))}
       {props.showSwitchCamera && (
         <CtrlButton
-          compact={compact}
           spec={{
             key: "flip",
-            icon: <MoreVertical className="h-5 w-5" />,
+            icon: <SwitchCamera className="h-5 w-5" />,
             label: "Switch camera",
             onClick: props.onSwitchCamera || (() => {}),
           }}
         />
       )}
+      {props.onMinimize && (
+        <CtrlButton
+          spec={{
+            key: "minimize",
+            icon: <PictureInPicture2 className="h-5 w-5" />,
+            label: "Minimize call",
+            onClick: props.onMinimize,
+          }}
+        />
+      )}
       {props.onMore && (
         <CtrlButton
-          compact={compact}
           spec={{
             key: "more",
             icon: <MoreVertical className="h-5 w-5" />,
-            label: "More",
+            label: "More options",
             onClick: props.onMore,
           }}
         />
@@ -166,11 +176,12 @@ export function ControlBar(props: ControlBarProps) {
         title={props.leaveLabel || "Leave"}
         aria-label={props.leaveLabel || "Leave"}
         className={cn(
-          "flex items-center justify-center rounded-full bg-red-600 text-white transition-all hover:bg-red-500",
-          compact ? "h-12 w-14" : "h-12 w-16",
+          "flex h-12 shrink-0 items-center justify-center rounded-full bg-red-600 text-white transition-all hover:bg-red-500 active:scale-95 sm:h-11 sm:w-16",
+          "phone-landscape:h-10",
         )}
       >
         <PhoneOff className="h-5 w-5" />
+        <span className="ml-1.5 hidden text-sm font-medium sm:inline">{props.leaveLabel || "Leave"}</span>
       </button>
     </div>
   );

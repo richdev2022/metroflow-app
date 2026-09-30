@@ -78,5 +78,13 @@ export default {
       },
     },
   },
-  plugins: [require("tailwindcss-animate"), require("@tailwindcss/typography")],
+  plugins: [
+    require("tailwindcss-animate"),
+    require("@tailwindcss/typography"),
+    // phone-landscape: phones rotated sideways (landscape + short viewport) —
+    // used by the call room to compact controls without affecting desktop.
+    function ({ addVariant }: any) {
+      addVariant("phone-landscape", "@media (orientation: landscape) and (max-height: 520px)");
+    },
+  ],
 } satisfies Config;

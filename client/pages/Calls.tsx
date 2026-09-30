@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { formatDistanceToNow } from "date-fns";
 import Layout from "@/components/layout";
-import { CallRoom } from "@/components/call-room/CallRoom";
+import { startCall } from "@/lib/active-call";
 import {
   Card,
   CardContent,
@@ -188,6 +188,8 @@ export default function Calls() {
 
   // Track auto-join attempt
   const autoJoinAttemptedRef = useRef(false);
+  /** Late-bound launch handler — assigned after launchCallRoom is declared. */
+  const launchCallRoomRef = useRef<(call: Call) => void>(() => undefined);
 
   // ==========================================
   // Computed Values
@@ -299,8 +301,9 @@ export default function Calls() {
 
     if (urlCallData) {
       autoJoinAttemptedRef.current = true;
-      setSelectedCall(urlCallData as Call);
-      setIsJoinDialogOpen(true);
+      const call = urlCallData as Call;
+      setSelectedCall(call);
+      launchCallRoomRef.current(call);
       const curSP = new URLSearchParams(searchParams);
       curSP.delete("autoJoin");
       setSearchParams(curSP, { replace: true });
@@ -326,7 +329,7 @@ export default function Calls() {
         updatedAt: new Date().toISOString(),
       } as unknown as Call;
       setSelectedCall(syntheticCall);
-      setIsJoinDialogOpen(true);
+      launchCallRoomRef.current(syntheticCall);
       const curSP = new URLSearchParams(searchParams);
       curSP.delete("autoJoin");
       setSearchParams(curSP, { replace: true });
@@ -396,7 +399,6 @@ export default function Calls() {
         });
 
         setSelectedCall(joinedCall);
-        setIsJoinDialogOpen(true);
         setPasswordCall(null);
         setJoinPassword("");
         setJoinPasswordError("");
@@ -405,6 +407,9 @@ export default function Calls() {
           title: "Joined Call",
           description: "You have joined the call",
         });
+
+        // Join succeeded — launch the room (App-root ActiveCallHost).
+        launchCallRoomRef.current(joinedCall);
       } catch (err) {
         // Backend uses inconsistent error shapes (errorCode/code, lower/UPPER).
         // Normalize to UPPER_SNAKE so every branch below actually matches.
@@ -429,18 +434,79 @@ export default function Calls() {
     [joinCall, isCurrentUserHost, promptForCallPassword, toast]
   );
 
-  const handleOpenCallRoom = useCallback(
-    (call: Call) => {
-      if (!isCurrentUserHost(call) && !isCurrentUserJoined(call)) {
-        handleJoinCall(call);
-        return;
-      }
-      setSelectedCall(call);
-      setIsJoinDialogOpen(true);
+  // ==========================================
+  // Participant Added Handler (from CallRoom)
+  // ==========================================
+  const handleParticipantsAdded = useCallback(
+    (participantIds: string[]) => {
+      if (!selectedCall) return;
+
+      setSelectedCall((prev) => {
+        if (!prev) return prev;
+
+        const existingIds = new Set(
+          (prev.participants || []).map((p) => p.userId)
+        );
+        const now = new Date().toISOString();
+
+        return {
+          ...prev,
+          updatedAt: now,
+          participants: [
+            ...(prev.participants || []),
+            ...participantIds
+              .filter((userId) => !existingIds.has(userId))
+              .map((userId) => ({
+                id: `pending_${userId}_${Date.now()}`,
+                userId,
+                status: "invited" as const,
+              })),
+          ],
+        };
+      });
     },
-    [isCurrentUserHost, isCurrentUserJoined, handleJoinCall]
+    [selectedCall]
   );
 
+  // ==========================================
+  // Participant Status Change Handler (from CallRoom)
+  // Keeps parent selectedCall.participants in sync so reopening the room
+  // preserves statuses of joined/left/invited users.
+  // ==========================================
+  const handleParticipantStatusChanged = useCallback(
+    (payload: { userId: string; status: "invited" | "joined" | "left" }) => {
+      if (!selectedCall) return;
+      const { userId, status } = payload;
+
+      setSelectedCall((prev) => {
+        if (!prev) return prev;
+        const now = new Date().toISOString();
+        let changed = false;
+        const next = (prev.participants || []).map((p) => {
+          if (p.userId !== userId) return p;
+          if (p.status === status && status !== "joined") return p;
+          changed = true;
+          const patch: Partial<typeof p> = { status };
+          if (status === "joined") {
+            patch.joinedAt = new Date().toISOString();
+            patch.leftAt = undefined;
+          }
+          if (status === "left") {
+            patch.leftAt = new Date().toISOString();
+          }
+          return { ...p, ...patch };
+        });
+        if (!changed) return prev;
+        return { ...prev, participants: next, updatedAt: now };
+      });
+    },
+    [selectedCall]
+  );
+
+  // ==========================================
+  // Launch the room — the CallRoom instance lives in the App root
+  // (ActiveCallHost) so it can be minimized and survive navigation.
+  // ==========================================
   const handleLeaveCall = useCallback(
     async (call: Call) => {
       setIsProcessing(true);
@@ -463,6 +529,54 @@ export default function Calls() {
       }
     },
     [leaveCall, toast]
+  );
+
+  const launchCallRoom = useCallback(
+    (call: Call) => {
+      startCall(
+        {
+          roomId: call.callCode,
+          callId: call.id,
+          callType: call.type,
+          onLeave: () => {
+            handleLeaveCall(call);
+          },
+          userName: CURRENT_USER_NAME(),
+          isHost: isCurrentUserHost(call),
+          waitingRoomEnabled: call.waitingRoomEnabled,
+          calling: (call as any)?.calling || null,
+          title: call.name || undefined,
+          teamMembers: teamMembers,
+          currentParticipantIds: (call.participants || []).map((participant) => participant.userId),
+          onParticipantsAdded: handleParticipantsAdded,
+          onParticipantStatusChange: handleParticipantStatusChanged,
+          initialParticipants: call.participants || [],
+          inviteDetails: {
+            title: call.name || undefined,
+            code: call.callCode,
+            password: isCurrentUserHost(call) ? (call as any).password || null : null,
+            waitingRoomEnabled: call.waitingRoomEnabled,
+            startTime: call.startedAt || undefined,
+          },
+        },
+        call.type === "audio" ? "audio" : "video"
+      );
+    },
+    [handleLeaveCall, handleParticipantsAdded, handleParticipantStatusChanged, isCurrentUserHost, teamMembers]
+  );
+  launchCallRoomRef.current = launchCallRoom;
+
+  const handleOpenCallRoom = useCallback(
+    (call: Call) => {
+      if (!isCurrentUserHost(call) && !isCurrentUserJoined(call)) {
+        handleJoinCall(call);
+        return;
+      }
+      setSelectedCall(call);
+      launchCallRoom(call);
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [isCurrentUserHost, isCurrentUserJoined, handleJoinCall, launchCallRoom]
   );
 
   const handleEndCall = useCallback(
@@ -512,75 +626,6 @@ export default function Calls() {
       setIsProcessing(false);
     }
   }, [callToDelete, deleteCall, toast]);
-
-  // ==========================================
-  // Participant Added Handler (from VideoCallRoom)
-  // ==========================================
-  const handleParticipantsAdded = useCallback(
-    (participantIds: string[]) => {
-      if (!selectedCall) return;
-
-      setSelectedCall((prev) => {
-        if (!prev) return prev;
-
-        const existingIds = new Set(
-          (prev.participants || []).map((p) => p.userId)
-        );
-        const now = new Date().toISOString();
-
-        return {
-          ...prev,
-          updatedAt: now,
-          participants: [
-            ...(prev.participants || []),
-            ...participantIds
-              .filter((userId) => !existingIds.has(userId))
-              .map((userId) => ({
-                id: `pending_${userId}_${Date.now()}`,
-                userId,
-                status: "invited" as const,
-              })),
-          ],
-        };
-      });
-    },
-    [selectedCall]
-  );
-
-  // ==========================================
-  // Participant Status Change Handler (from VideoCallRoom)
-  // Keeps parent selectedCall.participants in sync so closing+reopening
-  // the room dialog preserves statuses of joined/left/invited users.
-  // ==========================================
-  const handleParticipantStatusChanged = useCallback(
-    (payload: { userId: string; status: "invited" | "joined" | "left" }) => {
-      if (!selectedCall) return;
-      const { userId, status } = payload;
-
-      setSelectedCall((prev) => {
-        if (!prev) return prev;
-        const now = new Date().toISOString();
-        let changed = false;
-        const next = (prev.participants || []).map((p) => {
-          if (p.userId !== userId) return p;
-          if (p.status === status && status !== "joined") return p;
-          changed = true;
-          const patch: Partial<typeof p> = { status };
-          if (status === "joined") {
-            patch.joinedAt = new Date().toISOString();
-            patch.leftAt = undefined;
-          }
-          if (status === "left") {
-            patch.leftAt = new Date().toISOString();
-          }
-          return { ...p, ...patch };
-        });
-        if (!changed) return prev;
-        return { ...prev, participants: next, updatedAt: now };
-      });
-    },
-    [selectedCall]
-  );
 
   // ==========================================
   // Dial-Back helper (for Call Details dialog — dial back invited / left users directly)
@@ -1341,58 +1386,10 @@ export default function Calls() {
       )}
 
       {/* ==========================================
-          Dialog: Call Room (VideoCallRoom)
+          The Call Room no longer mounts here — it lives in the App root
+          (ActiveCallHost) via startCall(), which enables minimize-to-bubble
+          and keeps media running across navigation.
           ========================================== */}
-      {selectedCall && selectedCall.callCode && (
-        <Dialog
-          open={isJoinDialogOpen}
-          onOpenChange={(open) => {
-            if (!open && selectedCall) {
-              // When dialog closes, leave the call
-              handleLeaveCall(selectedCall);
-              return;
-            }
-            setIsJoinDialogOpen(open);
-          }}
-        >
-          <DialogContent
-            className="max-w-screen max-h-screen w-screen h-screen p-0 m-0 rounded-none overflow-hidden border-0"
-            onEscapeKeyDown={(e) => e.preventDefault()}
-            onPointerDownOutside={(e) => e.preventDefault()}
-            onInteractOutside={(e) => e.preventDefault()}
-            onFocusOutside={(e) => e.preventDefault()}
-          >
-            <DialogTitle className="sr-only">{selectedCall.type === "video" ? "Video" : "Audio"} Call Room</DialogTitle>
-            <div className="min-h-0 flex-1 h-full">
-              <CallRoom
-                roomId={selectedCall.callCode}
-                callId={selectedCall.id}
-                callType={selectedCall.type}
-                onLeave={() => handleLeaveCall(selectedCall)}
-                userName={CURRENT_USER_NAME()}
-                isHost={isCurrentUserHost(selectedCall)}
-                waitingRoomEnabled={selectedCall.waitingRoomEnabled}
-                calling={(selectedCall as any)?.calling || null}
-                title={selectedCall.name || undefined}
-                teamMembers={teamMembers}
-                currentParticipantIds={(
-                  selectedCall.participants || []
-                ).map((participant) => participant.userId)}
-                onParticipantsAdded={handleParticipantsAdded}
-                onParticipantStatusChange={handleParticipantStatusChanged}
-                initialParticipants={selectedCall.participants || []}
-                inviteDetails={{
-                  title: selectedCall.name || undefined,
-                  code: selectedCall.callCode,
-                  password: isCurrentUserHost(selectedCall) ? (selectedCall as any).password || null : null,
-                  waitingRoomEnabled: selectedCall.waitingRoomEnabled,
-                  startTime: selectedCall.startedAt || undefined,
-                }}
-              />
-            </div>
-          </DialogContent>
-        </Dialog>
-      )}
 
       {/* ==========================================
           Dialog: Password Entry
