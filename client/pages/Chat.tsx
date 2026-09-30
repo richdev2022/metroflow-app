@@ -55,6 +55,7 @@ import {
   useCreateCall,
   uploadChatMedia,
 } from "@/lib/meetings-chat-calls";
+import { startCall } from "@/lib/active-call";
 import { Conversation, CreateConversationInput, TeamMember, MessageTypeName, SendMessageInput } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
@@ -1189,7 +1190,6 @@ export default function Chat() {
 
       const callId = createdCall.id;
       const callCode = (createdCall as any)?.callCode || (createdCall as any)?.call_code || callId;
-      const roomId = callCode;
 
       // NOTE: the backend already emits `call:incoming` to every invitee inside
       // POST /calls — emitting call:invite from the client as well caused each
@@ -1201,9 +1201,30 @@ export default function Chat() {
         setActiveCallRingback({ callId, stop: rbStop });
       } catch {}
 
-      // Navigate host to call room
-      navigate(
-        `/calls?roomId=${encodeURIComponent(roomId)}&autoJoin=1&isHost=true&callType=${type}&callId=${encodeURIComponent(callId)}&callCode=${encodeURIComponent(callCode)}`
+      // Launch the room directly from Chat (App-root ActiveCallHost) — the
+      // user stays in the conversation; minimizing the call returns here.
+      // The host ringback keeps ringing inside the room until someone joins.
+      startCall(
+        {
+          roomId: callCode,
+          callId,
+          callType: type,
+          onLeave: () => {
+            stopActiveRingback();
+          },
+          userName: CURRENT_USER_NAME(),
+          isHost: true,
+          waitingRoomEnabled: isGroup,
+          calling: (createdCall as any)?.calling || null,
+          title: conv.name || (type === "video" ? "Video call" : "Audio call"),
+          initialParticipants: [],
+          inviteDetails: {
+            code: callCode,
+            password: null,
+            waitingRoomEnabled: isGroup,
+          },
+        },
+        type,
       );
     } catch (err: any) {
       toast({
@@ -1784,8 +1805,8 @@ export default function Chat() {
                   >
                     <div className="flex items-center gap-3">
                       <div className="relative shrink-0">
-                        <span className="metric-ai-glow flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-gradient-to-br from-[#4F46E5] to-[#2563EB] ring-1 ring-indigo-500/40">
-                          <img src="/Assets/logo.png" alt="" className="h-8 w-8 rounded-full object-cover" />
+                        <span className="metric-ai-glow flex h-12 w-12 items-center justify-center overflow-hidden rounded-full bg-white ring-1 ring-indigo-500/40">
+                          <img src="/Assets/logo-mark.png" alt="" className="h-9 w-9 object-contain" />
                         </span>
                       </div>
                       <div className="flex-1 min-w-0">

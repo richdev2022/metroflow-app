@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { CallRoom } from '@/components/call-room/CallRoom';
+import { startCall } from '@/lib/active-call';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -405,6 +405,91 @@ const JoinMeeting = () => {
     navigate('/');
   }, [navigate]);
 
+  // Launch the room through the App-root ActiveCallHost (startCall) so the
+  // meeting can be minimized into a floating bubble and survive navigation.
+  const launchedKeyRef = useRef('');
+  useEffect(() => {
+    if (isGuest && isJoined && guestInfo) {
+      const key = `guest-${guestInfo.meeting?.id || meetingCode}`;
+      if (launchedKeyRef.current === key) return;
+      launchedKeyRef.current = key;
+      startCall(
+        {
+          roomId: guestInfo.meeting?.meetingCode || meetingCode,
+          meetingId: guestInfo.meeting?.id,
+          callType: 'video',
+          onLeave: leaveGuestRoom,
+          userName: guestInfo.guestName,
+          isHost: false,
+          waitingRoomEnabled: guestInfo.meeting?.waitingRoomEnabled,
+          calling: (guestInfo as any).calling || null,
+          inviteDetails: {
+            title: guestInfo.meeting?.title,
+            code: guestInfo.meeting?.meetingCode || meetingCode,
+            password: null,
+            waitingRoomEnabled: guestInfo.meeting?.waitingRoomEnabled,
+            startTime: guestInfo.meeting?.startTime,
+          },
+        },
+        'video',
+      );
+    } else if (!isGuest && isJoined && effectiveMeeting) {
+      const key = `auth-${effectiveMeeting.id}`;
+      if (launchedKeyRef.current === key) return;
+      launchedKeyRef.current = key;
+      startCall(
+        {
+          roomId: effectiveMeeting.meetingCode,
+          meetingId: effectiveMeeting.id,
+          callType: 'video',
+          onLeave: () => navigate('/dashboard'),
+          userName: localStorage.getItem('userName') || 'User',
+          isHost: effectiveIsHost,
+          waitingRoomEnabled: effectiveMeeting.waitingRoomEnabled,
+          calling: (meeting as any)?.calling || (effectiveMeeting as any)?.calling || null,
+          title: effectiveMeeting.title,
+          inviteDetails: {
+            title: effectiveMeeting.title,
+            code: effectiveMeeting.meetingCode,
+            password: effectiveIsHost ? (effectiveMeeting as any).password || null : null,
+            waitingRoomEnabled: effectiveMeeting.waitingRoomEnabled,
+            startTime: effectiveMeeting.startTime,
+          },
+          teamMembers,
+          currentParticipantIds,
+          initialParticipants: (effectiveMeeting.participants ??
+            effectiveMeeting.attendees ??
+            []
+          ).map((a: any): {
+            userId: string;
+            status: 'invited' | 'joined' | 'left';
+            joinedAt?: string;
+            leftAt?: string;
+            isHost?: boolean;
+            userName?: string;
+          } => ({
+            userId: a.userId,
+            status:
+              a.status === 'accepted' || a.status === 'joined'
+                ? 'joined'
+                : a.status === 'left'
+                ? 'left'
+                : 'invited',
+            isHost:
+              Boolean(a.isHost) ||
+              effectiveMeeting.hostId === a.userId ||
+              (effectiveMeeting as any).coHostId === a.userId,
+            userName:
+              teamMembers.find((m) => m.id === a.userId)?.name || a.userName,
+            joinedAt: a.joinedAt,
+            leftAt: a.leftAt,
+          })),
+        },
+        'video',
+      );
+    }
+  }, [isGuest, isJoined, guestInfo, effectiveMeeting, meetingCode, leaveGuestRoom, navigate, effectiveIsHost, meeting, teamMembers, currentParticipantIds]);
+
   if (validateLoading || guestValidating || (!isGuest && !accessState && !validateError)) {
     return (
       <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
@@ -568,26 +653,8 @@ const JoinMeeting = () => {
   }
 
   if (isGuest && isJoined && guestInfo) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <CallRoom
-          roomId={guestInfo.meeting?.meetingCode || meetingCode}
-          meetingId={guestInfo.meeting?.id}
-          onLeave={leaveGuestRoom}
-          userName={guestInfo.guestName}
-          isHost={false}
-          waitingRoomEnabled={guestInfo.meeting?.waitingRoomEnabled}
-          calling={(guestInfo as any).calling || null}
-          inviteDetails={{
-            title: guestInfo.meeting?.title,
-            code: guestInfo.meeting?.meetingCode || meetingCode,
-            password: null,
-            waitingRoomEnabled: guestInfo.meeting?.waitingRoomEnabled,
-            startTime: guestInfo.meeting?.startTime,
-          }}
-        />
-      </div>
-    );
+    // Launched via the App-root ActiveCallHost (see effect) — render nothing.
+    return null;
   }
 
   // NOTE: the old static waiting-room screens (guest + authed) were removed —
@@ -781,56 +848,8 @@ const JoinMeeting = () => {
   }
 
   if (isJoined && effectiveMeeting) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <CallRoom
-          roomId={effectiveMeeting.meetingCode}
-          meetingId={effectiveMeeting.id}
-          onLeave={() => navigate('/dashboard')}
-          userName={localStorage.getItem('userName') || 'User'}
-          isHost={effectiveIsHost}
-          waitingRoomEnabled={effectiveMeeting.waitingRoomEnabled}
-          calling={(meeting as any)?.calling || (effectiveMeeting as any)?.calling || null}
-          title={effectiveMeeting.title}
-          inviteDetails={{
-            title: effectiveMeeting.title,
-            code: effectiveMeeting.meetingCode,
-            password: effectiveIsHost ? (effectiveMeeting as any).password || null : null,
-            waitingRoomEnabled: effectiveMeeting.waitingRoomEnabled,
-            startTime: effectiveMeeting.startTime,
-          }}
-          teamMembers={teamMembers}
-          currentParticipantIds={currentParticipantIds}
-          initialParticipants={(effectiveMeeting.participants ??
-            effectiveMeeting.attendees ??
-            []
-          ).map((a: any): {
-            userId: string;
-            status: 'invited' | 'joined' | 'left';
-            joinedAt?: string;
-            leftAt?: string;
-            isHost?: boolean;
-            userName?: string;
-          } => ({
-            userId: a.userId,
-            status:
-              a.status === 'accepted' || a.status === 'joined'
-                ? 'joined'
-                : a.status === 'left'
-                ? 'left'
-                : 'invited',
-            isHost:
-              Boolean(a.isHost) ||
-              effectiveMeeting.hostId === a.userId ||
-              (effectiveMeeting as any).coHostId === a.userId,
-            userName:
-              teamMembers.find((m) => m.id === a.userId)?.name || a.userName,
-            joinedAt: a.joinedAt,
-            leftAt: a.leftAt,
-          }))}
-        />
-      </div>
-    );
+    // Launched via the App-root ActiveCallHost (see effect) — render nothing.
+    return null;
   }
 
   return (

@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { CallRoom } from '@/components/call-room/CallRoom';
+import { startCall } from '@/lib/active-call';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -388,6 +388,71 @@ const JoinCall = () => {
     navigate('/');
   }, [navigate]);
 
+  // Launch the room through the App-root ActiveCallHost (startCall) so the
+  // call can be minimized into a floating bubble and survive navigation.
+  const launchedKeyRef = useRef('');
+  useEffect(() => {
+    if (isGuest && isJoined && guestInfo) {
+      const key = `guest-${guestInfo.call?.id || callCode}`;
+      if (launchedKeyRef.current === key) return;
+      launchedKeyRef.current = key;
+      startCall(
+        {
+          roomId: guestInfo.call?.callCode || callCode,
+          callId: guestInfo.call?.id,
+          callType: (guestInfo.call?.type as 'audio' | 'video') || 'video',
+          onLeave: leaveGuestRoom,
+          userName: guestInfo.guestName,
+          isHost: false,
+          waitingRoomEnabled: guestInfo.call?.waitingRoomEnabled,
+          calling: (guestInfo as any).calling || null,
+          inviteDetails: {
+            code: guestInfo.call?.callCode || callCode,
+            password: null,
+            waitingRoomEnabled: guestInfo.call?.waitingRoomEnabled,
+          },
+        },
+        (guestInfo.call?.type as 'audio' | 'video') === 'audio' ? 'audio' : 'video',
+      );
+    } else if (!isGuest && isJoined && effectiveCall) {
+      const key = `auth-${effectiveCall.id}`;
+      if (launchedKeyRef.current === key) return;
+      launchedKeyRef.current = key;
+      startCall(
+        {
+          roomId: effectiveCall.callCode,
+          callId: effectiveCall.id,
+          callType: effectiveCall.type,
+          onLeave: () => navigate('/dashboard'),
+          userName: localStorage.getItem('userName') || 'User',
+          isHost: effectiveIsHost,
+          waitingRoomEnabled: effectiveCall.waitingRoomEnabled,
+          calling: (call as any)?.calling || (effectiveCall as any)?.calling || null,
+          inviteDetails: {
+            code: effectiveCall.callCode,
+            password: effectiveIsHost ? (effectiveCall as any).password || null : null,
+            waitingRoomEnabled: effectiveCall.waitingRoomEnabled,
+          },
+          teamMembers,
+          currentParticipantIds,
+          initialParticipants: effectiveCall.participants?.map((p: any) => ({
+            userId: p.userId,
+            status: p.status,
+            joinedAt: p.joinedAt,
+            leftAt: p.leftAt,
+            isHost:
+              Boolean(p.isHost) ||
+              effectiveCall.hostId === p.userId ||
+              (effectiveCall as any).coHostId === p.userId,
+            userName:
+              teamMembers.find((m) => m.id === p.userId)?.name || p.userName,
+          })),
+        },
+        effectiveCall.type === 'audio' ? 'audio' : 'video',
+      );
+    }
+  }, [isGuest, isJoined, guestInfo, effectiveCall, callCode, leaveGuestRoom, navigate, effectiveIsHost, call, teamMembers, currentParticipantIds]);
+
   if (validateLoading || guestValidating || (!isGuest && !accessState && !validateError)) {
     return (
       <div className="fixed inset-0 bg-gradient-to-b from-gray-900 to-black flex items-center justify-center z-50">
@@ -549,25 +614,10 @@ const JoinCall = () => {
   }
 
   if (isGuest && isJoined && guestInfo) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <CallRoom
-          roomId={guestInfo.call?.callCode || callCode}
-          callId={guestInfo.call?.id}
-          callType={(guestInfo.call?.type as 'audio' | 'video') || 'video'}
-          onLeave={leaveGuestRoom}
-          userName={guestInfo.guestName}
-          isHost={false}
-          waitingRoomEnabled={guestInfo.call?.waitingRoomEnabled}
-          calling={(guestInfo as any).calling || null}
-          inviteDetails={{
-            code: guestInfo.call?.callCode || callCode,
-            password: null,
-            waitingRoomEnabled: guestInfo.call?.waitingRoomEnabled,
-          }}
-        />
-      </div>
-    );
+    // The room is launched via the App-root ActiveCallHost (startCall) —
+    // see the effect below. This branch only keeps the page from rendering
+    // its join form while the call is live.
+    return null;
   }
 
   // NOTE: the old static waiting-room screens (guest + authed) were removed —
@@ -740,39 +790,8 @@ const JoinCall = () => {
   }
 
   if (isJoined && effectiveCall) {
-    return (
-      <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <CallRoom
-          roomId={effectiveCall.callCode}
-          callId={effectiveCall.id}
-          callType={effectiveCall.type}
-          onLeave={() => navigate('/dashboard')}
-          userName={localStorage.getItem('userName') || 'User'}
-          isHost={effectiveIsHost}
-          waitingRoomEnabled={effectiveCall.waitingRoomEnabled}
-          calling={(call as any)?.calling || (effectiveCall as any)?.calling || null}
-          inviteDetails={{
-            code: effectiveCall.callCode,
-            password: effectiveIsHost ? (effectiveCall as any).password || null : null,
-            waitingRoomEnabled: effectiveCall.waitingRoomEnabled,
-          }}
-          teamMembers={teamMembers}
-          currentParticipantIds={currentParticipantIds}
-          initialParticipants={effectiveCall.participants?.map((p: any) => ({
-            userId: p.userId,
-            status: p.status,
-            joinedAt: p.joinedAt,
-            leftAt: p.leftAt,
-            isHost:
-              Boolean(p.isHost) ||
-              effectiveCall.hostId === p.userId ||
-              (effectiveCall as any).coHostId === p.userId,
-            userName:
-              teamMembers.find((m) => m.id === p.userId)?.name || p.userName,
-          }))}
-        />
-      </div>
-    );
+    // Launched via the App-root ActiveCallHost (see effect) — render nothing.
+    return null;
   }
 
   return (
