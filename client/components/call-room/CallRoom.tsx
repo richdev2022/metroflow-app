@@ -171,6 +171,8 @@ export function CallRoom({
   const recordedChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
   const clientUnsubsRef = useRef<Array<() => void>>([]);
+  /** Late-bound handle so a failed connect can re-invoke connectMedia. */
+  const connectMediaRef = useRef<(creds: CallingCredentials | null) => void>(() => undefined);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const captionsSupported = typeof window !== "undefined" && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
 
@@ -183,6 +185,42 @@ export function CallRoom({
     if (ack) socket.emit(event, payload, ack);
     else socket.emit(event, payload);
   }, []);
+
+  /** Server-side (Egress) recording id when one is active for this room. */
+  const serverRecordingIdRef = useRef<string | null>(null);
+  /** One silent reconnect with freshly-minted credentials per join attempt. */
+  const mediaRetryRef = useRef(0);
+
+  const teardownMediaClient = useCallback(() => {
+    const c = clientRef.current;
+    clientRef.current = null;
+    for (const fn of clientUnsubsRef.current) {
+      try { fn(); } catch { /* ignore */ }
+    }
+    clientUnsubsRef.current = [];
+    if (c) {
+      c.disconnect().catch(() => undefined);
+    }
+  }, []);
+
+  /** Re-mint media credentials — the backend may hand back MediaSoup creds
+   * when the previously-selected provider (e.g. LiveKit) is unreachable. */
+  const refreshCredentials = useCallback(async (): Promise<CallingCredentials | null> => {
+    try {
+      const res = await api.post("/rtc/token", {
+        roomType: isMeeting ? "meeting" : "call",
+        roomId: effectiveRoomId,
+      });
+      const creds = res?.data?.data?.credentials || res?.data?.credentials;
+      if (creds?.provider) {
+        credentialsRef.current = creds as CallingCredentials;
+        return creds as CallingCredentials;
+      }
+    } catch (err: any) {
+      console.warn("[call-room] credential refresh failed:", err?.response?.data?.error || err?.message);
+    }
+    return null;
+  }, [effectiveRoomId, isMeeting]);
 
   // ------------------------------------------------------------------
   // Socket room lifecycle (presence / waiting room / duration / chat)
@@ -240,13 +278,31 @@ export function CallRoom({
     setConnection("connecting");
     client
       .connect()
-      .then(() => setPhase((cur) => (cur === "joining" ? "connected" : cur)))
-      .catch((err) => {
+      .then(() => {
+        mediaRetryRef.current = 0;
+        setPhase((cur) => (cur === "joining" ? "connected" : cur));
+      })
+      .catch(async (err) => {
         console.error("[call-room] media connect failed:", err);
+        // Credentials can go stale between minting and connecting (e.g. the
+        // media server dies in between). Re-fetch once — the backend now
+        // health-checks LiveKit at mint time, so the retry either gets fresh
+        // LiveKit credentials or MediaSoup ones and the call still happens.
+        const failedProvider = credentialsRef.current?.provider;
+        if (failedProvider === "livekit" && mediaRetryRef.current < 1) {
+          mediaRetryRef.current += 1;
+          teardownMediaClient();
+          const fresh = await refreshCredentials();
+          if (fresh) {
+            connectMediaRef.current(fresh);
+            return;
+          }
+        }
         setConnectionError(String(err?.message || "Unable to connect to the call media server"));
         setPhase("error");
       });
-  }, [callType, displayName, effectiveRoomId, getSingletonSocket.length, isHost, localUserId, toast]);
+  }, [callType, displayName, effectiveRoomId, getSingletonSocket.length, isHost, localUserId, refreshCredentials, teardownMediaClient, toast]);
+  connectMediaRef.current = connectMedia;
 
   const doSocketJoin = useCallback(() => {
     const socket = getSingletonSocket();
@@ -477,8 +533,14 @@ export function CallRoom({
           return next.slice(-30);
         });
       }],
-      [`recording:started`, () => setRecordingActive(true)],
-      [`recording:stopped`, () => setRecordingActive(false)],
+      [`recording:started`, (p: any) => {
+        setRecordingActive(true);
+        if (p?.recordingId && p?.mode === "server") serverRecordingIdRef.current = p.recordingId;
+      }],
+      [`recording:stopped`, () => {
+        setRecordingActive(false);
+        serverRecordingIdRef.current = null;
+      }],
       [`screen-share:started`, (p) => {
         if (p?.userName && p?.userName !== displayName) {
           setAppParticipants((prev) => prev.map((x) => (x.name === p.userName ? { ...x, screenSharing: true } : x)));
@@ -669,14 +731,53 @@ export function CallRoom({
 
   const toggleRecording = useCallback(async () => {
     if (recordingActive) {
+      if (serverRecordingIdRef.current) {
+        // Server-side (Egress) recording — stop via the backend; finalization
+        // (file URL/duration) lands via the LiveKit webhook moments later.
+        const rid = serverRecordingIdRef.current;
+        serverRecordingIdRef.current = null;
+        setRecordingActive(false);
+        try {
+          await api.post(`/rtc/rooms/${isMeeting ? "meeting" : "call"}/${effectiveRoomId}/recording/stop`, { recordingId: rid });
+          toast({ title: "Recording stopped", description: "Processing — it will appear under Recordings shortly." });
+        } catch (err: any) {
+          toast({ title: "Failed to stop recording", description: String(err?.response?.data?.error || err?.message || "") });
+        }
+        return;
+      }
       stopRecording(true);
       return;
+    }
+    // LiveKit rooms record server-side (RoomCompositeEgress → R2): far more
+    // reliable than a local composition, and identical for every participant.
+    // The UI stays provider-agnostic — this is just "recording".
+    const creds = credentialsRef.current;
+    if (creds?.provider === "livekit" && creds.token) {
+      try {
+        const res = await api.post(`/rtc/rooms/${isMeeting ? "meeting" : "call"}/${effectiveRoomId}/recording/start`, {
+          audioOnly: callType === "audio",
+        });
+        const data = res?.data?.data || {};
+        if (data.mode === "server" && data.recordingId) {
+          serverRecordingIdRef.current = data.recordingId;
+          setRecordingActive(true);
+          toast({ title: "Recording started", description: "This room is being recorded on the server." });
+          return;
+        }
+        // mode === "client" (e.g. storage not configured) → fall through to
+        // the local recorder below.
+      } catch (err: any) {
+        if (err?.response?.data?.errorCode === "already_recording") {
+          toast({ title: "Already recording", description: "This room is already being recorded." });
+        } else {
+          toast({ title: "Recording unavailable", description: String(err?.response?.data?.error || err?.message || "") });
+        }
+        return;
+      }
     }
     try {
       const mixed = new MediaStream();
       localStream?.getTracks().forEach((t) => mixed.addTrack(t));
-      // Note: this captures the local composition. Server-side recording via
-      // LiveKit Egress is planned separately; permission-gated for now.
       const rec = new MediaRecorder(mixed, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "video/webm" });
       recordedChunksRef.current = [];
       rec.ondataavailable = (e) => {
@@ -707,7 +808,7 @@ export function CallRoom({
     } catch (err: any) {
       toast({ title: "Recording unavailable", description: String(err?.message || "Your browser blocked recording.") });
     }
-  }, [displayName, effectiveRoomId, emitRoom, isMeeting, localStream, recordingActive, toast]);
+  }, [callType, displayName, effectiveRoomId, emitRoom, isMeeting, localStream, recordingActive, toast]);
 
   // ------------------------------------------------------------------
   // Live captions (browser SpeechRecognition — provider-independent).
@@ -867,7 +968,28 @@ export function CallRoom({
         <p className="text-lg font-medium text-white">We couldn't connect you</p>
         <p className="max-w-md text-center text-sm text-white/60">{connectionError || phaseMessage}</p>
         <div className="flex gap-3">
-          <Button variant="outline" className="border-white/15 bg-transparent text-white/80 hover:bg-white/10" onClick={() => window.location.reload()}>
+          <Button
+            variant="outline"
+            className="border-white/15 bg-transparent text-white/80 hover:bg-white/10"
+            onClick={async () => {
+              // Smart rejoin: refresh credentials first (the backend may hand
+              // back working MediaSoup credentials when LiveKit is down) — no
+              // full page reload needed.
+              setPhaseMessage("Reconnecting…");
+              setConnectionError("");
+              teardownMediaClient();
+              mediaRetryRef.current = 0;
+              const fresh = await refreshCredentials();
+              const creds = fresh || credentialsRef.current;
+              if (!creds) {
+                setPhaseMessage("Couldn't refresh credentials — check your connection and try again.");
+                return;
+              }
+              setPhase("connected");
+              setConnection("connecting");
+              connectMedia(creds);
+            }}
+          >
             Try again
           </Button>
           <Button className="bg-[#2563EB] hover:bg-[#1D4ED8]" onClick={onLeave}>
