@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info } from "lucide-react";
+import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info, Clock, UserCheck, CheckCheck } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import type { RemoteParticipant } from "@/lib/calling";
+import type { LocalMediaState, RemoteParticipant } from "@/lib/calling";
 
 export interface RoomChatMessage {
   id: string;
@@ -32,6 +32,14 @@ export interface RoomAppParticipant {
   screenSharing: boolean;
   isGuest?: boolean;
   isLocal?: boolean;
+}
+
+/** One participant waiting for the host to admit them. */
+export interface RoomWaitingEntry {
+  participantId: string;
+  userName: string;
+  isGuest?: boolean;
+  since?: string;
 }
 
 /** Sheet panel wrapper (right side on desktop, bottom sheet on mobile). */
@@ -81,6 +89,11 @@ export function ParticipantsPanel({
   mediaParticipants,
   isHost,
   identity,
+  localMediaState,
+  waitingQueue = [],
+  onAdmit,
+  onDeny,
+  onAdmitAll,
   onClose,
   onRemoveParticipant,
   onMuteParticipant,
@@ -89,6 +102,13 @@ export function ParticipantsPanel({
   mediaParticipants: RemoteParticipant[];
   isHost: boolean;
   identity: string;
+  /** Local mic/cam flags for the local participant row. */
+  localMediaState?: LocalMediaState;
+  /** Participants currently waiting for host admission. */
+  waitingQueue?: RoomWaitingEntry[];
+  onAdmit?: (participantId: string) => void;
+  onDeny?: (participantId: string) => void;
+  onAdmitAll?: () => void;
   onClose: () => void;
   onRemoveParticipant?: (identity: string) => void;
   onMuteParticipant?: (identity: string) => void;
@@ -108,11 +128,76 @@ export function ParticipantsPanel({
 
   return (
     <SidePanel title={`Participants (${count})`} icon={<Users className="h-4 w-4" />} onClose={onClose}>
+      {/* Waiting room queue (host only) */}
+      {isHost && waitingQueue.length > 0 && (
+        <div className="border-b border-white/10 bg-amber-500/5">
+          <div className="flex items-center justify-between px-4 pb-1.5 pt-3">
+            <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-wide text-amber-300">
+              <Clock className="h-3.5 w-3.5" /> Waiting ({waitingQueue.length})
+            </p>
+            {onAdmitAll && (
+              <button
+                type="button"
+                onClick={onAdmitAll}
+                className="flex items-center gap-1 rounded-lg px-2 py-1 text-[11px] font-medium text-emerald-300 hover:bg-emerald-500/15"
+              >
+                <CheckCheck className="h-3.5 w-3.5" /> Admit all
+              </button>
+            )}
+          </div>
+          <ul className="pb-2">
+            {waitingQueue.map((entry) => (
+              <li key={entry.participantId} className="flex items-center gap-3 px-4 py-2">
+                <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-amber-500/20 text-xs font-semibold text-amber-200">
+                  {(entry.userName || "?").slice(0, 2).toUpperCase()}
+                </span>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm text-white">{entry.userName || "Guest"}</p>
+                  <p className="text-[11px] text-amber-200/60">waiting to join{entry.isGuest ? " · guest" : ""}</p>
+                </div>
+                <div className="flex shrink-0 items-center gap-1">
+                  {onDeny && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 gap-1 border-red-500/40 bg-transparent px-2.5 text-xs text-red-300 hover:bg-red-500/15"
+                      onClick={() => onDeny(entry.participantId)}
+                    >
+                      <X className="h-3.5 w-3.5" /> Deny
+                    </Button>
+                  )}
+                  {onAdmit && (
+                    <Button
+                      size="sm"
+                      className="h-8 gap-1 bg-emerald-600 px-2.5 text-xs text-white hover:bg-emerald-500"
+                      onClick={() => onAdmit(entry.participantId)}
+                    >
+                      <UserCheck className="h-3.5 w-3.5" /> Admit
+                    </Button>
+                  )}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
       <ul className="divide-y divide-white/5">
         {appParticipants.map((p) => {
           const media = mediaParticipants.find((m) => m.id === p.id);
-          const muted = p.isLocal ? media == null ? false : false : media ? media.audioMuted : !p.audioEnabled;
-          const showMute = p.isLocal ? false : true;
+          const muted = p.isLocal
+            ? localMediaState
+              ? !localMediaState.audioEnabled
+              : false
+            : media
+              ? media.audioMuted
+              : !p.audioEnabled;
+          const videoOff = p.isLocal
+            ? localMediaState
+              ? !localMediaState.videoEnabled
+              : false
+            : media
+              ? media.videoMuted
+              : false;
           return (
             <li key={p.id} className="flex items-center gap-3 px-4 py-2.5">
               <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-gradient-to-br from-[#2563EB] to-[#3B82F6] text-xs font-semibold text-white">
@@ -133,9 +218,8 @@ export function ParticipantsPanel({
                 </p>
               </div>
               <div className="flex items-center gap-1">
-                {muted && showMute && <MicOff className="h-4 w-4 text-red-400" />}
-                {!muted && <Mic className="h-4 w-4 text-white/40" />}
-                {media?.videoMuted !== false && media && <VideoOff className="h-4 w-4 text-white/30" />}
+                {muted ? <MicOff className="h-4 w-4 text-red-400" /> : <Mic className="h-4 w-4 text-white/40" />}
+                {videoOff && <VideoOff className="h-4 w-4 text-white/30" />}
                 {isHost && !p.isLocal && onMuteParticipant && !muted && (
                   <button
                     type="button"
