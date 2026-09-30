@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
-import { ArrowLeft, Download, FileText, Loader2, Mic, Phone, Users, Video, Volume2 } from "lucide-react";
+import { ArrowLeft, Download, FileText, Loader2, Mic, Phone, Sparkles, Users, Video, Volume2 } from "lucide-react";
 import Layout from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
@@ -50,6 +50,13 @@ interface CallDetailData {
     status?: string | null;
   } | null;
   conversationId?: string | null;
+  notes?: {
+    summary?: string | null;
+    keyPoints?: string[] | null;
+    decisions?: string[] | null;
+    actionItems?: Array<{ title?: string; task?: string; assignedTo?: string | null; ownerName?: string | null; dueDate?: string | null; status?: string }> | null;
+    importantTimestamps?: Array<{ ts?: string; description?: string }> | null;
+  } | null;
 }
 
 interface TranscriptEntry {
@@ -146,6 +153,7 @@ export default function CallDetail() {
         recording: detail.recording
           ? { storageUrl: detail.recording.storageUrl, duration: detail.recording.duration }
           : null,
+        notes: detail.notes || null,
       });
       await doc.save(`MetriCorex-Call-Report-${detail.call.callCode || detail.call.id}.pdf`);
       toast({ title: "Report downloaded" });
@@ -270,6 +278,65 @@ export default function CallDetail() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* AI Summary & Action Points */}
+            {detail.notes && (detail.notes.summary || (detail.notes.actionItems?.length || 0) > 0) && (
+              <Card>
+                <CardHeader>
+                  <CardTitle className="flex items-center gap-2 text-base">
+                    <Sparkles className="h-4 w-4" /> AI Summary & Action Points
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {detail.notes.summary && (
+                    <p className="text-sm leading-relaxed text-foreground/90">{detail.notes.summary}</p>
+                  )}
+                  {(detail.notes.keyPoints?.length || 0) > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Key points</p>
+                      <ul className="space-y-1.5">
+                        {detail.notes.keyPoints!.map((kp, i) => (
+                          <li key={i} className="flex gap-2 text-sm"><span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-blue-500" /><span className="min-w-0">{kp}</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {(detail.notes.decisions?.length || 0) > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Decisions</p>
+                      <ul className="space-y-1.5">
+                        {detail.notes.decisions!.map((d, i) => (
+                          <li key={i} className="flex gap-2 text-sm"><span className="mt-1 h-1.5 w-1.5 shrink-0 rounded-full bg-violet-500" /><span className="min-w-0">{d}</span></li>
+                        ))}
+                      </ul>
+                    </div>
+                  )}
+                  {(detail.notes.actionItems?.length || 0) > 0 && (
+                    <div>
+                      <p className="mb-1.5 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Action points</p>
+                      <div className="space-y-2">
+                        {detail.notes.actionItems!.map((ai, i) => {
+                          const owner = ai.ownerName || ai.assignedTo || null;
+                          return (
+                            <div key={i} className="flex items-start justify-between gap-3 rounded-xl border border-border/60 px-3 py-2">
+                              <div className="min-w-0">
+                                <p className="truncate text-sm font-medium">{ai.title || ai.task || "Action item"}</p>
+                                {ai.dueDate && <p className="text-[11px] text-muted-foreground">Due {ai.dueDate}</p>}
+                              </div>
+                              {owner && (
+                                <Badge variant="outline" className="shrink-0 border-blue-500/30 bg-blue-500/10 text-blue-600 dark:text-blue-400">
+                                  {owner}
+                                </Badge>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </div>
+                  )}
+                </CardContent>
+              </Card>
+            )}
 
             {/* Recording */}
             {recordingUrl && (
