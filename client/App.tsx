@@ -42,6 +42,7 @@ import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { MaintenanceGate } from "./components/MaintenanceGate";
 import AskMetricAiWidget from "./components/AskMetricAiWidget";
+import ActiveCallHost from "./components/call-room/ActiveCallHost";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
@@ -225,6 +226,9 @@ const App = () => (
               hidden on the video call-room routes (handled inside the widget
               via useLocation) and automatically suppressed by MaintenanceGate. */}
           <AskMetricAiWidget />
+          {/* The single active CallRoom instance (App root) — keeps running
+              while minimized into a floating bubble, across route changes. */}
+          <ActiveCallHost />
           </MaintenanceGate>
           </UpgradePromptProvider>
         </SessionTimeoutProvider>

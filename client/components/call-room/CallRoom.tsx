@@ -3,6 +3,7 @@ import { useSocket } from "@/hooks/useSocket";
 import { getSingletonSocket } from "@/hooks/useSocket";
 import { api } from "@/lib/api-client";
 import { AudioUtils } from "@/lib/audio-utils";
+import { reportLocalStream, minimizeCall } from "@/lib/active-call";
 import {
   createCallingClient,
   isLiveKitCredentials,
@@ -15,9 +16,8 @@ import {
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { BrandLogo } from "@/components/BrandLogo";
-import { AlertCircle, CheckCircle2, Loader2, Radio, Timer, Wifi, WifiOff, Users, MessageSquare, Info } from "lucide-react";
+import { AlertCircle, CheckCircle2, Loader2, Radio, Timer, Wifi, WifiOff, Users, Info, PictureInPicture2, Mic, MicOff, Video, VideoOff } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
 import { ParticipantTile } from "./ParticipantTile";
 import { ControlBar } from "./ControlBar";
 import {
@@ -28,6 +28,7 @@ import {
   type CaptionSegment,
   type RoomAppParticipant,
   type RoomChatMessage,
+  type RoomWaitingEntry,
 } from "./SidePanels";
 
 export interface CallRoomProps {
@@ -78,6 +79,8 @@ function formatDuration(ms: number): string {
     : `${m}:${String(s).padStart(2, "0")}`;
 }
 
+type GridTile = { key: string; kind: "screen" | "camera"; participant: RemoteParticipant | null; name?: string };
+
 /**
  * The Metricorex Call Room.
  *
@@ -85,6 +88,10 @@ function formatDuration(ms: number): string {
  * chosen from the backend's `calling` credentials), while presence, waiting
  * room, chat, captions, duration limits and moderation stay app-level on
  * Socket.IO. Users never see provider names.
+ *
+ * UX: Google Meet-style stage — tap any tile to pin it big; screen shares
+ * auto-stage; the speaker's card glows; the whole call can minimize into a
+ * floating bubble while media keeps running.
  */
 export function CallRoom({
   roomId,
@@ -102,6 +109,7 @@ export function CallRoom({
   onParticipantsAdded,
   onParticipantStatusChange,
 }: CallRoomProps) {
+  void onParticipantStatusChange;
   const { toast } = useToast();
   const identity = callId || meetingId || roomId || "";
   const isMeeting = !!meetingId;
@@ -146,6 +154,7 @@ export function CallRoom({
   const [localScreenStream, setLocalScreenStream] = useState<MediaStream | null>(null);
   const [connectionError, setConnectionError] = useState("");
   const [mediaBlocked, setMediaBlocked] = useState<string | null>(null);
+  const [activeSpeakerId, setActiveSpeakerId] = useState<string | null>(null);
 
   const [chatOpen, setChatOpen] = useState(false);
   const [participantsOpen, setParticipantsOpen] = useState(false);
@@ -157,6 +166,9 @@ export function CallRoom({
   const [captionSegments, setCaptionSegments] = useState<CaptionSegment[]>([]);
   const [recordingActive, setRecordingActive] = useState(false);
   const [waitingUnadmitted, setWaitingUnadmitted] = useState(false);
+  const [waitingQueue, setWaitingQueue] = useState<RoomWaitingEntry[]>([]);
+
+  const [pinnedKey, setPinnedKey] = useState<string | null>(null);
 
   const [endsAt, setEndsAt] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -167,6 +179,8 @@ export function CallRoom({
   const joinAckedRef = useRef(false);
   const chatPanelOpenRef = useRef(false);
   chatPanelOpenRef.current = chatOpen;
+  const participantsOpenRef = useRef(false);
+  participantsOpenRef.current = participantsOpen;
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
   const recognitionRef = useRef<any>(null);
@@ -175,6 +189,9 @@ export function CallRoom({
   const connectMediaRef = useRef<(creds: CallingCredentials | null) => void>(() => undefined);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const captionsSupported = typeof window !== "undefined" && !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition);
+  /** Requested-but-not-yet-applied media intents (client still connecting). */
+  const pendingAudioRef = useRef<boolean | null>(null);
+  const pendingVideoRef = useRef<boolean | null>(null);
 
   const remainingMs = endsAt ? Math.max(0, new Date(endsAt).getTime() - now) : null;
   const effectiveRoomId = identity;
@@ -237,15 +254,20 @@ export function CallRoom({
       userName: displayName,
       isHost,
       callType,
-      startWithAudio: true,
-      startWithVideo: callType !== "audio",
+      startWithAudio: pendingAudioRef.current !== null ? pendingAudioRef.current : true,
+      startWithVideo: pendingVideoRef.current !== null ? pendingVideoRef.current : callType !== "audio",
     });
     clientUnsubsRef.current.push(
       client.on("participants", (list) => setMediaParticipants(list)),
-      client.on("local:state", setMediaState),
+      client.on("local:state", (s) => {
+        setMediaState(s);
+        // Publish the live local camera stream for the minimized bubble.
+        reportLocalStream(client.getLocalVideoStream());
+      }),
       client.on("local:stream", setLocalStream),
       client.on("local:screen", setLocalScreenStream),
       client.on("connection", (c) => setConnection(c)),
+      client.on("active-speaker", ({ id }) => setActiveSpeakerId(id || null)),
       client.on("media:error", (e) => setMediaBlocked(e.message)),
       client.on("error", (e) => {
         setConnectionError(e.message);
@@ -272,6 +294,7 @@ export function CallRoom({
     clientUnsubsRef.current.push(
       client.on("participant:left", ({ id }) => {
         setMediaParticipants((prev) => prev.filter((x) => x.id !== id));
+        setPinnedKey((cur) => (cur === `p-${id}` ? null : cur));
       }),
     );
     clientRef.current = client;
@@ -281,6 +304,17 @@ export function CallRoom({
       .then(() => {
         mediaRetryRef.current = 0;
         setPhase((cur) => (cur === "joining" ? "connected" : cur));
+        // Apply any media intents the user toggled while connecting.
+        const pAudio = pendingAudioRef.current;
+        const pVideo = pendingVideoRef.current;
+        pendingAudioRef.current = null;
+        pendingVideoRef.current = null;
+        if (pAudio !== null && pAudio !== client.getLocalState().audioEnabled) {
+          client.setAudioEnabled(pAudio).catch(() => undefined);
+        }
+        if (pVideo !== null && pVideo !== client.getLocalState().videoEnabled) {
+          client.setVideoEnabled(pVideo).catch(() => undefined);
+        }
       })
       .catch(async (err) => {
         console.error("[call-room] media connect failed:", err);
@@ -355,10 +389,27 @@ export function CallRoom({
           });
         }
         setPhase("connected");
+        // Hosts pick up anyone already waiting in the room.
+        if (isHost) {
+          emitRoom("waiting-room:get-queue", { roomId: effectiveRoomId, meetingId: isMeeting ? effectiveRoomId : undefined }, (resp: any) => {
+            if (resp?.queue && Array.isArray(resp.queue)) setWaitingQueue(normalizeQueue(resp.queue));
+          });
+        }
         connectMedia(credentialsRef.current);
       },
     );
-  }, [callType, connectMedia, displayName, effectiveRoomId, emitRoom, isGuest, isHost, localUserId, prefix]);
+  }, [callType, connectMedia, displayName, effectiveRoomId, emitRoom, isGuest, isHost, isMeeting, localUserId, prefix]);
+
+  function normalizeQueue(queue: any[]): RoomWaitingEntry[] {
+    return queue
+      .filter((e) => e && (e.participantId || e.userId))
+      .map((e) => ({
+        participantId: String(e.participantId || e.userId),
+        userName: String(e.userName || e.participantName || e.name || "Guest"),
+        isGuest: !!e.isGuest,
+        since: e.since != null ? new Date(typeof e.since === "number" ? e.since : Date.parse(e.since)).toISOString() : undefined,
+      }));
+  }
 
   // wait for socket connection, then join
   useEffect(() => {
@@ -469,6 +520,27 @@ export function CallRoom({
         setEndedInfo("The host declined your request to join.");
         setPhase("ended");
       }],
+      // Host-side waiting-room updates
+      [`waiting-room:pending`, (p: any) => {
+        const pid = p?.participantId || p?.userId;
+        if (!pid) return;
+        setWaitingQueue((prev) =>
+          prev.some((x) => x.participantId === pid)
+            ? prev
+            : [...prev, {
+                participantId: String(pid),
+                userName: String(p?.userName || p?.participantName || "Guest"),
+                isGuest: !!p?.isGuest,
+                since: new Date().toISOString(),
+              }],
+        );
+        if (!participantsOpenRef.current) {
+          toast({ title: "Someone is waiting to join", description: `${p?.userName || p?.participantName || "A participant"} is in the waiting room.` });
+        }
+      }],
+      [`waiting-room:queue`, (p: any) => {
+        if (Array.isArray(p?.queue)) setWaitingQueue(normalizeQueue(p.queue));
+      }],
       [`${prefix}:participant-removed`, (p) => {
         if (p?.userId === localUserId) {
           setEndedInfo("You were removed from this call by the host.");
@@ -476,6 +548,7 @@ export function CallRoom({
         } else if (p?.userId) {
           setMediaParticipants((prev) => prev.filter((x) => x.id !== p.userId));
           setAppParticipants((prev) => prev.filter((x) => x.id !== p.userId));
+          setWaitingQueue((prev) => prev.filter((x) => x.participantId !== p.userId));
         }
       }],
       [`${prefix}:participant-mute-requested`, (p) => {
@@ -607,6 +680,7 @@ export function CallRoom({
       clientRef.current = null;
       stopLocalRecognition();
       stopRecording(false);
+      reportLocalStream(null);
       if (effectiveRoomId && joinAckedRef.current) {
         emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
       }
@@ -617,39 +691,70 @@ export function CallRoom({
   // ------------------------------------------------------------------
   // Controls
   // ------------------------------------------------------------------
-  const toggleAudio = useCallback(async () => {
-    const next = !mediaState.audioEnabled;
+  const applyMediaIntent = useCallback(async (kind: "audio" | "video", next: boolean) => {
+    const client = clientRef.current;
+    if (!client || connection !== "connected") {
+      // The media client is still connecting — remember the intent and apply
+      // it the moment the client is live (see connectMedia's then handler).
+      if (kind === "audio") pendingAudioRef.current = next;
+      else pendingVideoRef.current = next;
+      setMediaState((s) => (kind === "audio" ? { ...s, audioEnabled: next } : { ...s, videoEnabled: next }));
+      toast({
+        title: next ? "Turning it on…" : "Turning it off…",
+        description: "The call is still connecting — your change will apply in a moment.",
+      });
+      return;
+    }
     try {
-      await clientRef.current?.setAudioEnabled(next);
-      setMediaState((s) => ({ ...s, audioEnabled: next }));
+      if (kind === "audio") await client.setAudioEnabled(next);
+      else await client.setVideoEnabled(next);
+      setMediaState((s) => (kind === "audio" ? { ...s, audioEnabled: next } : { ...s, videoEnabled: next }));
+      setMediaBlocked(null);
       emitRoom(`${prefix}:participant-media-state`, {
         roomId: effectiveRoomId,
         userId: localUserId,
-        audioEnabled: next,
-        videoEnabled: mediaState.videoEnabled,
+        audioEnabled: kind === "audio" ? next : mediaState.audioEnabled,
+        videoEnabled: kind === "video" ? next : mediaState.videoEnabled,
         screenSharing: mediaState.screenSharing,
       });
-    } catch {
-      toast({ title: "Could not change microphone", description: "Check that a microphone is connected and allowed." });
+    } catch (err: any) {
+      const name = String(err?.name || "");
+      if (name === "NotAllowedError" || name === "NotFoundError" || name === "NotReadableError") {
+        setMediaBlocked(
+          kind === "audio"
+            ? "Microphone access is blocked. Tap “Enable” to allow it."
+            : "Camera access is blocked. Tap “Enable” to allow it.",
+        );
+      } else {
+        toast({ title: "Could not change media", description: String(err?.message || "Try again in a moment.") });
+      }
     }
-  }, [effectiveRoomId, emitRoom, localUserId, mediaState, prefix, toast]);
+  }, [connection, effectiveRoomId, emitRoom, localUserId, mediaState, prefix, toast]);
 
-  const toggleVideo = useCallback(async () => {
-    const next = !mediaState.videoEnabled;
+  const toggleAudio = useCallback(() => {
+    applyMediaIntent("audio", !mediaState.audioEnabled);
+  }, [applyMediaIntent, mediaState.audioEnabled]);
+
+  const toggleVideo = useCallback(() => {
+    applyMediaIntent("video", !mediaState.videoEnabled);
+  }, [applyMediaIntent, mediaState.videoEnabled]);
+
+  /** Re-request blocked permissions and re-publish. */
+  const enableBlockedMedia = useCallback(async () => {
+    const client = clientRef.current;
+    if (!client) return;
     try {
-      await clientRef.current?.setVideoEnabled(next);
-      setMediaState((s) => ({ ...s, videoEnabled: next }));
-      emitRoom(`${prefix}:participant-media-state`, {
-        roomId: effectiveRoomId,
-        userId: localUserId,
-        audioEnabled: mediaState.audioEnabled,
-        videoEnabled: next,
-        screenSharing: mediaState.screenSharing,
-      });
+      if (!mediaState.audioEnabled) await client.setAudioEnabled(true);
+      if (callType !== "audio" && !mediaState.videoEnabled) await client.setVideoEnabled(true);
+      setMediaBlocked(null);
+      toast({ title: "Media enabled", description: "You are back on air." });
     } catch {
-      toast({ title: "Could not change camera", description: "Check that a camera is connected and allowed." });
+      toast({
+        title: "Permission still blocked",
+        description: "Open your browser's site settings and allow camera & microphone, then reload.",
+      });
     }
-  }, [effectiveRoomId, emitRoom, localUserId, mediaState, prefix, toast]);
+  }, [callType, mediaState.audioEnabled, mediaState.videoEnabled, toast]);
 
   const toggleScreenShare = useCallback(async () => {
     try {
@@ -684,6 +789,7 @@ export function CallRoom({
     clientRef.current = null;
     stopLocalRecognition();
     stopRecording(true);
+    reportLocalStream(null);
     emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
     if (isHost) {
       emitRoom(`${prefix}:end`, isMeeting ? { meetingId: effectiveRoomId } : { roomId: effectiveRoomId });
@@ -711,6 +817,33 @@ export function CallRoom({
       toast({ title: "Could not mute participant", description: String(err?.response?.data?.error || "") });
     }
   }, [effectiveRoomId, prefix, toast]);
+
+  // Waiting-room admission (host)
+  const admitWaiting = useCallback((participantId: string) => {
+    emitRoom("waiting-room:admit", {
+      roomId: effectiveRoomId,
+      meetingId: isMeeting ? effectiveRoomId : undefined,
+      participantId,
+    });
+    setWaitingQueue((prev) => prev.filter((x) => x.participantId !== participantId));
+  }, [effectiveRoomId, emitRoom, isMeeting]);
+
+  const denyWaiting = useCallback((participantId: string) => {
+    emitRoom("waiting-room:deny", {
+      roomId: effectiveRoomId,
+      meetingId: isMeeting ? effectiveRoomId : undefined,
+      participantId,
+    });
+    setWaitingQueue((prev) => prev.filter((x) => x.participantId !== participantId));
+  }, [effectiveRoomId, emitRoom, isMeeting]);
+
+  const admitAllWaiting = useCallback(() => {
+    emitRoom("waiting-room:admit-all", {
+      roomId: effectiveRoomId,
+      meetingId: isMeeting ? effectiveRoomId : undefined,
+    });
+    setWaitingQueue([]);
+  }, [effectiveRoomId, emitRoom, isMeeting]);
 
   // ------------------------------------------------------------------
   // Recording (client-side MediaRecorder — provider-agnostic local capture)
@@ -748,9 +881,8 @@ export function CallRoom({
       stopRecording(true);
       return;
     }
-    // LiveKit rooms record server-side (RoomCompositeEgress → R2): far more
-    // reliable than a local composition, and identical for every participant.
-    // The UI stays provider-agnostic — this is just "recording".
+    // LiveKit rooms record server-side (RoomCompositeEgress → storage): far
+    // more reliable than a local composition, and identical for everyone.
     const creds = credentialsRef.current;
     if (creds?.provider === "livekit" && creds.token) {
       try {
@@ -881,17 +1013,10 @@ export function CallRoom({
   }, [captionsEnabled, effectiveRoomId, emitRoom, isMeeting, toast]);
 
   // ------------------------------------------------------------------
-  // Derived UI data
+  // Derived UI data — stage (pinned / screen share) + filmstrip / grid
   // ------------------------------------------------------------------
-  const gridTiles = useMemo(() => {
-    const remoteScreenSharers = mediaParticipants.filter((p) => p.screenSharing && p.screenStream);
-    const tiles: Array<{ key: string; kind: "screen" | "camera"; participant: RemoteParticipant | null; name?: string }> = [];
-    for (const p of remoteScreenSharers) {
-      tiles.push({ key: `screen-${p.id}`, kind: "screen", participant: p });
-    }
-    if (localScreenStream) {
-      tiles.push({ key: "screen-local", kind: "screen", participant: null, name: "Your screen" });
-    }
+  const gridTiles = useMemo<GridTile[]>(() => {
+    const tiles: GridTile[] = [];
     tiles.push({ key: "local", kind: "camera", participant: null, name: displayName });
     for (const p of mediaParticipants) {
       tiles.push({ key: `p-${p.id}`, kind: "camera", participant: p });
@@ -919,19 +1044,65 @@ export function CallRoom({
       }
     }
     return tiles;
-  }, [appParticipants, displayName, localScreenStream, localUserId, mediaParticipants]);
+  }, [appParticipants, displayName, localUserId, mediaParticipants]);
+
+  const remoteScreenTiles = useMemo<GridTile[]>(
+    () => mediaParticipants.filter((p) => p.screenSharing && p.screenStream).map((p) => ({ key: `screen-${p.id}`, kind: "screen" as const, participant: p })),
+    [mediaParticipants],
+  );
+
+  const stageTile = useMemo<GridTile | null>(() => {
+    if (remoteScreenTiles.length > 0) return remoteScreenTiles[0];
+    if (localScreenStream) return { key: "screen-local", kind: "screen", participant: null, name: "Your screen" };
+    if (pinnedKey) {
+      const found = gridTiles.find((t) => t.key === pinnedKey);
+      if (found) return found;
+    }
+    return null;
+  }, [gridTiles, localScreenStream, pinnedKey, remoteScreenTiles]);
+
+  const stripTiles = useMemo<GridTile[]>(() => {
+    if (!stageTile) return [];
+    return gridTiles.filter((t) => t.key !== stageTile.key);
+  }, [gridTiles, stageTile]);
 
   const gridCols = useMemo(() => {
-    const n = gridTiles.length;
+    const n = stageTile ? stripTiles.length : gridTiles.length;
     if (n <= 1) return "grid-cols-1";
-    if (n <= 2) return "grid-cols-1 sm:grid-cols-2";
-    if (n <= 4) return "grid-cols-1 sm:grid-cols-2";
-    if (n <= 9) return "grid-cols-1 sm:grid-cols-2 md:grid-cols-3";
-    return "grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4";
-  }, [gridTiles.length]);
+    if (n <= 2) return "grid-cols-2";
+    if (n <= 4) return "grid-cols-2";
+    if (n <= 9) return "grid-cols-2 sm:grid-cols-3";
+    return "grid-cols-2 sm:grid-cols-3 lg:grid-cols-4";
+  }, [gridTiles.length, stageTile, stripTiles.length]);
+
+  const localSpeaking = activeSpeakerId === localUserId && mediaState.audioEnabled;
 
   const providerLabel = isLiveKitCredentials(credentialsRef.current) ? "Metricorex Connect" : "Metricorex Connect";
   void providerLabel;
+
+  const renderCameraTile = (tile: GridTile, opts: { filmstrip?: boolean; stage?: boolean } = {}) => {
+    const isPinned = tile.key === pinnedKey && !!stageTile && stageTile.key === tile.key;
+    return (
+      <ParticipantTile
+        key={tile.key}
+        participant={tile.participant}
+        isLocal={tile.key === "local"}
+        localStream={localStream}
+        label={tile.name}
+        large={!!opts.stage || (!stageTile && gridTiles.length === 1)}
+        localMediaState={mediaState}
+        localSpeaking={localSpeaking}
+        pinned={isPinned}
+        onTogglePin={() => setPinnedKey((cur) => (cur === tile.key ? null : tile.key))}
+        isRoomAudioOnly={callType === "audio"}
+        className={cn(
+          opts.filmstrip && "h-full w-[10.5rem] shrink-0 snap-center sm:w-52",
+          opts.stage && "h-full w-full",
+          !opts.filmstrip && !opts.stage && gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center",
+        )}
+      />
+    );
+  };
 
   // ------------------------------------------------------------------
   // Render
@@ -1013,11 +1184,11 @@ export function CallRoom({
   }
 
   return (
-    <div className={cn("fixed inset-0 z-50 flex flex-col overflow-hidden", ROOM_BG)}>
+    <div className={cn("fixed inset-0 z-50 flex flex-col overflow-hidden", ROOM_BG)} style={{ height: "100dvh" }}>
       {/* Top bar */}
-      <header className="relative z-20 flex items-center gap-3 border-b border-white/10 bg-[#141B2E]/60 px-3 py-2.5 backdrop-blur-xl sm:px-4">
+      <header className="relative z-20 flex items-center gap-2 border-b border-white/10 bg-[#141B2E]/60 px-2 py-2 backdrop-blur-xl sm:gap-3 sm:px-4">
         <div className="flex items-center gap-2">
-          <BrandLogo />
+          <BrandLogo size={26} showWordmark={false} />
         </div>
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium text-white">{title || inviteDetails?.title || (isMeeting ? "Meeting" : "Call")}</p>
@@ -1042,20 +1213,32 @@ export function CallRoom({
             <Radio className="h-3 w-3 animate-pulse" /> Rec
           </span>
         )}
-        <div className="flex items-center gap-1">
+        <div className="flex items-center gap-0.5 sm:gap-1">
           <button
             type="button"
             onClick={() => setParticipantsOpen((v) => !v)}
-            className={cn("rounded-lg p-2 text-white/70 hover:bg-white/10", participantsOpen && "bg-white/15 text-white")}
+            className={cn("relative rounded-lg p-2 text-white/70 hover:bg-white/10", participantsOpen && "bg-white/15 text-white")}
             aria-label="Participants"
           >
             <Users className="h-4 w-4" />
+            {isHost && waitingQueue.length > 0 && (
+              <span className="absolute -right-0.5 -top-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-amber-500 px-0.5 text-[9px] font-bold text-black">
+                {waitingQueue.length > 9 ? "9+" : waitingQueue.length}
+              </span>
+            )}
           </button>
           <button
             type="button"
-            onClick={() => {
-              setInfoOpen((v) => !v);
-            }}
+            onClick={minimizeCall}
+            className="rounded-lg p-2 text-white/70 hover:bg-white/10"
+            aria-label="Minimize call"
+            title="Minimize call — it keeps running"
+          >
+            <PictureInPicture2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => setInfoOpen((v) => !v)}
             className={cn("hidden rounded-lg p-2 text-white/70 hover:bg-white/10 sm:block", infoOpen && "bg-white/15 text-white")}
             aria-label="Meeting details"
           >
@@ -1076,39 +1259,74 @@ export function CallRoom({
       )}
 
       {/* Main area */}
-      <main className="relative flex-1 overflow-hidden p-3 sm:p-4">
-        <div className={cn("grid h-full w-full auto-rows-fr gap-3", gridCols)}>
-          {gridTiles.map((tile) =>
-            tile.kind === "screen" ? (
-              <div key={tile.key} className="relative col-span-full overflow-hidden rounded-2xl border border-indigo-400/40 bg-black sm:col-span-2 md:col-span-3">
+      <main className="relative min-h-0 flex-1 overflow-hidden p-2 phone-landscape:p-1.5 sm:p-3">
+        {stageTile ? (
+          <div className="flex h-full w-full flex-col gap-2">
+            {/* Stage */}
+            <div className="relative min-h-0 flex-1">
+              {stageTile.kind === "screen" ? (
+                <div className="relative h-full w-full overflow-hidden rounded-2xl border border-indigo-400/40 bg-black">
+                  <video
+                    autoPlay
+                    playsInline
+                    muted
+                    className="h-full w-full object-contain"
+                    ref={(el) => {
+                      const stream = stageTile.participant?.screenStream || (stageTile.key === "screen-local" ? localScreenStream : null);
+                      if (el && el.srcObject !== stream) el.srcObject = stream || null;
+                    }}
+                  />
+                  <span className="absolute left-3 top-3 rounded-lg bg-indigo-600/80 px-2 py-1 text-xs font-medium text-white">
+                    {stageTile.participant ? `${stageTile.participant.name}'s screen` : "Your screen"}
+                  </span>
+                </div>
+              ) : (
+                renderCameraTile(stageTile, { stage: true })
+              )}
+            </div>
+            {/* Filmstrip */}
+            {stripTiles.length > 0 && (
+              <div className="flex h-[108px] shrink-0 snap-x gap-2 overflow-x-auto pb-1 custom-scrollbar phone-landscape:h-[84px] sm:h-[124px]">
+                {stripTiles.map((t) => renderCameraTile(t, { filmstrip: true }))}
+              </div>
+            )}
+          </div>
+        ) : (
+          <div className={cn("grid h-full w-full auto-rows-fr gap-2 sm:gap-3", gridCols)}>
+            {remoteScreenTiles.map((t) => (
+              <div key={t.key} className="relative col-span-full overflow-hidden rounded-2xl border border-indigo-400/40 bg-black">
                 <video
                   autoPlay
                   playsInline
                   muted
                   className="h-full w-full object-contain"
                   ref={(el) => {
-                    const stream = tile.participant?.screenStream || (tile.key === "screen-local" ? localScreenStream : null);
+                    const stream = t.participant?.screenStream || null;
                     if (el && el.srcObject !== stream) el.srcObject = stream || null;
                   }}
                 />
                 <span className="absolute left-3 top-3 rounded-lg bg-indigo-600/80 px-2 py-1 text-xs font-medium text-white">
-                  {tile.participant ? `${tile.participant.name}'s screen` : "Your screen"}
+                  {t.participant ? `${t.participant.name}'s screen` : "Screen share"}
                 </span>
               </div>
-            ) : (
-              <ParticipantTile
-                key={tile.key}
-                participant={tile.participant}
-                isLocal={tile.key === "local"}
-                localStream={localStream}
-                label={tile.name}
-                large={gridTiles.length === 1}
-                isRoomAudioOnly={callType === "audio"}
-                className={cn(gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center")}
-              />
-            ),
-          )}
-        </div>
+            ))}
+            {localScreenStream && (
+              <div className="relative col-span-full overflow-hidden rounded-2xl border border-indigo-400/40 bg-black">
+                <video
+                  autoPlay
+                  playsInline
+                  muted
+                  className="h-full w-full object-contain"
+                  ref={(el) => {
+                    if (el && el.srcObject !== localScreenStream) el.srcObject = localScreenStream;
+                  }}
+                />
+                <span className="absolute left-3 top-3 rounded-lg bg-indigo-600/80 px-2 py-1 text-xs font-medium text-white">Your screen</span>
+              </div>
+            )}
+            {gridTiles.map((t) => renderCameraTile(t))}
+          </div>
+        )}
 
         <CaptionsOverlay segments={captionSegments} enabled={captionsEnabled} />
 
@@ -1118,6 +1336,11 @@ export function CallRoom({
             mediaParticipants={mediaParticipants}
             isHost={isHost}
             identity={localUserId}
+            localMediaState={mediaState}
+            waitingQueue={waitingQueue}
+            onAdmit={admitWaiting}
+            onDeny={denyWaiting}
+            onAdmitAll={admitAllWaiting}
             onClose={() => setParticipantsOpen(false)}
             onRemoveParticipant={isHost ? removeParticipant : undefined}
             onMuteParticipant={isHost ? muteParticipant : undefined}
@@ -1143,7 +1366,7 @@ export function CallRoom({
       </main>
 
       {/* Bottom controls */}
-      <footer className="relative z-20 flex items-center justify-center px-3 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-1">
+      <footer className="relative z-20 flex w-full items-center justify-center px-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-1 sm:px-3">
         <ControlBar
           audioEnabled={mediaState.audioEnabled}
           videoEnabled={mediaState.videoEnabled}
@@ -1153,9 +1376,8 @@ export function CallRoom({
           captionsEnabled={captionsEnabled}
           captionsSupported={captionsSupported}
           unreadChat={unreadChat}
-          compactMode={typeof window !== "undefined" && window.innerWidth < 640}
           audioOnlyRoom={callType === "audio"}
-          showSwitchCamera={false}
+          showSwitchCamera={!!mediaState.videoEnabled && !isGuest}
           onToggleAudio={toggleAudio}
           onToggleVideo={toggleVideo}
           onToggleScreenShare={toggleScreenShare}
@@ -1166,18 +1388,33 @@ export function CallRoom({
           onToggleParticipants={() => setParticipantsOpen((v) => !v)}
           onToggleCaptions={toggleCaptions}
           onMore={() => setInfoOpen(true)}
+          onMinimize={minimizeCall}
+          onSwitchCamera={switchCamera}
           onLeave={leaveRoom}
-          leaveLabel={isHost ? "End meeting" : "Leave"}
+          leaveLabel={isHost ? "End" : "Leave"}
         />
       </footer>
 
       {/* Media-blocked banner */}
       {mediaBlocked && (
-        <div className="absolute inset-x-0 bottom-24 z-30 mx-auto flex w-fit max-w-[90%] items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/15 px-4 py-2 text-xs text-amber-200">
+        <div className="absolute inset-x-0 bottom-28 z-30 mx-auto flex w-fit max-w-[92%] items-center gap-2 rounded-xl border border-amber-500/30 bg-amber-500/15 px-4 py-2 text-xs text-amber-200">
           <AlertCircle className="h-4 w-4 shrink-0" />
-          {mediaBlocked}
-          <button type="button" className="ml-2 font-semibold underline" onClick={() => setMediaBlocked(null)}>
-            Dismiss
+          <span className="min-w-0">{mediaBlocked}</span>
+          <button
+            type="button"
+            className="ml-1 flex shrink-0 items-center gap-1 rounded-lg bg-amber-500/90 px-2.5 py-1 font-semibold text-black hover:bg-amber-400"
+            onClick={enableBlockedMedia}
+          >
+            {mediaState.audioEnabled ? <Video className="h-3.5 w-3.5" /> : <Mic className="h-3.5 w-3.5" />}
+            Enable
+          </button>
+          <button
+            type="button"
+            className="shrink-0 rounded-lg p-1 text-amber-200/70 hover:text-amber-100"
+            aria-label="Dismiss"
+            onClick={() => setMediaBlocked(null)}
+          >
+            <MicOff className="h-3.5 w-3.5" />
           </button>
         </div>
       )}

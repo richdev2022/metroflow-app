@@ -28,7 +28,11 @@ export interface CreateClientOptions {
 export function createCallingClient(opts: CreateClientOptions): CallingClient {
   const cred = opts.credentials;
   if (cred && cred.provider === "livekit" && cred.token && cred.serverUrl) {
-    return new LiveKitCallingClient(cred);
+    return new LiveKitCallingClient(cred, {
+      startWithAudio: opts.startWithAudio,
+      startWithVideo: opts.startWithVideo,
+      callType: opts.callType,
+    });
   }
   if (cred && cred.provider === "livekit") {
     console.warn("[calling] livekit credentials incomplete — falling back to MediaSoup path");
