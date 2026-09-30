@@ -45,6 +45,7 @@ import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { MaintenanceGate } from "./components/MaintenanceGate";
 import AskMetricAiWidget from "./components/AskMetricAiWidget";
+import AppErrorBoundary from "./components/AppErrorBoundary";
 import ActiveCallHost from "./components/call-room/ActiveCallHost";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -125,6 +126,9 @@ const App = () => (
           <MaintenanceGate>
           {/* Web push bridge: SW registration + sw-call-action handling */}
           <PushManager />
+          {/* Render-error safety net: a throwing page (e.g. Chat) no longer
+              unmounts the whole app / disconnects the socket singleton. */}
+          <AppErrorBoundary>
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
@@ -239,6 +243,7 @@ const App = () => (
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>
+          </AppErrorBoundary>
           {/* Floating "Ask MetricAi" widget — every page (authed + public),
               hidden on the video call-room routes (handled inside the widget
               via useLocation) and automatically suppressed by MaintenanceGate. */}
