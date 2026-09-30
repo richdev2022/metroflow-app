@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import Layout from "@/components/layout";
 import { startCall } from "@/lib/active-call";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
@@ -84,6 +85,7 @@ import {
 } from "@/components/ui/command";
 
 export default function Meetings() {
+  const navigate = useNavigate();
   const {
     data: meetingsData,
     isLoading: meetingsLoading,
@@ -788,6 +790,17 @@ export default function Meetings() {
                   <div className="flex items-center gap-2 text-sm text-muted-foreground">
                     <Users className="h-4 w-4" />
                     {meeting.attendees.length} attendees
+                  </div>
+                  <div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      className="w-full"
+                      onClick={() => navigate(`/meetings/${meeting.id}`)}
+                    >
+                      <Info className="h-4 w-4 mr-2" />
+                      View details
+                    </Button>
                   </div>
                   <div>
                     <Button

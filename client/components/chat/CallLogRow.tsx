@@ -1,30 +1,36 @@
-import { CheckCircle2, Phone, PhoneMissed, Video } from "lucide-react";
+import { ArrowDownLeft, ArrowUpRight, Phone, PhoneMissed, Video } from "lucide-react";
 import { formatTime } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
 import { formatCallDuration, parseCallLogContent } from "@/lib/chat-media";
+import { parseDateSafe } from "@/lib/last-seen";
+import type { ChatCallLogMeta } from "@shared/api";
 
 /**
- * System call summary row inside a chat conversation.
+ * WhatsApp-style call record row inside a chat conversation.
  *
- * Call-log messages (messageType='call-log') carry a JSON content payload —
- * see parseCallLogContent(). They render as a slim CENTERED row (no chat
- * bubble), like WhatsApp call records:
+ * Call-log messages (messageType='call-log' — or content that parses as a
+ * call-log JSON payload) render as a slim list row:
  *
- *   [icon]  Outgoing video call          ← direction inferred from senderId
- *           Ended · 12:34 · 4:32 PM      ← status + formatted timestamp
+ *   [(↙|↗) phone/video]  Incoming voice call          2:05
+ *                        Missed · 4:32 PM
  *
- * Icon color: green for answered calls, red for missed/cancelled.
+ * - red icon tile for missed/cancelled/declined/no-answer
+ * - neutral tile for completed calls (duration shown instead of "Ended")
+ * - tapping the row opens the CallSummarySheet (call detail from /calls/:id)
  */
 export function CallLogRow({
   content,
   createdAt,
   isOwn,
+  onOpen,
 }: {
   /** Raw JSON string payload of the call-log message. */
   content?: string;
   createdAt?: string;
   /** True when the call was initiated by the current user. */
   isOwn: boolean;
+  /** Opens the call summary sheet with the parsed metadata. */
+  onOpen?: (meta: ChatCallLogMeta) => void;
 }) {
   const meta = parseCallLogContent(content);
 
@@ -39,44 +45,94 @@ export function CallLogRow({
     );
   }
 
-  const ended = meta.status === "completed";
-  const Icon = ended ? (meta.callType === "video" ? Video : Phone) : PhoneMissed;
-  const direction = isOwn ? "Outgoing" : "Incoming";
-  const medium = meta.callType === "video" ? "video call" : "voice call";
+  const answered = meta.status === "completed";
+  const isVideo = meta.callType === "video";
+  const MediumIcon = isVideo ? Video : Phone;
 
-  let statusText: string;
-  if (ended) {
-    statusText = meta.durationSeconds
-      ? `Ended · ${formatCallDuration(meta.durationSeconds)}`
-      : "Ended";
-  } else if (meta.status === "cancelled") {
-    statusText = "Cancelled";
-  } else {
-    statusText = "Missed";
-  }
+  const direction = isOwn ? "Outgoing" : "Incoming";
+  const medium = isVideo ? "video call" : "voice call";
+
+  const statusText = !answered
+    ? meta.status === "cancelled"
+      ? "Cancelled"
+      : meta.status === "declined"
+        ? "Declined"
+        : meta.status === "no-answer"
+          ? "No answer"
+          : "Missed"
+    : null;
+
+  // Relative-ish row date: time today, "Yesterday", else short date.
+  const when = (() => {
+    const d = parseDateSafe(createdAt || meta.endedAt);
+    if (!d) return "";
+    const now = new Date();
+    const dayDiff = Math.floor(
+      (new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime() -
+        new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime()) /
+        86_400_000,
+    );
+    if (dayDiff === 0) return formatTime(d.toISOString());
+    if (dayDiff === 1) return "Yesterday";
+    return d.toLocaleDateString(undefined, { day: "numeric", month: "short" });
+  })();
 
   return (
-    <div className="flex justify-center py-2 animate-in fade-in duration-200">
-      <div className="flex max-w-[92%] items-center gap-2.5 rounded-2xl border border-border/60 bg-muted/50 px-3.5 py-2 backdrop-blur-sm">
-        <span
-          className={cn(
-            "flex h-8 w-8 shrink-0 items-center justify-center rounded-full",
-            ended ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400" : "bg-red-500/15 text-red-500"
-          )}
-        >
-          <Icon className="h-4 w-4" />
+    <div className="flex py-1 animate-in fade-in duration-200" style={{ justifyContent: isOwn ? "flex-end" : "flex-start" }}>
+      <button
+        type="button"
+        onClick={() => onOpen?.(meta)}
+        className={cn(
+          "flex w-[min(92%,340px)] items-center gap-3 rounded-2xl border border-border/60 bg-muted/50 px-3 py-2 text-left backdrop-blur-sm transition-colors",
+          "hover:bg-muted/80 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500/40",
+        )}
+        aria-label={`Open ${direction} ${medium} details`}
+      >
+        <span className="relative shrink-0">
+          <span
+            className={cn(
+              "flex h-9 w-9 items-center justify-center rounded-full",
+              answered
+                ? "bg-muted-foreground/10 text-muted-foreground dark:bg-muted dark:text-foreground/70"
+                : "bg-red-500/15 text-red-500",
+            )}
+          >
+            {!answered && <PhoneMissed className="absolute -left-0.5 -top-0.5 h-3 w-3 opacity-0" aria-hidden />}
+            <MediumIcon className="h-4 w-4" />
+          </span>
+          <span
+            className={cn(
+              "absolute -bottom-0.5 -right-0.5 flex h-4 w-4 items-center justify-center rounded-full ring-2 ring-card",
+              answered ? "bg-emerald-500 text-white" : "bg-red-500 text-white",
+            )}
+            aria-hidden
+          >
+            {isOwn ? (
+              <ArrowUpRight className="h-2.5 w-2.5" strokeWidth={3} />
+            ) : (
+              <ArrowDownLeft className="h-2.5 w-2.5" strokeWidth={3} />
+            )}
+          </span>
         </span>
-        <div className="min-w-0 text-left">
-          <p className="flex items-center gap-1 truncate text-xs font-semibold text-foreground">
-            {direction} {medium}
-            {ended && <CheckCircle2 className="h-3 w-3 shrink-0 text-emerald-500" aria-label="Answered" />}
-          </p>
-          <p className="truncate text-[10px] text-muted-foreground">
-            {statusText}
-            {createdAt ? ` · ${formatTime(createdAt)}` : ""}
-          </p>
-        </div>
-      </div>
+        <span className="min-w-0 flex-1">
+          <span className="flex items-center justify-between gap-2">
+            <span className="truncate text-[13px] font-semibold text-foreground">
+              {direction} {medium}
+            </span>
+            {answered && meta.durationSeconds ? (
+              <span className="shrink-0 font-mono text-[11px] text-muted-foreground" title="Call duration">
+                {formatCallDuration(meta.durationSeconds)}
+              </span>
+            ) : null}
+          </span>
+          <span className="flex items-center justify-between gap-2">
+            <span className={cn("truncate text-[11px]", answered ? "text-muted-foreground" : "font-medium text-red-500")}>
+              {answered ? (meta.durationSeconds ? "Ended" : "Completed") : statusText}
+            </span>
+            {when && <span className="shrink-0 text-[10px] text-muted-foreground">{when}</span>}
+          </span>
+        </span>
+      </button>
     </div>
   );
 }
