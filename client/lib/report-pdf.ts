@@ -189,6 +189,13 @@ export interface CallReportData {
   }>;
   transcripts?: Array<{ id?: string; speakerName?: string | null; text: string; createdAt?: string | null }> | null;
   recording?: { storageUrl: string; duration?: number | null } | null;
+  notes?: {
+    summary?: string | null;
+    keyPoints?: string[] | null;
+    decisions?: string[] | null;
+    actionItems?: Array<{ title?: string; task?: string; assignedTo?: string | null; ownerName?: string | null; dueDate?: string | null; status?: string }> | null;
+    importantTimestamps?: Array<{ ts?: string; description?: string }> | null;
+  } | null;
 }
 
 export async function buildCallReportPdf(data: CallReportData): Promise<jsPDF> {
@@ -223,6 +230,46 @@ export async function buildCallReportPdf(data: CallReportData): Promise<jsPDF> {
     ctx.doc.text(bits.length ? bits.join(" · ") : "invited", ctx.margin + 170, ctx.y);
     ctx.doc.setTextColor(...INK);
     ctx.y += 16;
+  }
+
+  const notes = data.notes;
+  if (notes && (notes.summary || (notes.actionItems && notes.actionItems.length > 0))) {
+    sectionTitle(ctx, "AI Summary & Action Points");
+    if (notes.summary) {
+      docSetFont(ctx, "normal");
+      wrapParagraph(ctx, notes.summary, 12);
+    }
+    const keyPoints = (notes.keyPoints || []).filter(Boolean);
+    if (keyPoints.length > 0) {
+      docSetFont(ctx, "bold");
+      ensureSpace(ctx, 18);
+      ctx.doc.text("Key points", ctx.margin, ctx.y);
+      ctx.y += 14;
+      docSetFont(ctx, "normal");
+      for (const kp of keyPoints) wrapParagraph(ctx, `• ${kp}`, 4);
+    }
+    const decisions = (notes.decisions || []).filter(Boolean);
+    if (decisions.length > 0) {
+      docSetFont(ctx, "bold");
+      ensureSpace(ctx, 18);
+      ctx.doc.text("Decisions", ctx.margin, ctx.y);
+      ctx.y += 14;
+      docSetFont(ctx, "normal");
+      for (const d of decisions) wrapParagraph(ctx, `• ${d}`, 4);
+    }
+    const actionItems = (notes.actionItems || []).filter(Boolean);
+    if (actionItems.length > 0) {
+      docSetFont(ctx, "bold");
+      ensureSpace(ctx, 18);
+      ctx.doc.text("Action points", ctx.margin, ctx.y);
+      ctx.y += 14;
+      docSetFont(ctx, "normal");
+      for (const ai of actionItems) {
+        const owner = ai.ownerName || ai.assignedTo || null;
+        const label = `• ${ai.title || ai.task || "Action item"}${owner ? ` — by ${owner}` : ""}${ai.dueDate ? ` (due ${ai.dueDate})` : ""}`;
+        wrapParagraph(ctx, label, 4);
+      }
+    }
   }
 
   const transcripts = data.transcripts || [];
