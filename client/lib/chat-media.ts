@@ -191,19 +191,40 @@ export function attachmentDisplayName(
 
 /**
  * Call-log messages carry `messageType: 'call-log'` and a JSON `content`:
- * { callType, status, durationSeconds, initiatorName, callCode }.
- * Never trust the wire — parse defensively and return null on garbage.
+ * { callType, status, durationSeconds, initiatorName, callCode, callId?,
+ *   conversationId?, hasTranscript?, endedAt? }.
+ * Statuses: completed | missed | cancelled | declined | no-answer.
+ *
+ * Detection is intentionally DEFENSIVE — this parser is also the fallback used
+ * to identify call-log rows whose messageType flag is missing entirely (older
+ * backend rows / snake_case payloads), which is why it only requires the
+ * { callType, status } key pair. Never trust the wire — return null on garbage.
  */
+export const CALL_LOG_STATUSES = [
+  "completed",
+  "missed",
+  "cancelled",
+  "declined",
+  "no-answer",
+  "no_answer",
+] as const;
+
+export type CallLogStatus = (typeof CALL_LOG_STATUSES)[number];
+
 export function parseCallLogContent(content?: string | null): ChatCallLogMeta | null {
   if (!content) return null;
+  const trimmed = content.trim();
+  if (!trimmed.startsWith("{")) return null; // fast path: plain text messages
   try {
-    const parsed = JSON.parse(content) as Partial<ChatCallLogMeta>;
+    const parsed = JSON.parse(trimmed) as Record<string, unknown>;
     if (!parsed || typeof parsed !== "object") return null;
+    // Must at least LOOK like a call-log payload (callType + status keys).
+    if (typeof parsed.callType !== "string" || typeof parsed.status !== "string") return null;
     const callType = parsed.callType === "video" ? "video" : "audio";
-    const status =
-      parsed.status === "completed" || parsed.status === "missed" || parsed.status === "cancelled"
-        ? parsed.status
-        : null;
+    const rawStatus = parsed.status.toLowerCase().replace("_", "-");
+    const status = (CALL_LOG_STATUSES as readonly string[]).includes(rawStatus)
+      ? (rawStatus === "no_answer" ? "no-answer" : rawStatus)
+      : null;
     if (!status) return null;
     const durationSeconds =
       typeof parsed.durationSeconds === "number" && isFinite(parsed.durationSeconds) && parsed.durationSeconds > 0
@@ -211,10 +232,14 @@ export function parseCallLogContent(content?: string | null): ChatCallLogMeta | 
         : null;
     return {
       callType,
-      status,
+      status: status as ChatCallLogMeta["status"],
       durationSeconds,
       initiatorName: typeof parsed.initiatorName === "string" ? parsed.initiatorName : null,
       callCode: typeof parsed.callCode === "string" ? parsed.callCode : null,
+      callId: typeof parsed.callId === "string" ? parsed.callId : null,
+      conversationId: typeof parsed.conversationId === "string" ? parsed.conversationId : null,
+      hasTranscript: typeof parsed.hasTranscript === "boolean" ? parsed.hasTranscript : null,
+      endedAt: typeof parsed.endedAt === "string" ? parsed.endedAt : null,
     };
   } catch {
     return null;
