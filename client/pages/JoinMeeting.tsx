@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import VideoCallRoom from '@/components/VideoCallRoom';
+import { CallRoom } from '@/components/call-room/CallRoom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -60,7 +60,7 @@ const JoinMeeting = () => {
   const [guestValidateResult, setGuestValidateResult] = useState<any>(null);
   const [guestName, setGuestName] = useState('');
   const [guestJoining, setGuestJoining] = useState(false);
-  const [guestInfo, setGuestInfo] = useState<{ guestId: string; guestName: string; meeting: any } | null>(null);
+  const [guestInfo, setGuestInfo] = useState<{ guestId: string; guestName: string; meeting: any; calling?: any } | null>(null);
 
   const [password, setPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
@@ -132,7 +132,7 @@ const JoinMeeting = () => {
         localStorage.setItem('userName', result.guestName);
         (window as any).__mfGuestRestore = { prevUserId, prevUserName };
         setSocketAuth({ guestToken: result.guestToken });
-        setGuestInfo({ guestId: result.guestId, guestName: result.guestName, meeting: result.meeting });
+        setGuestInfo({ guestId: result.guestId, guestName: result.guestName, meeting: result.meeting, calling: (result as any).calling });
         setMeeting(result.meeting as any);
         // Always mount the VideoCallRoom: it renders its own waiting-room
         // screen AND emits `waiting-room:request` so the host actually gets
@@ -570,13 +570,14 @@ const JoinMeeting = () => {
   if (isGuest && isJoined && guestInfo) {
     return (
       <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <VideoCallRoom
+        <CallRoom
           roomId={guestInfo.meeting?.meetingCode || meetingCode}
           meetingId={guestInfo.meeting?.id}
           onLeave={leaveGuestRoom}
           userName={guestInfo.guestName}
           isHost={false}
           waitingRoomEnabled={guestInfo.meeting?.waitingRoomEnabled}
+          calling={(guestInfo as any).calling || null}
           inviteDetails={{
             title: guestInfo.meeting?.title,
             code: guestInfo.meeting?.meetingCode || meetingCode,
@@ -782,13 +783,15 @@ const JoinMeeting = () => {
   if (isJoined && effectiveMeeting) {
     return (
       <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <VideoCallRoom
+        <CallRoom
           roomId={effectiveMeeting.meetingCode}
           meetingId={effectiveMeeting.id}
           onLeave={() => navigate('/dashboard')}
           userName={localStorage.getItem('userName') || 'User'}
           isHost={effectiveIsHost}
           waitingRoomEnabled={effectiveMeeting.waitingRoomEnabled}
+          calling={(meeting as any)?.calling || (effectiveMeeting as any)?.calling || null}
+          title={effectiveMeeting.title}
           inviteDetails={{
             title: effectiveMeeting.title,
             code: effectiveMeeting.meetingCode,
