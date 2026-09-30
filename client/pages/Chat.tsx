@@ -6,6 +6,16 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import {
   Dialog,
   DialogContent,
   DialogDescription,
@@ -35,6 +45,7 @@ import {
   Search,
   ArrowLeft,
   Smile,
+  MoreHorizontal,
   MoreVertical,
   CircleDot,
   Menu,
@@ -45,6 +56,14 @@ import {
   ImageIcon,
   FileText,
   Sparkles,
+  CornerUpLeft,
+  Copy,
+  Pencil,
+  Trash2,
+  Ban,
+  UserCheck,
+  PencilLine,
+  Reply,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -83,9 +102,12 @@ import { useSocket } from "@/hooks/useSocket";
 import { AudioUtils } from "@/lib/audio-utils";
 import { cn } from "@/lib/utils";
 import { formatTime as formatTimePref } from "@/lib/datetime";
+import { formatLastSeen, isRecent, parseDateSafe } from "@/lib/last-seen";
 import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
 import { ChatProfileModal, ChatProfilePerson } from "@/components/chat/ChatProfileModal";
+import { GroupInfoSheet } from "@/components/chat/GroupInfoSheet";
+import { MessageActionMenu } from "@/components/chat/MessageActionMenu";
 import { resolveMediaUrl } from "@/lib/media-url";
 import {
   ImageAttachment,
@@ -95,13 +117,15 @@ import {
 } from "@/components/chat/AttachmentMedia";
 import { StickerEmojiGifPanel } from "@/components/chat/StickerEmojiGifPanel";
 import { CallLogRow } from "@/components/chat/CallLogRow";
+import { CallSummarySheet } from "@/components/chat/CallSummarySheet";
 import {
   CHAT_MEDIA_MAX_BYTES,
   formatFileSize,
   isSoloEmojiMessage,
   guessMediaKind,
+  parseCallLogContent,
 } from "@/lib/chat-media";
-import type { GifObject } from "@shared/api";
+import type { ChatCallLogMeta, GifObject, MessageReplySnapshot } from "@shared/api";
 
 // ==========================================
 // Types & Interfaces
@@ -118,7 +142,7 @@ type ChatParticipant = Conversation["participants"][number] & {
   avatarUrl?: string | null;
 };
 
-type ChatMessage = {
+export type ChatMessage = {
   id: string;
   conversation_id?: string;
   conversationId?: string;
@@ -140,6 +164,19 @@ type ChatMessage = {
   attachmentSize?: number;
   message_type?: string;
   messageType?: string;
+  /** Present when the message body was edited. */
+  editedAt?: string | null;
+  edited_at?: string | null;
+  /** Tombstones (DELETE ?scope=everyone|me). */
+  deletedForEveryone?: boolean | null;
+  deleted_for_everyone?: boolean | null;
+  deletedForMe?: boolean | null;
+  deleted_for_me?: boolean | null;
+  /** Quoted-parent snapshot (replies). */
+  replyTo?: MessageReplySnapshot | null;
+  reply_to?: MessageReplySnapshot | null;
+  /** Ephemeral system rows ("X left the group") — socket-driven, not persisted. */
+  system?: boolean;
   /** Local blob URL for optimistic image/video previews while uploading. */
   localPreviewUrl?: string;
   /** True while the attachment file is still uploading to /chat/media. */
@@ -148,7 +185,7 @@ type ChatMessage = {
   isOptimistic?: boolean;
 };
 
-type ConversationView = Conversation & {
+export type ConversationView = Conversation & {
   lastMessage?: string;
   last_message?: string;
   lastmessage?: string;
@@ -161,6 +198,17 @@ type ConversationView = Conversation & {
   displayName?: string | null;
   displayAvatarUrl?: string | null;
   isGroup?: boolean;
+  /** Batch-4 presence / block / role helpers from the conversations payload. */
+  otherUserLastSeenAt?: string | null;
+  other_user_last_seen_at?: string | null;
+  otherUserPresenceStatus?: string | null;
+  other_user_presence_status?: string | null;
+  blockedByMe?: boolean | null;
+  blocked_by_me?: boolean | null;
+  blockedMe?: boolean | null;
+  blocked_me?: boolean | null;
+  myRole?: string | null;
+  my_role?: string | null;
 };
 
 // ==========================================
@@ -263,24 +311,28 @@ const isRecentlyOnline = (dateStr: string | null | undefined): boolean => {
 
 const getParticipantStatusLine = (
   participant: ChatParticipant | undefined,
-  socketPresence: string | undefined
+  socketPresence: string | undefined,
+  lastSeenOverride?: string | null,
 ): { line: string; isOnlineDot: boolean } => {
   const presenceStatus = socketPresence;
   const activeStatuses = ["online", "busy", "in-meeting", "calling", "do-not-disturb"];
   const isActivePresence = !!presenceStatus && activeStatuses.includes(presenceStatus);
-  const lastSeen = getParticipantLastSeen(participant);
+  // otherUserLastSeenAt (conversation payload) wins over the participant row's
+  // lastSeen — the latter can lag behind (that plus UTC parsing bugs was the
+  // reported "last seen is wrong" issue).
+  const lastSeen = lastSeenOverride ?? getParticipantLastSeen(participant);
 
   if (isActivePresence) {
     return { line: getPresenceLabel(presenceStatus), isOnlineDot: true };
   }
 
-  if (isRecentlyOnline(lastSeen)) {
+  if (isRecent(lastSeen)) {
     return { line: "Online", isOnlineDot: true };
   }
 
-  const relative = formatRelativeTime(lastSeen);
-  if (relative) {
-    return { line: `Last seen ${relative}`, isOnlineDot: false };
+  const formatted = formatLastSeen(lastSeen);
+  if (formatted) {
+    return { line: `last seen ${formatted}`, isOnlineDot: false };
   }
 
   return { line: "Offline", isOnlineDot: false };
@@ -297,6 +349,47 @@ const getAttachmentType = (m: ChatMessage) => m.attachment_type || m.attachmentT
 const getMessageType = (m: ChatMessage) => (m.messageType || m.message_type || "").toLowerCase();
 const getAttachmentName = (m: ChatMessage) => m.attachmentName || m.attachment_name || "";
 const getAttachmentSize = (m: ChatMessage) => m.attachmentSize ?? m.attachment_size ?? null;
+
+const getMsgEditedAt = (m: ChatMessage) => m.editedAt || m.edited_at || null;
+const isDeletedForMe = (m: ChatMessage) => !!(m.deletedForMe ?? m.deleted_for_me);
+const isDeletedForEveryone = (m: ChatMessage) => !!(m.deletedForEveryone ?? m.deleted_for_everyone);
+const getMsgReplyTo = (m: ChatMessage): MessageReplySnapshot | null =>
+  m.replyTo ?? m.reply_to ?? null;
+
+/** Short preview for a quoted block (emoji-prefixed for attachments). */
+const quotedSnippet = (q: MessageReplySnapshot | null | undefined): string => {
+  if (!q) return "";
+  const t = (q.messageType || "").toLowerCase();
+  const at = (q.attachmentType || "").toLowerCase();
+  if (t === "image" || at === "image") return q.content ? `📷 ${q.content}` : "📷 Photo";
+  if (t === "video" || at === "video") return q.content ? `🎬 ${q.content}` : "🎬 Video";
+  if (t === "voice" || t === "audio" || at === "audio") return "🎤 Voice note";
+  if (t === "gif" || at === "gif") return q.content ? `GIF · ${q.content}` : "GIF";
+  if (t === "sticker" || at === "sticker") return "Sticker";
+  if (t === "document" || at === "document") return `📎 ${q.content || "Document"}`;
+  return q.content || "";
+};
+
+/** Whether the current user may inline-edit this message (own, text, <24h). */
+const canEditMessage = (m: ChatMessage): boolean => {
+  if (getMsgSenderId(m) !== CURRENT_USER_ID()) return false;
+  if (isCallLogMessage(m) || isDeletedForMe(m) || isDeletedForEveryone(m)) return false;
+  if (getAttachmentUrl(m)) return false;
+  const type = getMessageType(m);
+  if (type && type !== "text") return false;
+  const created = parseDateSafe(getMsgTime(m));
+  if (!created) return false;
+  return Date.now() - created.getTime() <= 24 * 60 * 60 * 1000;
+};
+
+/**
+ * Robust call-log detection. The messageType flag is the primary signal, but
+ * older rows / snake_case payloads / edit-tombstones may lose it, so the
+ * content JSON itself (callType+status keys) is accepted as a fallback —
+ * this is why call logs "didn't show" for some rows.
+ */
+const isCallLogMessage = (m: ChatMessage): boolean =>
+  getMessageType(m) === "call-log" || !!parseCallLogContent(m.content);
 
 /** Backend batch-3 kinds are single words ('image'); legacy rows store a MIME ('image/png'). */
 const isImageAttachment = (m: ChatMessage) => {
@@ -411,6 +504,15 @@ const DateSeparator = ({ date }: { date: string }) => (
   </div>
 );
 
+/** Subtle centered system row ("X left the group") — socket-driven, ephemeral. */
+const SystemRow = ({ content }: { content: string }) => (
+  <div className="flex justify-center py-1.5">
+    <span className="max-w-[86%] truncate rounded-full bg-muted/60 px-3 py-1 text-[11px] italic text-muted-foreground border border-border/50">
+      {content}
+    </span>
+  </div>
+);
+
 const MessageBubble = ({
   message,
   isOwn,
@@ -420,6 +522,10 @@ const MessageBubble = ({
   senderAvatarUrl,
   onSenderClick,
   onRetry,
+  highlighted,
+  onQuoteClick,
+  onOpenMenu,
+  onReplySwipe,
 }: {
   message: ChatMessage;
   isOwn: boolean;
@@ -431,6 +537,14 @@ const MessageBubble = ({
   onSenderClick?: () => void;
   members: TeamMember[];
   onRetry?: () => void;
+  /** Flash-highlight (quote jump). */
+  highlighted?: boolean;
+  /** Scroll the quoted original into view. */
+  onQuoteClick?: (quotedId: string) => void;
+  /** Open the message action menu (hover button / long-press / right-click). */
+  onOpenMenu?: (message: ChatMessage, x: number, y: number) => void;
+  /** Swipe-to-reply (touch). */
+  onReplySwipe?: (message: ChatMessage) => void;
 }) => {
   const isFailed = message.status === "failed";
   const isSending = message.status === "sending";
@@ -447,6 +561,73 @@ const MessageBubble = ({
   // Voice-note placeholder text (“🎤 Voice note”) is represented by the
   // player itself, so don't render it twice.
   const hideContent = isAudio && isVoiceNoteContent(message.content);
+  const deletedForMe = isDeletedForMe(message);
+  const deletedForEveryone = isDeletedForEveryone(message);
+  const tombstone = deletedForMe || deletedForEveryone;
+  const replyTo = getMsgReplyTo(message);
+
+  // ----- Swipe-to-reply (touch) -----
+  const [swipeX, setSwipeX] = useState(0);
+  const [dragging, setDragging] = useState(false);
+  const touchStartRef = useRef<{ x: number; y: number; lastX: number; lastY: number } | null>(null);
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressPointRef = useRef<{ x: number; y: number } | null>(null);
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+  };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    const t = e.touches[0];
+    if (!t) return;
+    touchStartRef.current = { x: t.clientX, y: t.clientY, lastX: t.clientX, lastY: t.clientY };
+    longPressPointRef.current = { x: t.clientX, y: t.clientY };
+    setDragging(true);
+    clearLongPress();
+    if (onOpenMenu && !tombstone) {
+      longPressTimerRef.current = setTimeout(() => {
+        longPressTimerRef.current = null;
+        // Haptic tick on menu open (best-effort).
+        try { navigator.vibrate?.(12); } catch {}
+        const pt = longPressPointRef.current;
+        if (pt) onOpenMenu(message, pt.x, pt.y);
+      }, 500);
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    const start = touchStartRef.current;
+    const t = e.touches[0];
+    if (!start || !t) return;
+    start.lastX = t.clientX;
+    start.lastY = t.clientY;
+    const dx = t.clientX - start.x;
+    const dy = t.clientY - start.y;
+    // Vertical scroll or left drag cancels both gestures.
+    if (Math.abs(dy) > Math.abs(dx) || dx <= 0) {
+      clearLongPress();
+      if (swipeX !== 0) setSwipeX(0);
+      return;
+    }
+    if (dx > 10) clearLongPress();
+    setSwipeX(Math.min(dx, 96));
+  };
+
+  const handleTouchEnd = () => {
+    clearLongPress();
+    if (swipeX > 56 && onReplySwipe && !tombstone) {
+      try { navigator.vibrate?.(10); } catch {}
+      onReplySwipe(message);
+    }
+    setSwipeX(0);
+    setDragging(false);
+    touchStartRef.current = null;
+  };
+
+  useEffect(() => clearLongPress, []);
 
   // WhatsApp-style "transparent" messages render WITHOUT a bubble background:
   //  - big-emoji text (1-3 emoji, no attachment)
@@ -460,6 +641,11 @@ const MessageBubble = ({
       <p className={cn("text-[10px]", transparent ? "text-muted-foreground/70" : "opacity-60")}>
         {formatTime(getMsgTime(message))}
       </p>
+      {getMsgEditedAt(message) && !tombstone && (
+        <span className="text-[10px] italic opacity-60" title="Edited">
+          edited
+        </span>
+      )}
       {isOwn && !transparent && (
         isFailed ? (
           <button onClick={onRetry} className="text-red-300 hover:text-red-100" title="Retry">
@@ -532,8 +718,65 @@ const MessageBubble = ({
   // ------------------------------------------------------------
   // Standard bubble rendering (text + media attachments)
   // ------------------------------------------------------------
+  const bubbleBase = cn(
+    "relative px-3.5 py-2.5 transition-all animate-in fade-in slide-in-from-bottom-1 duration-200 overflow-hidden",
+    isOwn
+      ? cn(
+          "bg-gradient-to-br from-blue-600 via-blue-600 to-violet-600 text-white rounded-2xl rounded-br-md shadow-md shadow-blue-600/15",
+          isGrouped && "rounded-br-2xl rounded-tr-md"
+        )
+      : cn(
+          "bg-card text-foreground border border-border/80 rounded-2xl rounded-bl-md shadow-sm",
+          isGrouped && "rounded-bl-2xl rounded-tl-md"
+        ),
+    isFailed && "border-red-500/60 bg-red-50 dark:bg-red-950/30",
+    // Quote-jump flash highlight (2s pulse driven by the parent's timeout).
+    highlighted && "ring-2 ring-blue-400/70 !bg-blue-500/10 dark:!bg-blue-500/10"
+  );
+
+  // Quoted-parent block rendered inside the bubble (WhatsApp-style).
+  const quotedBlock =
+    replyTo && !tombstone ? (
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          if (replyTo.id) onQuoteClick?.(replyTo.id);
+        }}
+        className={cn(
+          "mb-1.5 flex w-full max-w-full items-stretch gap-2 overflow-hidden rounded-lg px-2 py-1 text-left transition-colors",
+          isOwn ? "bg-white/15 hover:bg-white/25" : "bg-muted hover:bg-muted/80"
+        )}
+        title="Jump to quoted message"
+      >
+        <span className={cn("w-1 shrink-0 rounded-full", isOwn ? "bg-white/80" : "bg-blue-500")} />
+        <span className="min-w-0 flex-1">
+          <span className={cn("block truncate text-[11px] font-semibold", isOwn ? "text-white" : "text-blue-600 dark:text-blue-400")}>
+            {replyTo.senderName || "User"}
+          </span>
+          <span className={cn("block text-[11px] leading-snug line-clamp-2 break-words", isOwn ? "text-white/85" : "text-muted-foreground")}>
+            {quotedSnippet(replyTo)}
+          </span>
+        </span>
+      </button>
+    ) : null;
+
   return (
-    <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
+    <div
+      className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+      onContextMenu={
+        onOpenMenu && !tombstone
+          ? (e) => {
+              e.preventDefault();
+              onOpenMenu(message, e.clientX, e.clientY);
+            }
+          : undefined
+      }
+    >
       {!isOwn && (
         <div className="w-7 shrink-0 flex items-end">
           {!isGrouped && (
@@ -557,81 +800,122 @@ const MessageBubble = ({
           )}
         </div>
       )}
-      <div
-        className={cn(
-          "relative max-w-[82%] sm:max-w-[68%] px-3.5 py-2.5 transition-all animate-in fade-in slide-in-from-bottom-1 duration-200 overflow-hidden",
-          isOwn
-            ? cn(
-                "bg-gradient-to-br from-blue-600 via-blue-600 to-violet-600 text-white rounded-2xl rounded-br-md shadow-md shadow-blue-600/15",
-                isGrouped && "rounded-br-2xl rounded-tr-md"
-              )
-            : cn(
-                "bg-card text-foreground border border-border/80 rounded-2xl rounded-bl-md shadow-sm",
-                isGrouped && "rounded-bl-2xl rounded-tl-md"
-              ),
-          isFailed && "border-red-500/60 bg-red-50 dark:bg-red-950/30"
+      <div className="relative flex min-w-0 max-w-[82%] sm:max-w-[68%] items-center">
+        {/* Swipe-to-reply affordance revealed behind the bubble */}
+        {onReplySwipe && !tombstone && (
+          <span
+            className="pointer-events-none absolute left-[-36px] top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500"
+            style={{ opacity: Math.min(1, swipeX / 56) }}
+            aria-hidden
+          >
+            <CornerUpLeft className="h-3.5 w-3.5" />
+          </span>
         )}
-      >
-        {showSender && !isOwn && (
+        {/* Hover action trigger (desktop) — also opens via long-press/right-click */}
+        {onOpenMenu && !tombstone && (
           <button
             type="button"
-            onClick={onSenderClick}
-            disabled={!onSenderClick}
             className={cn(
-              "block max-w-full truncate text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400 text-left",
-              onSenderClick && "cursor-pointer hover:underline underline-offset-2"
+              "absolute top-0 z-10 hidden h-7 w-7 items-center justify-center rounded-full border border-border/70 bg-background/95 text-muted-foreground shadow-sm opacity-0 transition-opacity hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100 sm:flex",
+              isOwn ? "-left-9" : "-right-9"
             )}
+            onClick={(e) => {
+              e.stopPropagation();
+              const rect = (e.currentTarget as HTMLElement).getBoundingClientRect();
+              onOpenMenu(message, rect.left + rect.width / 2, rect.bottom + 4);
+            }}
+            aria-label="Message actions"
+            title="Message actions"
           >
-            {senderName}
+            <MoreHorizontal className="h-4 w-4" />
           </button>
         )}
+        {tombstone ? (
+          <div
+            className={cn(
+              "rounded-2xl border border-dashed border-border/70 bg-muted/40 px-3.5 py-2",
+              isOwn && "rounded-br-md",
+              !isOwn && "rounded-bl-md"
+            )}
+          >
+            <p className="flex items-center gap-1.5 text-[13px] italic text-muted-foreground">
+              <Trash2 className="h-3 w-3 shrink-0" />
+              {deletedForMe || isOwn ? "You deleted this message" : "This message was deleted"}
+            </p>
+            <div className="mt-0.5">{timestampRow}</div>
+          </div>
+        ) : (
+          <div
+            className={bubbleBase}
+            style={{
+              transform: `translateX(${swipeX}px)`,
+              transition: dragging ? "none" : "transform 220ms cubic-bezier(0.22, 1, 0.36, 1)",
+            }}
+          >
+            {showSender && !isOwn && (
+              <button
+                type="button"
+                onClick={onSenderClick}
+                disabled={!onSenderClick}
+                className={cn(
+                  "block max-w-full truncate text-[11px] font-semibold mb-1 text-blue-500 dark:text-blue-400 text-left",
+                  onSenderClick && "cursor-pointer hover:underline underline-offset-2"
+                )}
+              >
+                {senderName}
+              </button>
+            )}
 
-        {isAudio && (
-          <div className={cn("-mx-0.5", message.content && !hideContent && "mb-1.5")}>
-            <VoiceNotePlayer src={attachmentUrl} isOwn={isOwn} />
+            {quotedBlock}
+
+            {isAudio && (
+              <div className={cn("-mx-0.5", message.content && !hideContent && "mb-1.5")}>
+                <VoiceNotePlayer src={attachmentUrl} isOwn={isOwn} />
+              </div>
+            )}
+
+            {isImage && attachmentUrl && (
+              <div className={cn(message.content ? "mb-2" : "")}>
+                <ImageAttachment
+                  url={attachmentUrl}
+                  alt={getAttachmentName(message)}
+                  isOwn={isOwn}
+                  uploading={uploading}
+                />
+              </div>
+            )}
+
+            {isVideo && attachmentUrl && (
+              <div className={cn(message.content ? "mb-2" : "")}>
+                <VideoAttachment url={attachmentUrl} name={getAttachmentName(message)} isOwn={isOwn} uploading={uploading} />
+              </div>
+            )}
+
+            {isGif && attachmentUrl && (
+              <div className={cn(message.content ? "mb-2" : "")}>
+                <StickerAttachment url={attachmentUrl} alt={getAttachmentName(message) || "GIF"} />
+              </div>
+            )}
+
+            {((isFile && attachmentUrl) || (uploading && isFile)) && (
+              <div className="mb-2">
+                <DocumentAttachment
+                  url={attachmentUrl}
+                  name={getAttachmentName(message) || (uploading ? "Uploading file" : "")}
+                  size={getAttachmentSize(message)}
+                  isOwn={isOwn}
+                  uploading={uploading}
+                />
+              </div>
+            )}
+
+            {message.content && !hideContent && (
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+            )}
+
+            {timestampRow}
           </div>
         )}
-
-        {isImage && attachmentUrl && (
-          <div className={cn(message.content ? "mb-2" : "")}>
-            <ImageAttachment
-              url={attachmentUrl}
-              alt={getAttachmentName(message)}
-              isOwn={isOwn}
-              uploading={uploading}
-            />
-          </div>
-        )}
-
-        {isVideo && attachmentUrl && (
-          <div className={cn(message.content ? "mb-2" : "")}>
-            <VideoAttachment url={attachmentUrl} name={getAttachmentName(message)} isOwn={isOwn} uploading={uploading} />
-          </div>
-        )}
-
-        {isGif && attachmentUrl && (
-          <div className={cn(message.content ? "mb-2" : "")}>
-            <StickerAttachment url={attachmentUrl} alt={getAttachmentName(message) || "GIF"} />
-          </div>
-        )}
-
-        {((isFile && attachmentUrl) || (uploading && isFile)) && (
-          <div className="mb-2">
-            <DocumentAttachment
-              url={attachmentUrl}
-              name={getAttachmentName(message) || (uploading ? "Uploading file" : "")}
-              size={getAttachmentSize(message)}
-              isOwn={isOwn}
-              uploading={uploading}
-            />
-          </div>
-        )}
-
-        {message.content && !hideContent && (
-          <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
-        )}
-
-        {timestampRow}
       </div>
     </div>
   );
@@ -852,6 +1136,23 @@ export default function Chat() {
   const mediaInputRef = useRef<HTMLInputElement>(null);
   const docInputRef = useRef<HTMLInputElement>(null);
 
+  // Batch-4: replies, edits, tombstones, blocks, group info, call summaries
+  const [messagePatches, setMessagePatches] = useState<Record<string, Partial<ChatMessage>>>({});
+  const [systemEvents, setSystemEvents] = useState<ChatMessage[]>([]);
+  const [replyTo, setReplyTo] = useState<MessageReplySnapshot | null>(null);
+  const [editing, setEditing] = useState<{ id: string; original: string } | null>(null);
+  const [actionMenu, setActionMenu] = useState<{ message: ChatMessage; x: number; y: number } | null>(null);
+  const [deleteConfirm, setDeleteConfirm] = useState<{ message: ChatMessage; scope: "me" | "everyone" } | null>(null);
+  const [highlightedId, setHighlightedId] = useState<string | null>(null);
+  const [callSummaryMeta, setCallSummaryMeta] = useState<ChatCallLogMeta | null>(null);
+  const [groupInfoOpen, setGroupInfoOpen] = useState(false);
+  const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
+  const [lastSeenOverrides, setLastSeenOverrides] = useState<Record<string, string | null>>({});
+  const [blockBusy, setBlockBusy] = useState(false);
+  // Re-render periodically so relative "last seen" strings stay fresh.
+  const [, setPresenceTick] = useState(0);
+  const messageElsRef = useRef<Map<string, HTMLElement>>(new Map());
+
   // Profile view modal (header avatar/name or message bubble sender click)
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const [profilePerson, setProfilePerson] = useState<ChatProfilePerson | null>(null);
@@ -909,6 +1210,14 @@ export default function Chat() {
     setLocalMessages([]);
     pendingMessageIdsRef.current.clear();
     setTypingUsers({});
+    // Per-conversation UI state (batch-4)
+    setMessagePatches({});
+    setSystemEvents([]);
+    setReplyTo(null);
+    setEditing(null);
+    setActionMenu(null);
+    setHighlightedId(null);
+    messageElsRef.current.clear();
 
     if (selectedConversation?.id) {
       // Inside a conversation on mobile -> hide the list panel.
@@ -933,10 +1242,10 @@ export default function Chat() {
   // Fetch messages
   const { data: messagesData } = useMessages(selectedConversation?.id || "", 1, 100);
 
-  // Combine & deduplicate messages
+  // Combine & deduplicate messages (+ apply realtime patches and system rows)
   const combinedMessages = useMemo(() => {
     const apiMsgs = (messagesData?.messages || []) as ChatMessage[];
-    const all = [...apiMsgs, ...localMessages];
+    const all = [...apiMsgs, ...localMessages, ...systemEvents];
     const seen = new Set<string>();
     return all
       .filter((m) => {
@@ -944,8 +1253,9 @@ export default function Chat() {
         seen.add(m.id);
         return true;
       })
+      .map((m) => (messagePatches[m.id] ? { ...m, ...messagePatches[m.id] } : m))
       .sort((a, b) => new Date(getMsgTime(a)).getTime() - new Date(getMsgTime(b)).getTime());
-  }, [messagesData?.messages, localMessages]);
+  }, [messagesData?.messages, localMessages, systemEvents, messagePatches]);
 
   // Group messages for visual grouping
   const groupedMessages = useMemo(() => {
@@ -1062,6 +1372,92 @@ export default function Chat() {
     return () => off("user-presence-updated", handler);
   }, [isConnected, on, off]);
 
+  // Socket: presence:update — live last-seen / presence for header + lists
+  useEffect(() => {
+    if (!isConnected) return;
+    const handler = (payload: { userId?: string; lastSeenAt?: string | null; presenceStatus?: string }) => {
+      if (!payload?.userId) return;
+      if (payload.lastSeenAt !== undefined) {
+        setLastSeenOverrides((p) => ({ ...p, [payload.userId!]: payload.lastSeenAt ?? null }));
+      }
+      if (payload.presenceStatus !== undefined) {
+        setUserPresence((p) => ({ ...p, [payload.userId!]: payload.presenceStatus! }));
+      }
+    };
+    on("presence:update", handler as any);
+    return () => off("presence:update", handler as any);
+  }, [isConnected, on, off]);
+
+  // Socket: message:updated — edits + delete tombstones (batch-4)
+  useEffect(() => {
+    if (!isConnected) return;
+    const handler = (payload: { conversationId?: string; conversation_id?: string; message?: ChatMessage } | ChatMessage) => {
+      const msg = (payload as any)?.message || (payload as ChatMessage);
+      const convId = (payload as any)?.conversationId || (payload as any)?.conversation_id || (msg as any)?.conversationId || (msg as any)?.conversation_id;
+      if (!msg?.id) return;
+      if (convId && selectedConversation?.id && convId !== selectedConversation.id) return;
+      // Merge the authoritative payload over the local copy. Works for both
+      // API-cached rows and optimistic local rows via messagePatches.
+      setMessagePatches((prev) => ({ ...prev, [msg.id]: { ...prev[msg.id], ...msg } }));
+    };
+    on("message:updated", handler as any);
+    return () => off("message:updated", handler as any);
+  }, [isConnected, on, off, selectedConversation?.id]);
+
+  // Socket: conversation:participant-left / participant-removed — member list
+  // updates + a subtle system row in the message list.
+  useEffect(() => {
+    if (!isConnected) return;
+    const makeHandler = (verb: "left" | "was removed from") =>
+      ({ conversationId, userId, userName }: { conversationId: string; userId?: string; userName?: string }) => {
+        if (!conversationId || conversationId !== selectedConversation?.id) return;
+        const name = userName || "Someone";
+        setSystemEvents((prev) => [
+          ...prev,
+          {
+            id: `sys_${conversationId}_${userId || "?"}_${Date.now()}`,
+            messageType: "system",
+            system: true,
+            senderId: userId,
+            content: `${name} ${verb} the group`,
+            createdAt: new Date().toISOString(),
+          } as unknown as ChatMessage,
+        ]);
+        refetchConv();
+      };
+    const onLeft = makeHandler("left");
+    const onRemoved = makeHandler("was removed from");
+    on("conversation:participant-left", onLeft as any);
+    on("conversation:participant-removed", onRemoved as any);
+    return () => {
+      off("conversation:participant-left", onLeft as any);
+      off("conversation:participant-removed", onRemoved as any);
+    };
+  }, [isConnected, on, off, selectedConversation?.id, refetchConv]);
+
+  // Hydrate blocked-user ids (block list powers the composer banner/state).
+  useEffect(() => {
+    api
+      .get("/users/blocked")
+      .then((res) => {
+        const data = unwrapApiData<any>(res.data, "");
+        const list: any[] = Array.isArray(data) ? data : data?.blocked || data?.users || data?.data || [];
+        const ids = new Set<string>();
+        (Array.isArray(list) ? list : []).forEach((b: any) => {
+          const id = b?.userId || b?.user_id || b?.id;
+          if (id) ids.add(String(id));
+        });
+        setBlockedUserIds(ids);
+      })
+      .catch(() => {});
+  }, []);
+
+  // Periodic tick — keeps "last seen today at 7:46 PM" style lines honest.
+  useEffect(() => {
+    const t = window.setInterval(() => setPresenceTick((n) => n + 1), 30_000);
+    return () => window.clearInterval(t);
+  }, []);
+
   // Socket: Typing indicators
   useEffect(() => {
     if (!isConnected || !selectedConversation?.id) return;
@@ -1161,6 +1557,11 @@ export default function Chat() {
 
     setStartingCall(true);
     try {
+      // Starting a call is a good moment to offer incoming-call notifications
+      // (explicit user gesture — never requested on app load).
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        import("@/lib/push").then(({ requestPermissionAndSubscribe }) => requestPermissionAndSubscribe()).catch(() => {});
+      }
       const allParticipants = (conv.participants || []) as ChatParticipant[];
       const currentUid = CURRENT_USER_ID();
 
@@ -1325,18 +1726,38 @@ export default function Chat() {
             ? prev.filter((m) => m.id !== tempId)
             : prev.map((m) => (m.id === tempId ? { ...m, status: "failed" as const } : m))
         );
-        toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to send message") });
+        // Blocked DMs surface as 403 — show the friendly copy instead of raw API text.
+        const isBlockedSend = (err as any)?.response?.status === 403;
+        toast({
+          variant: "destructive",
+          title: "Error",
+          description: isBlockedSend
+            ? "You can't reply to this contact anymore."
+            : getApiMessage(err, "Failed to send message"),
+        });
       }
     },
     [selectedConversation, sendMessage, refetchConv, toast, scrollToBottom]
   );
 
   const handleSendMessage = async () => {
-    if (!selectedConversation || !newMessage.trim()) return;
+    if (!selectedConversation) return;
+    // Inline edit mode: the composer acts as the editor (Save on Enter).
+    if (editing) {
+      await saveEdit();
+      return;
+    }
+    if (!newMessage.trim()) return;
     const content = newMessage.trim();
+    const replySnapshot = replyTo;
     setNewMessage("");
+    setReplyTo(null);
     emitTypingStatus(false);
-    await dispatchOptimisticMessage({ content }, {}, "keep");
+    await dispatchOptimisticMessage(
+      { content, replyToId: replySnapshot?.id || undefined },
+      replySnapshot ? { replyTo: replySnapshot } : {},
+      "keep"
+    );
   };
 
   /** Instant-send emoji from the picker (WhatsApp behavior: sends as-is). */
@@ -1524,6 +1945,150 @@ export default function Chat() {
     }
   };
 
+  // ==========================================
+  // Message actions (reply / copy / edit / delete) — batch-4
+  // ==========================================
+
+  /** Focus the composer after the triggering UI settles. */
+  const focusComposerInput = useCallback(() => {
+    window.setTimeout(() => composerRef.current?.focus(), 80);
+  }, []);
+
+  const handleMessageReply = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      setEditing(null);
+      setReplyTo({
+        id: message.id,
+        senderId: getMsgSenderId(message),
+        senderName: getMsgSenderName(teamMembers, message),
+        content: message.content || "",
+        messageType: getMessageType(message) || null,
+        attachmentType: getAttachmentType(message) || null,
+      });
+      focusComposerInput();
+    },
+    [teamMembers, focusComposerInput]
+  );
+
+  const handleMessageCopy = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      try {
+        navigator.clipboard.writeText(message.content || "");
+        toast({ title: "Copied" });
+      } catch {
+        toast({ variant: "destructive", title: "Copy failed", description: "Clipboard is unavailable." });
+      }
+    },
+    [toast]
+  );
+
+  const handleMessageEdit = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      setReplyTo(null);
+      setEditing({ id: message.id, original: message.content || "" });
+      setNewMessage(message.content || "");
+      focusComposerInput();
+    },
+    [focusComposerInput]
+  );
+
+  const cancelEdit = useCallback(() => {
+    setEditing((cur) => {
+      if (cur) setNewMessage("");
+      return null;
+    });
+  }, []);
+
+  const applyOptimisticPatch = useCallback((id: string, patch: Partial<ChatMessage>) => {
+    setMessagePatches((prev) => ({ ...prev, [id]: { ...prev[id], ...patch } }));
+  }, []);
+
+  const saveEdit = useCallback(async () => {
+    if (!editing || !selectedConversation) return;
+    const convId = selectedConversation.id;
+    const { id, original } = editing;
+    const content = newMessage.trim();
+    if (!content || content === original) {
+      setEditing(null);
+      setNewMessage("");
+      return;
+    }
+    setEditing(null);
+    setNewMessage("");
+    applyOptimisticPatch(id, { content, editedAt: new Date().toISOString() });
+    try {
+      const res = await api.patch(`/chat/conversations/${convId}/messages/${id}`, { content });
+      const updated = unwrapApiData<any>(res.data, "");
+      const serverMsg = updated?.message || updated;
+      if (serverMsg?.id) {
+        applyOptimisticPatch(id, { ...serverMsg, content: serverMsg.content ?? content });
+      }
+    } catch (err) {
+      // Roll back the optimistic edit.
+      applyOptimisticPatch(id, { content: original, editedAt: null });
+      toast({
+        variant: "destructive",
+        title: "Edit failed",
+        description: getApiMessage(err, "Could not edit the message. Please try again."),
+      });
+    }
+  }, [editing, selectedConversation, newMessage, applyOptimisticPatch, toast]);
+
+  const handleMessageDelete = useCallback(
+    async (message: ChatMessage, scope: "me" | "everyone") => {
+      if (!selectedConversation) return;
+      const convId = selectedConversation.id;
+      const prevPatch = messagePatches[message.id];
+      // Optimistic tombstone: blank the body, keep the row + timestamp.
+      applyOptimisticPatch(message.id,
+        scope === "me"
+          ? { deletedForMe: true, content: "", attachmentUrl: "", attachment_url: "", replyTo: null }
+          : { deletedForEveryone: true, content: "", attachmentUrl: "", attachment_url: "", replyTo: null }
+      );
+      try {
+        await api.delete(`/chat/conversations/${convId}/messages/${message.id}?scope=${scope}`);
+        refetchConv();
+      } catch (err) {
+        // Roll back on failure.
+        setMessagePatches((p) => {
+          const next = { ...p };
+          if (prevPatch) next[message.id] = prevPatch;
+          else delete next[message.id];
+          return next;
+        });
+        toast({
+          variant: "destructive",
+          title: "Delete failed",
+          description: getApiMessage(err, "Could not delete the message. Please try again."),
+        });
+      }
+    },
+    [selectedConversation, messagePatches, applyOptimisticPatch, refetchConv, toast]
+  );
+
+  const confirmDelete = useCallback(
+    (scope: "me" | "everyone") => {
+      if (deleteConfirm) {
+        handleMessageDelete(deleteConfirm.message, scope);
+        setDeleteConfirm(null);
+      }
+    },
+    [deleteConfirm, handleMessageDelete]
+  );
+
+  /** Scroll a quoted message into view + flash-highlight it for ~2s. */
+  const handleQuoteJump = useCallback((quotedId: string) => {
+    const el = messageElsRef.current.get(quotedId);
+    if (el) {
+      el.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
+    setHighlightedId(quotedId);
+    window.setTimeout(() => setHighlightedId((cur) => (cur === quotedId ? null : cur)), 2000);
+  }, []);
+
   // Voice notes: upload the recorded audio, then send it as an attachment.
   // An optimistic bubble shows the “🎤 Voice note” placeholder until the real
   // message (with attachmentUrl) replaces it and renders the audio player.
@@ -1651,15 +2216,19 @@ export default function Chat() {
   const openConversationProfile = useCallback(() => {
     const conv = selectedConversation as ConversationView | null;
     if (!conv) return;
-    setProfileIsGroup(conv.type === "group");
-    if (conv.type !== "group") {
-      const p = getDirectParticipant(conv);
-      const uid = getParticipantUserId(p);
-      const person = buildPerson(uid, getParticipantName(teamMembers, uid, p));
-      setProfilePerson(person);
-    } else {
+    // Groups open the rich info sheet (member management + leave); direct
+    // chats keep the lightweight profile modal.
+    if (conv.type === "group") {
+      setProfileIsGroup(true);
       setProfilePerson(null);
+      setGroupInfoOpen(true);
+      return;
     }
+    setProfileIsGroup(false);
+    const p = getDirectParticipant(conv);
+    const uid = getParticipantUserId(p);
+    const person = buildPerson(uid, getParticipantName(teamMembers, uid, p));
+    setProfilePerson(person);
     setProfileModalOpen(true);
   }, [selectedConversation, buildPerson, teamMembers]);
 
@@ -1682,8 +2251,86 @@ export default function Chat() {
   const profilePresenceLabel = useMemo(() => {
     if (profileIsGroup || !profilePerson) return null;
     const p = participantById.get(profilePerson.userId);
-    return getParticipantStatusLine(p, userPresence[profilePerson.userId]).line;
-  }, [profileIsGroup, profilePerson, participantById, userPresence]);
+    return getParticipantStatusLine(
+      p,
+      userPresence[profilePerson.userId],
+      lastSeenOverrides[profilePerson.userId] ?? p?.lastSeen ?? null
+    ).line;
+  }, [profileIsGroup, profilePerson, participantById, userPresence, lastSeenOverrides]);
+
+  // ==========================================
+  // Block state (batch-4)
+  // ==========================================
+  const selectedConvView = selectedConversation as ConversationView | null;
+  const otherParticipant = useMemo(
+    () => (selectedConvView?.type === "direct" ? getDirectParticipant(selectedConvView) : undefined),
+    [selectedConvView]
+  );
+  const otherUserId = getParticipantUserId(otherParticipant);
+  const blockedByMe = useMemo(() => {
+    const flag = !!(selectedConvView as any)?.blockedByMe || !!(selectedConvView as any)?.blocked_by_me;
+    return flag || (!!otherUserId && blockedUserIds.has(otherUserId));
+  }, [selectedConvView, otherUserId, blockedUserIds]);
+  const blockedMe = useMemo(
+    () => !!(selectedConvView as any)?.blockedMe || !!(selectedConvView as any)?.blocked_me,
+    [selectedConvView]
+  );
+  const composerDisabled = blockedByMe || blockedMe;
+
+  const toggleBlockUserById = useCallback(
+    async (userId: string) => {
+      if (!userId) return;
+      const wasBlocked = blockedUserIds.has(userId);
+      setBlockBusy(true);
+      // Optimistic: flip the local set so the banner/composer react instantly.
+      setBlockedUserIds((prev) => {
+        const next = new Set(prev);
+        if (wasBlocked) next.delete(userId);
+        else next.add(userId);
+        return next;
+      });
+      try {
+        if (wasBlocked) {
+          await api.delete(`/users/${userId}/block`);
+          toast({ title: "Unblocked", description: "You can message each other again." });
+        } else {
+          await api.post(`/users/${userId}/block`);
+          toast({ title: "Blocked", description: "This contact can no longer message you." });
+        }
+        refetchConv();
+      } catch (err) {
+        // Roll back on failure.
+        setBlockedUserIds((prev) => {
+          const next = new Set(prev);
+          if (wasBlocked) next.add(userId);
+          else next.delete(userId);
+          return next;
+        });
+        toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Failed to update block") });
+      } finally {
+        setBlockBusy(false);
+      }
+    },
+    [blockedUserIds, refetchConv, toast]
+  );
+
+  const toggleBlockContact = useCallback(
+    () => toggleBlockUserById(otherUserId),
+    [toggleBlockUserById, otherUserId]
+  );
+
+  const myGroupRole = useMemo(() => {
+    if (!selectedConvView) return null;
+    const mine = ((selectedConvView.participants as ChatParticipant[]) || []).find(
+      (p) => getParticipantUserId(p) === CURRENT_USER_ID()
+    ) as any;
+    return (
+      (selectedConvView as any).myRole ||
+      (selectedConvView as any).my_role ||
+      mine?.role ||
+      null
+    );
+  }, [selectedConvView]);
 
   // ==========================================
   // Render
@@ -1868,12 +2515,32 @@ export default function Chat() {
                       const avatarUrl = getConversationAvatarUrl(convView);
                       const directP = convView.type === "direct" ? getDirectParticipant(convView) : undefined;
                       const directPid = convView.type === "direct" ? getParticipantUserId(directP) : "";
+                      // Prefer the conversation-level otherUserLastSeenAt + socket
+                      // presence overrides; fall back to the participant row.
+                      const otherLastSeen =
+                        lastSeenOverrides[directPid] ??
+                        (convView as any).otherUserLastSeenAt ??
+                        (convView as any).other_user_last_seen_at ??
+                        null;
+                      const otherPresence =
+                        userPresence[directPid] ??
+                        (convView as any).otherUserPresenceStatus ??
+                        (convView as any).other_user_presence_status ??
+                        undefined;
                       const statusInfo = directP
-                        ? getParticipantStatusLine(directP, userPresence[directPid])
+                        ? getParticipantStatusLine(directP, otherPresence, otherLastSeen ?? getParticipantLastSeen(directP))
                         : null;
+                      // Groups: "{n} members · {m} online"
+                      const groupMembers = (convView.participants as ChatParticipant[]) || [];
+                      const groupOnline = groupMembers.filter((p) => {
+                        const uid = getParticipantUserId(p);
+                        const presence = userPresence[uid] ?? (p as any).presenceStatus ?? (p as any).presence_status;
+                        const active = ["online", "busy", "in-meeting", "calling", "do-not-disturb"].includes(presence);
+                        return active || isRecent(lastSeenOverrides[uid] ?? getParticipantLastSeen(p));
+                      }).length;
                       const headerDotColor = statusInfo
                         ? statusInfo.isOnlineDot
-                          ? getPresenceColor(userPresence[directPid])
+                          ? getPresenceColor(otherPresence)
                           : "bg-gray-400"
                         : undefined;
                       return (
@@ -1900,7 +2567,7 @@ export default function Chat() {
                             <p className="text-[11px] text-muted-foreground truncate">
                               {convView.type === "direct"
                                 ? statusInfo?.line ?? "Offline"
-                                : `${convView.participants.length} members`}
+                                : `${groupMembers.length} ${groupMembers.length === 1 ? "member" : "members"} · ${groupOnline} online`}
                             </p>
                           </div>
                         </button>
@@ -1969,31 +2636,55 @@ export default function Chat() {
                     groupedMessages.map((item, idx) => {
                       if (item.type === "date") return <DateSeparator key={`date-${idx}`} date={item.data as string} />;
                       const msg = item.data as ChatMessage;
+                      // Ephemeral system rows ("X left the group")
+                      if ((msg as any).system || getMessageType(msg) === "system") {
+                        return <SystemRow key={msg.id} content={msg.content || ""} />;
+                      }
                       const isOwn = getMsgSenderId(msg) === CURRENT_USER_ID();
-                      // System call summaries render as a slim centered log row (no bubble)
-                      if (getMessageType(msg) === "call-log") {
+                      // System call summaries render as a WhatsApp-style list row.
+                      // Detection is robust: messageType flag OR call-log JSON content.
+                      if (isCallLogMessage(msg)) {
                         return (
-                          <CallLogRow
+                          <div
                             key={msg.id}
-                            content={msg.content}
-                            createdAt={getMsgTime(msg)}
-                            isOwn={isOwn}
-                          />
+                            ref={(el) => {
+                              if (el) messageElsRef.current.set(msg.id, el);
+                              else messageElsRef.current.delete(msg.id);
+                            }}
+                          >
+                            <CallLogRow
+                              content={msg.content}
+                              createdAt={getMsgTime(msg)}
+                              isOwn={isOwn}
+                              onOpen={(meta) => setCallSummaryMeta(meta)}
+                            />
+                          </div>
                         );
                       }
                       return (
-                        <MessageBubble
+                        <div
                           key={msg.id}
-                          message={msg}
-                          isOwn={isOwn}
-                          isGrouped={!!item.isGrouped}
-                          showSender={!!item.showSender}
-                          senderName={item.senderName || ""}
-                          senderAvatarUrl={getSenderAvatarUrl(msg)}
-                          onSenderClick={() => openMessageSenderProfile(msg)}
-                          members={teamMembers}
-                          onRetry={msg.status === "failed" ? () => handleRetryMessage(msg) : undefined}
-                        />
+                          ref={(el) => {
+                            if (el) messageElsRef.current.set(msg.id, el);
+                            else messageElsRef.current.delete(msg.id);
+                          }}
+                        >
+                          <MessageBubble
+                            message={msg}
+                            isOwn={isOwn}
+                            isGrouped={!!item.isGrouped}
+                            showSender={!!item.showSender}
+                            senderName={item.senderName || ""}
+                            senderAvatarUrl={getSenderAvatarUrl(msg)}
+                            onSenderClick={() => openMessageSenderProfile(msg)}
+                            members={teamMembers}
+                            onRetry={msg.status === "failed" ? () => handleRetryMessage(msg) : undefined}
+                            highlighted={highlightedId === msg.id}
+                            onQuoteClick={handleQuoteJump}
+                            onOpenMenu={(m, x, y) => setActionMenu({ message: m, x, y })}
+                            onReplySwipe={handleMessageReply}
+                          />
+                        </div>
                       );
                     })
                   )}
@@ -2003,8 +2694,34 @@ export default function Chat() {
 
                 {/* Input Area */}
                 <div className="p-3 sm:p-4 border-t border-border/70 bg-card/80 backdrop-blur-md shrink-0">
+                  {/* Blocked banners (batch-4) */}
+                  {blockedByMe && (
+                    <div className="mb-2 flex items-center justify-between gap-3 rounded-xl border border-amber-500/40 bg-amber-500/10 px-3 py-2">
+                      <p className="flex items-center gap-2 text-xs font-medium text-amber-700 dark:text-amber-400">
+                        <Ban className="h-3.5 w-3.5 shrink-0" />
+                        You blocked this contact
+                      </p>
+                      <Button
+                        size="sm"
+                        variant="outline"
+                        className="h-7 rounded-lg border-amber-500/50 text-amber-700 hover:bg-amber-500/15 hover:text-amber-700 dark:text-amber-400"
+                        disabled={blockBusy}
+                        onClick={toggleBlockContact}
+                      >
+                        {blockBusy ? <Loader2 className="h-3 w-3 animate-spin" /> : <UserCheck className="h-3 w-3 mr-1" />}
+                        Unblock
+                      </Button>
+                    </div>
+                  )}
+                  {blockedMe && (
+                    <div className="mb-2 flex items-center justify-center gap-2 rounded-xl border border-border/60 bg-muted/50 px-3 py-2">
+                      <Ban className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+                      <p className="text-xs text-muted-foreground">You can't reply to this contact anymore</p>
+                    </div>
+                  )}
+
                   {/* Emoji | Stickers | GIF picker — attaches above the composer */}
-                  {pickerOpen && !isRecording && (
+                  {pickerOpen && !isRecording && !composerDisabled && (
                     <div className="flex justify-start">
                       <StickerEmojiGifPanel
                         onEmojiSelect={handlePanelEmojiSend}
@@ -2013,6 +2730,49 @@ export default function Chat() {
                       />
                     </div>
                   )}
+
+                  {/* Inline edit bar (batch-4) */}
+                  {editing && !isRecording && (
+                    <div className="mb-2 flex items-start gap-2 rounded-xl border border-blue-500/40 bg-blue-500/5 px-3 py-2">
+                      <PencilLine className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] font-semibold text-blue-600 dark:text-blue-400">Editing message</p>
+                        <p className="truncate text-xs text-muted-foreground">{editing.original}</p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={cancelEdit}
+                        className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label="Cancel edit"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Reply preview chip (batch-4) */}
+                  {replyTo && !editing && !isRecording && !composerDisabled && (
+                    <div className="mb-2 flex items-start gap-2 rounded-xl border border-border/70 bg-muted/60 px-3 py-2">
+                      <Reply className="mt-0.5 h-4 w-4 shrink-0 text-blue-500" />
+                      <div className="min-w-0 flex-1">
+                        <p className="text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+                          {replyTo.senderName || "User"}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {quotedSnippet(replyTo as MessageReplySnapshot)}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setReplyTo(null)}
+                        className="rounded-full p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+                        aria-label="Cancel reply"
+                      >
+                        <X className="h-4 w-4" />
+                      </button>
+                    </div>
+                  )}
+
                   {isRecording ? (
                     <VoiceRecorderPill
                       onSend={handleSendVoiceNote}
@@ -2021,6 +2781,11 @@ export default function Chat() {
                         toast({ variant: "destructive", title: "Voice note", description: msg })
                       }
                     />
+                  ) : composerDisabled ? (
+                    /* Blocked: composer hidden — the banner above explains why. */
+                    <div className="flex items-center justify-center py-2 text-xs text-muted-foreground">
+                      {blockedByMe ? "Unblock this contact to send messages" : "Messaging unavailable"}
+                    </div>
                   ) : (
                     <div className="flex items-end gap-2">
                       {/* Attach menu (WhatsApp-style paperclip) */}
@@ -2048,13 +2813,17 @@ export default function Chat() {
                       <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                         <Textarea
                           ref={composerRef}
-                          placeholder="Type a message..."
+                          placeholder={editing ? "Edit message…" : "Type a message..."}
                           value={newMessage}
                           onChange={(e) => handleInputChange(e.target.value)}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" && !e.shiftKey) {
                               e.preventDefault();
                               handleSendMessage();
+                            }
+                            if (e.key === "Escape" && editing) {
+                              e.preventDefault();
+                              cancelEdit();
                             }
                           }}
                           className="flex-1 min-h-[36px] max-h-[128px] resize-none bg-transparent border-0 focus-visible:ring-0 focus-visible:ring-offset-0 py-1.5 px-0 text-sm"
@@ -2095,12 +2864,12 @@ export default function Chat() {
                           )}
                           <Button
                             onClick={handleSendMessage}
-                            disabled={!hasInputContent}
+                            disabled={!hasInputContent && !editing}
                             size="icon"
                             className="h-9 w-9 rounded-xl bg-gradient-to-br from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700 shadow-sm shadow-blue-600/30 disabled:opacity-30 shrink-0"
-                            title="Send message"
+                            title={editing ? "Save edit" : "Send message"}
                           >
-                            <Send className="h-4 w-4" />
+                            {editing ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
                           </Button>
                         </div>
                       </div>
@@ -2143,7 +2912,7 @@ export default function Chat() {
         </div>
       </div>
 
-      {/* Profile view modal (direct partner / group + members) */}
+      {/* Profile view modal (direct partner / message sender) */}
       <ChatProfileModal
         open={profileModalOpen}
         onOpenChange={setProfileModalOpen}
@@ -2168,7 +2937,106 @@ export default function Chat() {
         }
         presenceLabel={profilePresenceLabel}
         onMessage={focusComposer}
+        isBlockedByMe={!!profilePerson && blockedUserIds.has(profilePerson.userId)}
+        onToggleBlock={profilePerson ? () => toggleBlockUserById(profilePerson.userId) : undefined}
+        blockBusy={blockBusy}
       />
+
+      {/* Group info sheet (member management + leave) — batch-4 */}
+      <GroupInfoSheet
+        open={groupInfoOpen}
+        onOpenChange={setGroupInfoOpen}
+        conversationId={selectedConversation?.id || ""}
+        groupName={getConversationName(teamMembers, selectedConversation as ConversationView)}
+        groupAvatarUrl={getConversationAvatarUrl(selectedConversation as ConversationView)}
+        myRole={myGroupRole}
+        onLeft={() => {
+          setSelectedConversation(null);
+          setMobileShowSidebar(true);
+          refetchConv();
+        }}
+        blockedUserIds={blockedUserIds}
+        onBlockedChanged={() => {
+          // Re-hydrate the block list (cheap) after member-sheet block changes.
+          api
+            .get("/users/blocked")
+            .then((res) => {
+              const data = unwrapApiData<any>(res.data, "");
+              const list: any[] = Array.isArray(data) ? data : data?.blocked || data?.users || data?.data || [];
+              const ids = new Set<string>();
+              (Array.isArray(list) ? list : []).forEach((b: any) => {
+                const id = b?.userId || b?.user_id || b?.id;
+                if (id) ids.add(String(id));
+              });
+              setBlockedUserIds(ids);
+            })
+            .catch(() => {});
+        }}
+      />
+
+      {/* Call summary sheet (from call-log rows) — batch-4 */}
+      <CallSummarySheet
+        open={!!callSummaryMeta}
+        onOpenChange={(open) => {
+          if (!open) setCallSummaryMeta(null);
+        }}
+        meta={callSummaryMeta}
+      />
+
+      {/* Floating message action menu (hover button / long-press / right-click) */}
+      <MessageActionMenu
+        target={actionMenu}
+        isOwn={actionMenu ? getMsgSenderId(actionMenu.message) === CURRENT_USER_ID() : false}
+        canCopy={!!actionMenu?.message.content && !isCallLogMessage(actionMenu.message) && !isDeletedForMe(actionMenu.message) && !isDeletedForEveryone(actionMenu.message)}
+        canEdit={actionMenu ? canEditMessage(actionMenu.message) : false}
+        canDeleteEveryone={
+          actionMenu
+            ? getMsgSenderId(actionMenu.message) === CURRENT_USER_ID() &&
+              !isCallLogMessage(actionMenu.message) &&
+              !isDeletedForEveryone(actionMenu.message)
+            : false
+        }
+        onReply={handleMessageReply}
+        onCopy={handleMessageCopy}
+        onEdit={handleMessageEdit}
+        onDeleteForMe={(m) => {
+          setActionMenu(null);
+          setDeleteConfirm({ message: m, scope: "me" });
+        }}
+        onDeleteForEveryone={(m) => {
+          setActionMenu(null);
+          setDeleteConfirm({ message: m, scope: "everyone" });
+        }}
+        onClose={() => setActionMenu(null)}
+      />
+
+      {/* Delete confirmation (scope me / everyone) */}
+      <AlertDialog open={!!deleteConfirm} onOpenChange={(open) => !open && setDeleteConfirm(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {deleteConfirm?.scope === "everyone" ? "Delete for everyone?" : "Delete for me?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {deleteConfirm?.scope === "everyone"
+                ? "This message will be removed for everyone in this conversation. This cannot be undone."
+                : "This message will be removed from this device only. Other participants will still see it."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-red-600 text-white hover:bg-red-700"
+              onClick={(e) => {
+                e.preventDefault();
+                confirmDelete(deleteConfirm?.scope || "me");
+              }}
+            >
+              Delete
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </Layout>
   );
 }
