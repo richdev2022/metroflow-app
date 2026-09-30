@@ -394,7 +394,7 @@ export class MediaSoupCallingClient implements CallingClient {
       } else {
         videoTrack?.stop();
         stream.removeTrack(videoTrack!);
-        this.emitter.emit("local:stream", stream.getAudioTracks().length ? null : null);
+        this.emitter.emit("local:stream", null);
       }
       this.emitter.emit("local:state", { ...this.localState });
     } catch (err: any) {

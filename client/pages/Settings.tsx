@@ -350,20 +350,26 @@ export default function Settings() {
 
   return (
     <Layout>
-      <div className="p-8 max-w-6xl mx-auto space-y-8">
+      <div className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:space-y-8 sm:p-8">
         <div>
-          <h2 className="text-3xl font-bold tracking-tight">Settings</h2>
+          <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Settings</h2>
           <p className="text-muted-foreground">Manage your business profile and preferences.</p>
         </div>
 
         <Tabs defaultValue="profile" className="space-y-4">
-          <TabsList>
-            <TabsTrigger value="profile">Business Profile</TabsTrigger>
-            <TabsTrigger value="contact">Contact Info</TabsTrigger>
-            <TabsTrigger value="security">Security</TabsTrigger>
-            <TabsTrigger value="preference">OTP Preferences</TabsTrigger>
-            <TabsTrigger value="fees">Fee Schedule</TabsTrigger>
-          </TabsList>
+          {/* Horizontally scrollable tab bar — never wraps or overflows the
+              viewport on small phones (snap + gradient fade masks at edges). */}
+          <div className="relative -mx-4 px-4 sm:mx-0 sm:px-0">
+            <TabsList className="h-auto min-h-11 w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/60 bg-muted/60 p-1 no-scrollbar sm:justify-center">
+              <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">Business Profile</TabsTrigger>
+              <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>
+              <TabsTrigger value="security" className="snap-start shrink-0 rounded-lg px-3 py-2">Security</TabsTrigger>
+              <TabsTrigger value="preference" className="snap-start shrink-0 rounded-lg px-3 py-2">OTP Preferences</TabsTrigger>
+              <TabsTrigger value="fees" className="snap-start shrink-0 rounded-lg px-3 py-2">Fee Schedule</TabsTrigger>
+            </TabsList>
+            <div aria-hidden className="pointer-events-none absolute inset-y-0 left-3 w-8 bg-gradient-to-r from-background to-transparent sm:hidden" />
+            <div aria-hidden className="pointer-events-none absolute inset-y-0 right-3 w-8 bg-gradient-to-l from-background to-transparent sm:hidden" />
+          </div>
 
           <TabsContent value="profile">
             <Card>
@@ -372,7 +378,7 @@ export default function Settings() {
                 <CardDescription>Update your business details.</CardDescription>
               </CardHeader>
               <CardContent>
-                <form onSubmit={handleUpdateProfile} className="space-y-4 max-w-md">
+                <form onSubmit={handleUpdateProfile} className="max-w-none space-y-4 sm:max-w-md">
                   <div className="space-y-2">
                     <Label htmlFor="name">Business Name</Label>
                     <Input 
@@ -409,7 +415,7 @@ export default function Settings() {
                     <div
                       role="radiogroup"
                       aria-label="Time format"
-                      className="inline-flex w-fit items-center rounded-xl border border-border bg-muted/40 p-1"
+                      className="flex w-full max-w-xs items-center rounded-xl border border-border bg-muted/40 p-1 sm:w-fit"
                     >
                       {(["24h", "12h"] as const).map((fmt) => {
                         const active = (profile?.time_format === "12h" ? "12h" : "24h") === fmt;
@@ -423,7 +429,7 @@ export default function Settings() {
                             disabled={timeFormatSaving}
                             onClick={() => handleTimeFormatChange(fmt)}
                             className={cn(
-                              "min-w-[92px] rounded-lg px-4 py-1.5 text-sm font-medium transition-all",
+                              "min-h-10 flex-1 rounded-lg px-4 py-1.5 text-sm font-medium transition-all sm:min-h-0 sm:flex-none sm:min-w-[92px]",
                               active
                                 ? "bg-background text-foreground shadow-sm ring-1 ring-border"
                                 : "text-muted-foreground hover:text-foreground"
@@ -451,7 +457,10 @@ export default function Settings() {
                       disabled
                     />
                   </div>
-                  <Button type="submit">Save Changes</Button>
+                  {/* Sticky save bar — thumb-reachable on mobile, safe-area padded. */}
+                  <div className="sticky bottom-0 -mx-1 flex justify-stretch bg-gradient-to-t from-background via-background/95 to-transparent px-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:justify-end">
+                    <Button type="submit" className="h-11 w-full px-6 sm:h-10 sm:w-auto">Save Changes</Button>
+                  </div>
                 </form>
               </CardContent>
             </Card>
