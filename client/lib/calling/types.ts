@@ -70,6 +70,17 @@ export interface CallingClientEvents {
 export interface CallingClient {
   connect(): Promise<void>;
   disconnect(): Promise<void>;
+  /**
+   * Authoritative teardown — EVERY leave path must call this (leave button,
+   * call:end socket, room disconnected, unmount, beforeunload). Guarantees:
+   *   - every local MediaStreamTrack is stopped,
+   *   - the room / transports are closed,
+   *   - all hidden media elements are detached and removed,
+   *   - reconnect/retry timers and internal caches are cleared,
+   *   - a final `connection: disconnected` (+ empty participants) is emitted.
+   * Idempotent: calling it twice is safe.
+   */
+  destroy(): Promise<void>;
   setAudioEnabled(enabled: boolean): Promise<void>;
   setVideoEnabled(enabled: boolean): Promise<void>;
   switchCamera(): Promise<void>;
@@ -79,6 +90,12 @@ export interface CallingClient {
   getLocalState(): LocalMediaState;
   getLocalVideoStream(): MediaStream | null;
   getLocalScreenStream(): MediaStream | null;
+  /**
+   * Route every remote-audio playback element (and any element created later)
+   * to the given output device ("": system default). No-op on browsers
+   * without setSinkId (iOS Safari).
+   */
+  applyAudioSink?(sinkId: string): void;
   on<K extends keyof CallingClientEvents>(event: K, cb: (payload: CallingClientEvents[K]) => void): () => void;
 }
 
