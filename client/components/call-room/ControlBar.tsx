@@ -30,6 +30,8 @@ interface ControlButtonSpec {
   disabled?: boolean;
   danger?: boolean;
   badge?: number;
+  /** Not rendered at all (e.g. screen share on devices without getDisplayMedia). */
+  hidden?: boolean;
   onClick: () => void;
 }
 
@@ -41,6 +43,8 @@ interface ControlBarProps {
   participantsOpen: boolean;
   captionsEnabled: boolean;
   captionsSupported: boolean;
+  /** When getDisplayMedia is missing (mobile browsers) the share button is hidden. */
+  screenShareSupported?: boolean;
   unreadChat: number;
   onToggleAudio: () => void;
   onToggleVideo: () => void;
@@ -230,6 +234,11 @@ export function ControlBar(props: ControlBarProps) {
       icon: props.screenSharing ? <MonitorX className="h-5 w-5" /> : <MonitorUp className="h-5 w-5" />,
       label: props.screenSharing ? "Stop sharing" : "Share screen",
       active: props.screenSharing,
+      // Hidden entirely on devices without display capture (mobile browsers):
+      // a disabled ghost button invited taps that could only ever fail.
+      ...(props.screenShareSupported === false
+        ? { hidden: true as const }
+        : {}),
       onClick: props.onToggleScreenShare,
     },
     {
@@ -259,7 +268,7 @@ export function ControlBar(props: ControlBarProps) {
 
   return (
     <div className="pointer-events-auto flex w-full max-w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
-      {buttons.map((spec) => (
+      {buttons.filter((spec) => !spec.hidden).map((spec) => (
         <CtrlButton key={spec.key} spec={spec} />
       ))}
       {props.showSwitchCamera && (
