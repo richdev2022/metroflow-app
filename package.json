@@ -58,6 +58,7 @@
     "express": "^5.2.1",
     "framer-motion": "^12.23.12",
     "input-otp": "^1.4.2",
+    "livekit-client": "^2.22.3",
     "lucide-react": "^0.539.0",
     "mediasoup": "^3.21.0",
     "mediasoup-client": "^3.21.0",
@@ -101,5 +102,11 @@
     "typescript": "^6.0.3",
     "vite": "^6.0.0",
     "vitest": "^4.1.10"
+  },
+  "allowScripts": {
+    "@swc/core@1.16.2": true,
+    "esbuild@0.28.2": true,
+    "esbuild@0.25.12": true,
+    "mediasoup@3.27.1": true
   }
 }

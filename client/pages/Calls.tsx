@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { formatDistanceToNow } from "date-fns";
 import Layout from "@/components/layout";
-import VideoCallRoom from "@/components/VideoCallRoom";
+import { CallRoom } from "@/components/call-room/CallRoom";
 import {
   Card,
   CardContent,
@@ -1364,7 +1364,7 @@ export default function Calls() {
           >
             <DialogTitle className="sr-only">{selectedCall.type === "video" ? "Video" : "Audio"} Call Room</DialogTitle>
             <div className="min-h-0 flex-1 h-full">
-              <VideoCallRoom
+              <CallRoom
                 roomId={selectedCall.callCode}
                 callId={selectedCall.id}
                 callType={selectedCall.type}
@@ -1372,6 +1372,8 @@ export default function Calls() {
                 userName={CURRENT_USER_NAME()}
                 isHost={isCurrentUserHost(selectedCall)}
                 waitingRoomEnabled={selectedCall.waitingRoomEnabled}
+                calling={(selectedCall as any)?.calling || null}
+                title={selectedCall.name || undefined}
                 teamMembers={teamMembers}
                 currentParticipantIds={(
                   selectedCall.participants || []
