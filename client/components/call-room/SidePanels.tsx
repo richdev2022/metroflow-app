@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info, Clock, UserCheck, CheckCheck } from "lucide-react";
+import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info, Clock, UserCheck, CheckCheck, Volume2, Bluetooth, Headphones, Phone } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { CAPTION_AUTOHIDE_MS, latestCaptionKey, visibleCaptions, type AudioOutputDevice, type CaptionItem } from "@/lib/calling";
 import type { LocalMediaState, RemoteParticipant } from "@/lib/calling";
 
 export interface RoomChatMessage {
@@ -14,14 +15,8 @@ export interface RoomChatMessage {
   isLocal?: boolean;
 }
 
-export interface CaptionSegment {
-  id: string;
-  speakerId: string;
-  speakerName: string;
-  text: string;
-  ts: string;
-  isFinal?: boolean;
-}
+/** Caption segment — re-exported shape from lib/calling (rolling buffer item). */
+export type CaptionSegment = CaptionItem;
 
 export interface RoomAppParticipant {
   id: string;
@@ -329,30 +324,105 @@ export function ChatPanel({
   );
 }
 
+/**
+ * Captions overlay — ONE compact pill anchored bottom-center directly above
+ * the control bar (never a stack of pills covering the video):
+ *   - glass background (black/55 + backdrop-blur), max 2 lines, capped width,
+ *   - previous final line sits small + dimmed above; the latest line updates
+ *     in place (stable keys → no reflow jump),
+ *   - auto-hides 4s after the last speech, reappears with the next one,
+ *   - pointer-events-none except the small hide button.
+ */
 export function CaptionsOverlay({
   segments,
   enabled,
+  onHide,
   className,
 }: {
-  segments: CaptionSegment[];
+  segments: CaptionItem[];
   enabled: boolean;
+  /** Dismiss the current pill — the next spoken line re-opens it. */
+  onHide?: () => void;
   className?: string;
 }) {
-  const visible = useMemo(() => segments.slice(-3), [segments]);
+  const visible = useMemo(() => visibleCaptions(segments), [segments]);
+  const [dimmed, setDimmed] = useState(false);
+  // Any new/updated text resets the auto-hide timer.
+  const speechKey = latestCaptionKey(segments);
+
+  useEffect(() => {
+    if (!enabled || !speechKey) {
+      setDimmed(false);
+      return;
+    }
+    setDimmed(false);
+    const t = setTimeout(() => setDimmed(true), CAPTION_AUTOHIDE_MS);
+    return () => clearTimeout(t);
+  }, [speechKey, enabled]);
+
   if (!enabled || visible.length === 0) return null;
+
+  const latestIdx = visible.length - 1;
+
   return (
-    <div className={cn("pointer-events-none absolute inset-x-0 bottom-24 z-20 flex flex-col items-center gap-1.5 px-4", className)}>
-      {visible.map((seg) => (
-        <div
-          key={seg.id}
-          className="max-w-2xl rounded-xl bg-black/75 px-4 py-2 text-center text-sm text-white backdrop-blur-md"
-        >
-          <span className="mr-2 font-semibold text-[#60A5FA]">{seg.speakerName}:</span>
-          {seg.text}
+    <div
+      aria-live="polite"
+      className={cn(
+        "pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3",
+        // Bottom-center, directly above the control bar; safe-area is handled
+        // by the footer below us — keep a tight gap instead.
+        "bottom-2.5 phone-landscape:bottom-1",
+        className,
+      )}
+    >
+      <div
+        className={cn(
+          "relative w-full max-w-[min(92%,640px)] transition-all duration-300",
+          dimmed ? "translate-y-1 opacity-0" : "translate-y-0 opacity-100",
+        )}
+      >
+        <div className="flex flex-col items-center gap-0.5 rounded-2xl bg-black/55 px-4 py-2 ring-1 ring-white/10 backdrop-blur-md">
+          {visible.map((seg, i) => {
+            const isLatest = i === latestIdx;
+            return (
+              <p
+                key={seg.id}
+                className={cn(
+                  "w-full text-center transition-all duration-200",
+                  isLatest
+                    ? "line-clamp-2 translate-y-0 text-sm leading-snug text-white opacity-100"
+                    : "-translate-y-0.5 text-xs leading-snug text-white/55 opacity-60",
+                )}
+              >
+                <span className={cn("mr-1.5 font-semibold", isLatest ? "text-[#60A5FA]" : "text-[#60A5FA]/70")}>
+                  {seg.speakerName}:
+                </span>
+                {seg.text}
+              </p>
+            );
+          })}
         </div>
-      ))}
+        {onHide && (
+          <button
+            type="button"
+            aria-label="Hide captions"
+            title="Hide captions"
+            onClick={onHide}
+            className="pointer-events-auto absolute -right-1.5 -top-2.5 rounded-full bg-black/75 p-1 text-white/70 ring-1 ring-white/15 backdrop-blur transition-colors hover:text-white"
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>
     </div>
   );
+}
+
+function routeIcon(kind: AudioOutputDevice["kind"]) {
+  if (kind === "bluetooth") return <Bluetooth className="h-3.5 w-3.5 shrink-0" />;
+  if (kind === "headset") return <Headphones className="h-3.5 w-3.5 shrink-0" />;
+  if (kind === "earpiece") return <Phone className="h-3.5 w-3.5 shrink-0" />;
+  return <Volume2 className="h-3.5 w-3.5 shrink-0" />;
 }
 
 export function MeetingInfoPanel({
@@ -361,12 +431,21 @@ export function MeetingInfoPanel({
   providerLabel,
   startedAt,
   onClose,
+  audioOutputs = [],
+  selectedSinkId,
+  sinkSupported,
+  onSelectAudioOutput,
 }: {
   title: string;
   inviteDetails?: { code?: string; password?: string | null; waitingRoomEnabled?: boolean } | null;
   providerLabel: string;
   startedAt: string | null;
   onClose: () => void;
+  /** Speaker-route options (overflow menu section). */
+  audioOutputs?: AudioOutputDevice[];
+  selectedSinkId?: string;
+  sinkSupported?: boolean;
+  onSelectAudioOutput?: (deviceId: string) => void;
 }) {
   return (
     <SidePanel title="Meeting details" icon={<Info className="h-4 w-4" />} onClose={onClose}>
@@ -396,6 +475,42 @@ export function MeetingInfoPanel({
         <div>
           <dt className="text-xs uppercase tracking-wide text-white/40">Connection</dt>
           <dd className="text-white">{providerLabel}</dd>
+        </div>
+        {/* Audio output routing (Google-Dialer-style speaker selection). */}
+        <div>
+          <dt className="text-xs uppercase tracking-wide text-white/40">Audio output</dt>
+          <dd>
+            {sinkSupported ? (
+              audioOutputs.length > 0 ? (
+                <div className="mt-1.5 flex flex-col gap-1">
+                  {audioOutputs.map((d) => {
+                    const active = (d.deviceId || "") === (selectedSinkId || "");
+                    return (
+                      <button
+                        key={d.deviceId || "system-default"}
+                        type="button"
+                        onClick={() => onSelectAudioOutput?.(d.deviceId)}
+                        className={cn(
+                          "flex min-h-10 items-center gap-2 rounded-lg px-3 py-2 text-left text-sm transition-colors",
+                          active ? "bg-[#2563EB]/25 text-white ring-1 ring-[#2563EB]/60" : "text-white/70 hover:bg-white/10",
+                        )}
+                      >
+                        {routeIcon(d.kind)}
+                        <span className="min-w-0 flex-1 truncate">{d.label}</span>
+                        {active && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : (
+                <p className="mt-1 rounded-lg bg-white/5 px-3 py-2 text-xs text-white/50">No output devices found.</p>
+              )
+            ) : (
+              <p className="mt-1 rounded-lg bg-white/5 px-3 py-2 text-xs text-white/60">
+                Audio routing follows the system — connect Bluetooth from Control Center.
+              </p>
+            )}
+          </dd>
         </div>
       </dl>
     </SidePanel>

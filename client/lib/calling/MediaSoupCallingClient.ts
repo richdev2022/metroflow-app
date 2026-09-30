@@ -9,6 +9,16 @@ import {
   type RemoteParticipant,
 } from "./types";
 import { AudioUtils } from "../audio-utils";
+import {
+  applySinkToAll,
+  loadPersistedSinkId,
+  registerAudioElement,
+  unregisterAudioElement,
+} from "./audio-routing";
+
+// Restore the user's last speaker-route choice so every audio element created
+// afterwards inherits it.
+loadPersistedSinkId();
 
 /**
  * MediaSoup implementation of the Metricorex CallingClient.
@@ -62,6 +72,8 @@ export class MediaSoupCallingClient implements CallingClient {
   private audioLevelRaf = 0;
   private closed = false;
   private disposed = false;
+  /** Wired socket media handlers — removed on destroy. */
+  private socketMediaHandlers: Array<[string, (...args: any[]) => void]> = [];
 
   private localState: LocalMediaState = {
     audioEnabled: true,
@@ -104,9 +116,20 @@ export class MediaSoupCallingClient implements CallingClient {
   }
 
   async disconnect(): Promise<void> {
+    return this.destroy();
+  }
+
+  /**
+   * Authoritative teardown — every leave path funnels here. Stops all local
+   * tracks, closes producers/transports, detaches audio elements, removes the
+   * socket media listeners and clears the audio-level loop. Idempotent.
+   */
+  async destroy(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
     this.closed = true;
+
+    // Close producers/transports first so no further media events act on us.
     try {
       this.localAudioProducer?.close();
       this.localVideoProducer?.close();
@@ -116,22 +139,50 @@ export class MediaSoupCallingClient implements CallingClient {
     } catch {
       // transport close errors are non-actionable on teardown
     }
+    this.localAudioProducer = null;
+    this.localVideoProducer = null;
+    this.localScreenProducer = null;
+    this.sendTransport = null;
+    this.recvTransport = null;
+
+    // Stop every local track (camera light off even if transport close hung).
     this.localStream?.getTracks().forEach((t) => t.stop());
     this.localScreenStream?.getTracks().forEach((t) => t.stop());
+    this.localStream = null;
+    this.localScreenStream = null;
+
+    // Detach remote audio + clear peers.
     for (const peer of this.peers.values()) {
       this.cleanupPeerAudio(peer);
     }
     this.peers.clear();
-    cancelAnimationFrame(this.audioLevelRaf);
+
+    // Remove socket media listeners + stop the audio-level loop.
+    for (const [event, handler] of this.socketMediaHandlers) {
+      try {
+        this.socket.off(event, handler as any);
+      } catch {
+        // ignore
+      }
+    }
+    this.socketMediaHandlers = [];
+    if (this.audioLevelRaf) {
+      cancelAnimationFrame(this.audioLevelRaf);
+      this.audioLevelRaf = 0;
+    }
+    this.localAnalyser = null;
     try {
       await this.playbackCtx?.close();
     } catch {
       // ignore
     }
+    this.playbackCtx = null;
+
+    // Final state broadcast so stale UI clears immediately.
     this.emitter.emit("local:stream", null);
     this.emitter.emit("local:screen", null);
-    this.emitter.emit("connection", "disconnected");
     emitParticipantsSnapshot(this.emitter, []);
+    this.emitter.emit("connection", "disconnected");
   }
 
   /** Socket dropped — transports will re-handshake on socket reconnect. */
@@ -343,7 +394,7 @@ export class MediaSoupCallingClient implements CallingClient {
       } else {
         videoTrack?.stop();
         stream.removeTrack(videoTrack!);
-        this.emitter.emit("local:stream", stream.getAudioTracks().length ? null : null);
+        this.emitter.emit("local:stream", null);
       }
       this.emitter.emit("local:state", { ...this.localState });
     } catch (err: any) {
@@ -402,7 +453,7 @@ export class MediaSoupCallingClient implements CallingClient {
   // ------------------------------------------------------------------
 
   private wireSocketMediaEvents() {
-    this.socket.on("mediasoup:newProducer", ({ producerId, kind, peerId, peerName, appData }: any) => {
+    const onNewProducer = ({ producerId, kind, peerId, peerName, appData }: any) => {
       if (this.disposed || !producerId) return;
       this.ensurePeer(peerId || producerId, peerName);
       const peer = this.peers.get(peerId || producerId)!;
@@ -416,14 +467,14 @@ export class MediaSoupCallingClient implements CallingClient {
       }
       if (!this.recvTransport) return;
       this.consume(producerId, kind, appData);
-    });
+    };
 
-    this.socket.on("mediasoup:producerClosed", ({ producerId }: any) => {
+    const onProducerClosed = ({ producerId }: any) => {
       if (this.disposed) return;
       this.removeProducer(producerId);
-    });
+    };
 
-    this.socket.on("mediasoup:producerPaused", ({ producerId }: any) => {
+    const onProducerPaused = ({ producerId }: any) => {
       const peer = this.findPeerByProducer(producerId);
       if (!peer) return;
       const rec = peer.producers.get(producerId);
@@ -435,9 +486,9 @@ export class MediaSoupCallingClient implements CallingClient {
         this.emitter.emit("participant:updated", { ...peer.participant });
       }
       emitParticipantsSnapshot(this.emitter, this.getParticipants());
-    });
+    };
 
-    this.socket.on("mediasoup:producerResumed", ({ producerId }: any) => {
+    const onProducerResumed = ({ producerId }: any) => {
       const peer = this.findPeerByProducer(producerId);
       if (!peer) return;
       const rec = peer.producers.get(producerId);
@@ -449,7 +500,17 @@ export class MediaSoupCallingClient implements CallingClient {
         this.emitter.emit("participant:updated", { ...peer.participant });
       }
       emitParticipantsSnapshot(this.emitter, this.getParticipants());
-    });
+    };
+
+    this.socketMediaHandlers = [
+      ["mediasoup:newProducer", onNewProducer],
+      ["mediasoup:producerClosed", onProducerClosed],
+      ["mediasoup:producerPaused", onProducerPaused],
+      ["mediasoup:producerResumed", onProducerResumed],
+    ];
+    for (const [event, handler] of this.socketMediaHandlers) {
+      this.socket.on(event, handler as any);
+    }
   }
 
   private findPeerByProducer(producerId: string): PeerRecord | null {
@@ -580,6 +641,7 @@ export class MediaSoupCallingClient implements CallingClient {
     audioEl.volume = 1;
     audioEl.setAttribute("playsinline", "");
     document.body.appendChild(audioEl);
+    registerAudioElement(audioEl);
     peer.audioEl = audioEl;
     audioEl.play().catch(() => {
       // Autoplay blocked — retry on the next user gesture.
@@ -610,6 +672,7 @@ export class MediaSoupCallingClient implements CallingClient {
       try {
         peer.audioEl.pause();
         peer.audioEl.srcObject = null;
+        unregisterAudioElement(peer.audioEl);
         peer.audioEl.parentNode?.removeChild(peer.audioEl);
       } catch {
         // ignore
@@ -699,6 +762,11 @@ export class MediaSoupCallingClient implements CallingClient {
     return this.localScreenStream;
   }
 
+  /** Route every pooled audio element (and future ones) to the chosen output. */
+  applyAudioSink(sinkId: string): void {
+    applySinkToAll(sinkId);
+  }
+
   async setAudioEnabled(enabled: boolean): Promise<void> {
     this.localState.audioEnabled = enabled;
     this.emitter.emit("local:state", { ...this.localState });
@@ -730,6 +798,17 @@ export class MediaSoupCallingClient implements CallingClient {
     }
   }
 
+  /**
+   * Camera ON/OFF — deterministic.
+   *
+   * Production bug (same shape as the LiveKit path): when the video producer
+   * had to be re-acquired (e.g. track stopped after join-with-video-off or a
+   * device hiccup), the code kept the OLD audio-only `this.localStream` and
+   * emitted it — the tile received a stream WITHOUT a video track and showed
+   * the avatar forever. Fix: always build a merged stream (existing audio +
+   * fresh video track), assign it, and emit a FRESH MediaStream so every tile
+   * re-attaches the <video> element (also un-sticks iOS Safari after mute).
+   */
   async setVideoEnabled(enabled: boolean): Promise<void> {
     this.localState.videoEnabled = enabled;
     this.emitter.emit("local:state", { ...this.localState });
@@ -742,15 +821,35 @@ export class MediaSoupCallingClient implements CallingClient {
           if (!this.localVideoProducer.paused) this.localVideoProducer.pause();
           this.socket.emit("mediasoup:pauseProducer", { producerId: this.localVideoProducer.id, roomId: this.roomId });
         }
-        this.localStream?.getVideoTracks().forEach((t) => (t.enabled = enabled));
+        const videoTracks = this.localStream?.getVideoTracks() || [];
+        videoTracks.forEach((t) => (t.enabled = enabled));
+        if (enabled) {
+          // Re-emit a FRESH stream so tiles re-attach + play() (iOS un-stick).
+          const vt = videoTracks.find((t) => t.readyState === "live");
+          if (vt) {
+            const fresh = new MediaStream([vt]);
+            this.localStream?.getAudioTracks().forEach((at) => fresh.addTrack(at));
+            this.localStream = fresh;
+            this.emitter.emit("local:stream", fresh);
+          }
+        }
       } else if (enabled && this.sendTransport) {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } } });
-        this.localStream = this.localStream || stream;
+        // Producer missing (video was off at join / track was lost) — acquire
+        // the camera now, merge with the existing audio track and publish.
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+        });
+        const videoTrack = stream.getVideoTracks()[0];
+        if (!videoTrack) return;
         this.localVideoProducer = await this.sendTransport.produce({
-          track: stream.getVideoTracks()[0],
+          track: videoTrack,
           appData: { userName: this.opts.userName, userId: this.opts.userId, source: "webcam" },
         });
-        this.emitter.emit("local:stream", this.localStream);
+        // MERGE: previous behaviour reused the stale audio-only stream here.
+        const merged = new MediaStream([videoTrack]);
+        this.localStream?.getAudioTracks().forEach((at) => merged.addTrack(at));
+        this.localStream = merged;
+        this.emitter.emit("local:stream", merged);
       }
     } catch (err) {
       console.warn("[mediasoup] setVideoEnabled failed:", err);

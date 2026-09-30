@@ -7,8 +7,16 @@ import { reportLocalStream, minimizeCall } from "@/lib/active-call";
 import {
   createCallingClient,
   isLiveKitCredentials,
+  applyCaptionSegment,
+  listAudioOutputDevices,
+  loadPersistedSinkId,
+  nextCaptionId,
+  selectAudioOutput,
+  supportsSinkId,
+  type AudioOutputDevice,
   type CallingClient,
   type CallingCredentials,
+  type CaptionItem,
   type ConnectionState,
   type LocalMediaState,
   type RemoteParticipant,
@@ -25,7 +33,6 @@ import {
   ChatPanel,
   MeetingInfoPanel,
   ParticipantsPanel,
-  type CaptionSegment,
   type RoomAppParticipant,
   type RoomChatMessage,
   type RoomWaitingEntry,
@@ -68,6 +75,9 @@ export interface CallRoomProps {
 type Phase = "joining" | "waiting" | "connected" | "error" | "ended";
 
 const ROOM_BG = "bg-[#0B0F1A]";
+
+/** Captions on/off preference survives reloads. */
+const CAPTIONS_STORAGE_KEY = "metricorex:captions-enabled";
 
 function formatDuration(ms: number): string {
   const total = Math.max(0, Math.floor(ms / 1000));
@@ -162,13 +172,27 @@ export function CallRoom({
   const [chatMessages, setChatMessages] = useState<RoomChatMessage[]>([]);
   const [unreadChat, setUnreadChat] = useState(0);
 
-  const [captionsEnabled, setCaptionsEnabled] = useState(false);
-  const [captionSegments, setCaptionSegments] = useState<CaptionSegment[]>([]);
+  const [captionsEnabled, setCaptionsEnabled] = useState(() => {
+    if (typeof window === "undefined") return false;
+    try {
+      return localStorage.getItem(CAPTIONS_STORAGE_KEY) === "1";
+    } catch {
+      return false;
+    }
+  });
+  const [captionSegments, setCaptionSegments] = useState<CaptionItem[]>([]);
   const [recordingActive, setRecordingActive] = useState(false);
   const [waitingUnadmitted, setWaitingUnadmitted] = useState(false);
   const [waitingQueue, setWaitingQueue] = useState<RoomWaitingEntry[]>([]);
 
   const [pinnedKey, setPinnedKey] = useState<string | null>(null);
+
+  // Audio output routing (speaker/earpiece/bluetooth) — see lib/calling/audio-routing.
+  const [audioOutputs, setAudioOutputs] = useState<AudioOutputDevice[]>([]);
+  const [selectedSinkId, setSelectedSinkId] = useState<string>(() => loadPersistedSinkId());
+  const [sinkSupported] = useState(() => supportsSinkId());
+  /** Throttle for interim caption relays (socket flooding guard). */
+  const interimCaptionRef = useRef<{ text: string; lastEmitted: number }>({ text: "", lastEmitted: 0 });
 
   const [endsAt, setEndsAt] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
@@ -216,9 +240,25 @@ export function CallRoom({
     }
     clientUnsubsRef.current = [];
     if (c) {
-      c.disconnect().catch(() => undefined);
+      // destroy() is the single authoritative teardown: stops every local
+      // track, closes the room/transports, detaches media elements, clears
+      // reconnect timers and resets internal state (idempotent).
+      try { c.destroy().catch(() => undefined); } catch { /* ignore */ }
     }
   }, []);
+
+  // ------------------------------------------------------------------
+  // Cleanup — the ONE authoritative path (used by leave button, call:end,
+  // unexpected disconnect, unmount and beforeunload).
+  // ------------------------------------------------------------------
+  const cleanupCallMedia = useCallback(() => {
+    teardownMediaClient();
+    stopLocalRecognition();
+    stopRecording(false);
+    reportLocalStream(null);
+    setCaptionSegments([]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [teardownMediaClient]);
 
   /** Re-mint media credentials — the backend may hand back MediaSoup creds
    * when the previously-selected provider (e.g. LiveKit) is unreachable. */
@@ -266,7 +306,17 @@ export function CallRoom({
       }),
       client.on("local:stream", setLocalStream),
       client.on("local:screen", setLocalScreenStream),
-      client.on("connection", (c) => setConnection(c)),
+      client.on("connection", (c) => {
+        setConnection(c);
+        if (c === "disconnected" && clientRef.current) {
+          // The room is gone for good (LiveKit reconnect exhausted / MediaSoup
+          // transport failed). Tear down all media — no zombie tracks, elements
+          // or "Connected" header — and surface the rejoin screen.
+          teardownMediaClient();
+          setConnectionError("Your connection to the call was lost.");
+          setPhase((cur) => (cur === "ended" ? cur : "error"));
+        }
+      }),
       client.on("active-speaker", ({ id }) => setActiveSpeakerId(id || null)),
       client.on("media:error", (e) => setMediaBlocked(e.message)),
       client.on("error", (e) => {
@@ -489,6 +539,9 @@ export function CallRoom({
       [`${prefix}:ended`, (p) => {
         setEndedInfo(p?.reason === "duration_limit" ? "The meeting time limit for this plan was reached." : "This call has ended.");
         setPhase("ended");
+        // call:end / duration-limit — same authoritative cleanup as leaving:
+        // stop tracks, detach elements, clear timers and any stale UI state.
+        cleanupCallMedia();
       }],
       [`waiting-room:admitted`, (p: any) => {
         const roomId = p?.roomId;
@@ -594,17 +647,18 @@ export function CallRoom({
       }],
       [`caption:updated`, (c) => {
         if (!c?.text) return;
-        setCaptionSegments((prev) => {
-          const next = [...prev, {
-            id: `${c.ts}-${c.speakerId}-${Math.random().toString(36).slice(2, 6)}`,
-            speakerId: c.speakerId,
-            speakerName: c.speakerName || "Speaker",
-            text: c.text,
-            ts: c.ts,
+        // Rolling buffer: last 3 finals + trailing interim, stable ids so the
+        // pill updates in place (see lib/calling/captions.ts).
+        setCaptionSegments((prev) =>
+          applyCaptionSegment(prev, {
+            id: typeof c.id === "string" && c.id ? c.id : nextCaptionId(String(c.speakerId || "spk"), String(c.ts || new Date().toISOString())),
+            speakerId: String(c.speakerId || ""),
+            speakerName: String(c.speakerName || "Speaker"),
+            text: String(c.text),
+            ts: String(c.ts || new Date().toISOString()),
             isFinal: c.isFinal !== false,
-          }];
-          return next.slice(-30);
-        });
+          }),
+        );
       }],
       [`recording:started`, (p: any) => {
         setRecordingActive(true);
@@ -669,14 +723,40 @@ export function CallRoom({
   // elapsed display (from join time)
   const joinedAtRef = useRef<number>(Date.now());
 
-  // ------------------------------------------------------------------
-  // Cleanup on unmount
-  // ------------------------------------------------------------------
+  // Cleanup on unmount + beforeunload
   useEffect(() => {
+    const handleBeforeUnload = () => {
+      // Page is going away — best-effort synchronous cleanup: stop tracks and
+      // notify the room. Socket emit may not flush; destroy() stops the
+      // camera/mic synchronously which is what matters most.
+      try {
+        const socket = getSingletonSocket();
+        if (socket && effectiveRoomId && joinAckedRef.current) {
+          socket.emit(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
+        }
+      } catch {
+        // ignore
+      }
+      try {
+        clientRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
+      clientRef.current = null;
+      reportLocalStream(null);
+    };
+    window.addEventListener("beforeunload", handleBeforeUnload);
     return () => {
-      clientUnsubsRef.current.forEach((u) => u());
+      window.removeEventListener("beforeunload", handleBeforeUnload);
+      for (const fn of clientUnsubsRef.current) {
+        try { fn(); } catch { /* ignore */ }
+      }
       clientUnsubsRef.current = [];
-      clientRef.current?.disconnect().catch(() => {});
+      try {
+        clientRef.current?.destroy?.();
+      } catch {
+        // ignore
+      }
       clientRef.current = null;
       stopLocalRecognition();
       stopRecording(false);
@@ -783,19 +863,20 @@ export function CallRoom({
   }, [displayName, effectiveRoomId, emitRoom, localUserId]);
 
   const leaveRoom = useCallback(() => {
-    clientUnsubsRef.current.forEach((u) => u());
-    clientUnsubsRef.current = [];
-    clientRef.current?.disconnect().catch(() => {});
-    clientRef.current = null;
-    stopLocalRecognition();
+    // If this participant was recording, broadcast the stop first (previous
+    // behaviour) — then run the shared authoritative teardown.
     stopRecording(true);
-    reportLocalStream(null);
+    // 1. Authoritative media teardown (tracks, room, elements, timers).
+    cleanupCallMedia();
+    // 2. Existing socket leave event (plus host end).
     emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
     if (isHost) {
       emitRoom(`${prefix}:end`, isMeeting ? { meetingId: effectiveRoomId } : { roomId: effectiveRoomId });
     }
+    // 3. Return to where the user started from — the entry-point onLeave also
+    //    clears the active-call store (timer, bubble, panels) via the host.
     onLeave();
-  }, [displayName, effectiveRoomId, emitRoom, isHost, isMeeting, localUserId, onLeave, prefix]);
+  }, [cleanupCallMedia, displayName, effectiveRoomId, emitRoom, isHost, isMeeting, localUserId, onLeave, prefix]);
 
   // Host moderation (backend re-validates; provider media action + broadcast)
   const removeParticipant = useCallback(async (identityToRemove: string) => {
@@ -959,6 +1040,7 @@ export function CallRoom({
     if (captionsEnabled) {
       stopLocalRecognition();
       setCaptionsEnabled(false);
+      try { localStorage.setItem(CAPTIONS_STORAGE_KEY, "0"); } catch { /* ignore */ }
       return;
     }
     const SR = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
@@ -968,20 +1050,39 @@ export function CallRoom({
     }
     const recognition = new SR();
     recognition.continuous = true;
-    recognition.interimResults = false;
+    // Interim results keep the pill "live" for everyone — finals still create
+    // the durable transcript segments.
+    recognition.interimResults = true;
     recognition.lang = navigator.language || "en-US";
+    const emitCaption = (text: string, isFinal: boolean) => {
+      // Same event/payload the backend already accepts (caption:segment).
+      // speakerId/speakerName are included for identity; the backend also
+      // resolves them server-side from the socket session.
+      emitRoom("caption:segment", {
+        roomId: effectiveRoomId,
+        roomType: isMeeting ? "meeting" : "call",
+        speakerId: localUserId,
+        speakerName: displayName,
+        text,
+        isFinal,
+        language: recognition.lang,
+      });
+    };
     recognition.onresult = (event: any) => {
       for (let i = event.resultIndex; i < event.results.length; i++) {
-        if (event.results[i].isFinal) {
-          const text = String(event.results[i][0].transcript || "").trim();
-          if (text) {
-            emitRoom("caption:segment", {
-              roomId: effectiveRoomId,
-              roomType: isMeeting ? "meeting" : "call",
-              text,
-              isFinal: true,
-              language: recognition.lang,
-            });
+        const result = event.results[i];
+        const text = String(result?.[0]?.transcript || "").trim();
+        if (!text) continue;
+        if (result.isFinal) {
+          interimCaptionRef.current.text = "";
+          emitCaption(text, true);
+        } else {
+          // Throttle interim relays (~250ms) — smooth pill without flooding.
+          const now = Date.now();
+          if (now - interimCaptionRef.current.lastEmitted > 250) {
+            interimCaptionRef.current.lastEmitted = now;
+            interimCaptionRef.current.text = text;
+            emitCaption(text, false);
           }
         }
       }
@@ -991,6 +1092,7 @@ export function CallRoom({
         toast({ title: "Captions blocked", description: "Grant microphone access to use live captions." });
         stopLocalRecognition();
         setCaptionsEnabled(false);
+        try { localStorage.setItem(CAPTIONS_STORAGE_KEY, "0"); } catch { /* ignore */ }
       }
     };
     recognition.onend = () => {
@@ -1006,11 +1108,39 @@ export function CallRoom({
     try {
       recognition.start();
       setCaptionsEnabled(true);
+      try { localStorage.setItem(CAPTIONS_STORAGE_KEY, "1"); } catch { /* ignore */ }
       toast({ title: "Live captions on", description: "You are broadcasting captions for everyone." });
     } catch {
       setCaptionsEnabled(false);
     }
-  }, [captionsEnabled, effectiveRoomId, emitRoom, isMeeting, toast]);
+  }, [captionsEnabled, displayName, effectiveRoomId, emitRoom, isMeeting, localUserId, toast]);
+
+  // ------------------------------------------------------------------
+  // Audio output routing — enumerate + apply via the calling client pool.
+  // ------------------------------------------------------------------
+  const refreshAudioOutputs = useCallback(async () => {
+    const devices = await listAudioOutputDevices();
+    setAudioOutputs(devices);
+  }, []);
+
+  useEffect(() => {
+    // Mic permission is already granted inside a call → labels are populated.
+    // Re-enumerate when devices connect/disconnect (bluetooth, headsets).
+    refreshAudioOutputs();
+    const md = typeof navigator !== "undefined" ? navigator.mediaDevices : undefined;
+    md?.addEventListener?.("devicechange", refreshAudioOutputs);
+    return () => {
+      md?.removeEventListener?.("devicechange", refreshAudioOutputs);
+    };
+  }, [refreshAudioOutputs]);
+
+  const handleSelectAudioOutput = useCallback(async (deviceId: string) => {
+    setSelectedSinkId(deviceId);
+    await selectAudioOutput(deviceId); // persists + applies to the element pool
+    // Also route via the active client (covers any element it created before
+    // this module was loaded / outside the registry).
+    clientRef.current?.applyAudioSink?.(deviceId);
+  }, []);
 
   // ------------------------------------------------------------------
   // Derived UI data — stage (pinned / screen share) + filmstrip / grid
@@ -1077,6 +1207,9 @@ export function CallRoom({
 
   const localSpeaking = activeSpeakerId === localUserId && mediaState.audioEnabled;
 
+  /** Head-count used by the top-bar chip (presence list wins over media list). */
+  const participantCount = Math.max(appParticipants.length, mediaParticipants.length + 1);
+
   const providerLabel = isLiveKitCredentials(credentialsRef.current) ? "Metricorex Connect" : "Metricorex Connect";
   void providerLabel;
 
@@ -1096,8 +1229,10 @@ export function CallRoom({
         onTogglePin={() => setPinnedKey((cur) => (cur === tile.key ? null : tile.key))}
         isRoomAudioOnly={callType === "audio"}
         className={cn(
-          opts.filmstrip && "h-full w-[10.5rem] shrink-0 snap-center sm:w-52",
-          opts.stage && "h-full w-full",
+          opts.filmstrip && "h-full w-[9.5rem] shrink-0 snap-center sm:w-44",
+          // Stage keeps a true 16:9 box: portrait derives height from width,
+          // landscape derives width from height — never stretched.
+          opts.stage && "aspect-video h-auto max-h-full w-full max-w-full sm:h-full sm:w-auto",
           !opts.filmstrip && !opts.stage && gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center",
         )}
       />
@@ -1208,6 +1343,14 @@ export function CallRoom({
             )}
           </div>
         </div>
+        {/* Participant count chip */}
+        <span
+          className="hidden items-center gap-1 rounded-full border border-white/10 bg-white/[0.06] px-2.5 py-1 text-[11px] font-medium text-white/70 backdrop-blur sm:inline-flex"
+          title={`${participantCount} in this ${isMeeting ? "meeting" : "call"}`}
+        >
+          <Users className="h-3 w-3" />
+          {participantCount}
+        </span>
         {recordingActive && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-red-600/20 px-2.5 py-1 text-[11px] font-medium text-red-300">
             <Radio className="h-3 w-3 animate-pulse" /> Rec
@@ -1262,8 +1405,8 @@ export function CallRoom({
       <main className="relative min-h-0 flex-1 overflow-hidden p-2 phone-landscape:p-1.5 sm:p-3">
         {stageTile ? (
           <div className="flex h-full w-full flex-col gap-2">
-            {/* Stage */}
-            <div className="relative min-h-0 flex-1">
+            {/* Stage — always a 16:9 letterboxed box (aspect-ratio CSS) */}
+            <div className="relative flex min-h-0 flex-1 items-center justify-center">
               {stageTile.kind === "screen" ? (
                 <div className="relative h-full w-full overflow-hidden rounded-2xl border border-indigo-400/40 bg-black">
                   <video
@@ -1284,9 +1427,9 @@ export function CallRoom({
                 renderCameraTile(stageTile, { stage: true })
               )}
             </div>
-            {/* Filmstrip */}
+            {/* Filmstrip — fixed-height horizontal row, never stretches */}
             {stripTiles.length > 0 && (
-              <div className="flex h-[108px] shrink-0 snap-x gap-2 overflow-x-auto pb-1 custom-scrollbar phone-landscape:h-[84px] sm:h-[124px]">
+              <div className="flex h-24 shrink-0 snap-x gap-2 overflow-x-auto pb-1 custom-scrollbar phone-landscape:h-16 sm:h-28">
                 {stripTiles.map((t) => renderCameraTile(t, { filmstrip: true }))}
               </div>
             )}
@@ -1328,7 +1471,7 @@ export function CallRoom({
           </div>
         )}
 
-        <CaptionsOverlay segments={captionSegments} enabled={captionsEnabled} />
+        <CaptionsOverlay segments={captionSegments} enabled={captionsEnabled} onHide={() => setCaptionSegments([])} />
 
         {participantsOpen && (
           <ParticipantsPanel
@@ -1361,6 +1504,10 @@ export function CallRoom({
             providerLabel={providerLabel}
             startedAt={new Date(joinedAtRef.current).toISOString()}
             onClose={() => setInfoOpen(false)}
+            audioOutputs={audioOutputs}
+            selectedSinkId={selectedSinkId}
+            sinkSupported={sinkSupported}
+            onSelectAudioOutput={handleSelectAudioOutput}
           />
         )}
       </main>
@@ -1378,6 +1525,10 @@ export function CallRoom({
           unreadChat={unreadChat}
           audioOnlyRoom={callType === "audio"}
           showSwitchCamera={!!mediaState.videoEnabled && !isGuest}
+          speakerDevices={audioOutputs}
+          selectedSinkId={selectedSinkId}
+          sinkSupported={sinkSupported}
+          onSelectSpeaker={handleSelectAudioOutput}
           onToggleAudio={toggleAudio}
           onToggleVideo={toggleVideo}
           onToggleScreenShare={toggleScreenShare}

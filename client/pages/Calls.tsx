@@ -53,11 +53,14 @@ import {
   Trash2,
   Copy,
   BellRing,
+  Bell,
   Lock,
   Timer,
+  ChevronRight,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import { getApiMessage, getApiErrorCode } from "@/lib/api-response";
+import { requestPermissionAndSubscribe } from "@/lib/push";
 import {
   useCalls,
   useCreateCall,
@@ -129,7 +132,28 @@ const isCallActive = (status: string) => status === "ringing" || status === "ong
 // ==========================================
 export default function Calls() {
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const { toast } = useToast();
+
+  // Web push (batch-4): ring even when the app is closed. Permission is only
+  // requested from the banner below or when the user starts a call.
+  const [notifPermission, setNotifPermission] = useState<string>(
+    typeof Notification !== "undefined" ? Notification.permission : "denied",
+  );
+  const [pushBannerDismissed, setPushBannerDismissed] = useState(
+    () => localStorage.getItem("push-banner-dismissed") === "1",
+  );
+  const handleEnableNotifications = useCallback(async () => {
+    const permission = await requestPermissionAndSubscribe();
+    setNotifPermission(permission === "unsupported" ? "denied" : permission);
+    if (permission === "granted") {
+      toast({ title: "Call notifications enabled", description: "You'll be alerted for incoming calls." });
+    }
+  }, [toast]);
+  const dismissPushBanner = useCallback(() => {
+    setPushBannerDismissed(true);
+    try { localStorage.setItem("push-banner-dismissed", "1"); } catch {}
+  }, []);
 
   // ==========================================
   // Query Hooks
@@ -355,6 +379,11 @@ export default function Calls() {
 
     setIsProcessing(true);
     try {
+      // The user is starting a call — make sure incoming-call notifications
+      // (rings even when the app is closed) have been offered once.
+      if (typeof Notification !== "undefined" && Notification.permission === "default") {
+        requestPermissionAndSubscribe().then((p) => setNotifPermission(p === "unsupported" ? "denied" : p));
+      }
       const createdCall = await createCall.mutateAsync(callForm);
       setIsCreateDialogOpen(false);
       resetCallForm();
@@ -848,12 +877,10 @@ export default function Calls() {
               variant="outline"
               size="sm"
               className="w-full"
-              onClick={() => {
-                setSelectedCall(call);
-                setIsDetailDialogOpen(true);
-              }}
+              onClick={() => navigate(`/calls/${call.id}`)}
             >
-              View Details
+              View details
+              <ChevronRight className="h-4 w-4 ml-1" />
             </Button>
 
             <div className="flex gap-2">
@@ -930,6 +957,28 @@ export default function Calls() {
               Manage your video and audio calls
             </p>
           </div>
+
+          {/* Enable call notifications banner (web push, batch-4) */}
+          {notifPermission === "default" && !pushBannerDismissed && (
+            <div className="flex items-center gap-3 rounded-xl border border-blue-500/40 bg-blue-500/10 px-4 py-3">
+              <Bell className="h-5 w-5 shrink-0 text-blue-500" />
+              <div className="min-w-0">
+                <p className="text-sm font-medium">Enable call notifications</p>
+                <p className="text-xs text-muted-foreground">Ring even when you're not on the app.</p>
+              </div>
+              <Button size="sm" className="ml-2 shrink-0 rounded-lg" onClick={handleEnableNotifications}>
+                Enable
+              </Button>
+              <button
+                type="button"
+                onClick={dismissPushBanner}
+                aria-label="Dismiss"
+                className="rounded-full p-1 text-muted-foreground hover:text-foreground"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          )}
 
           {/* Create Call Dialog Trigger */}
           <Dialog
