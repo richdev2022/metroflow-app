@@ -167,6 +167,17 @@
   background-color: rgba(255, 255, 255, 0.35);
 }
 
+/* Hidden-scrollbar horizontal scroller (Settings tab bar on mobile) */
+.no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+  width: 0;
+  height: 0;
+}
+
 /* Slim themed scrollbar for chat picker panels (emoji/stickers/GIF) */
 .chat-panel-scroll {
   scrollbar-width: thin;

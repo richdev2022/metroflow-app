@@ -214,7 +214,12 @@ export function ActiveCallHost() {
         )}
         style={{ zIndex: state.minimized ? -1 : 90 }}
       >
+        {/* Keyed per call — starting a NEW call always mounts a FRESH room
+            instance (no zombie "Connected" header, stale timer, chat or
+            panels carried over from the previous call). The old instance's
+            unmount cleanup destroys its media client. */}
         <CallRoom
+          key={`${props.callId || props.meetingId || props.roomId || "room"}-${state.startedAt}`}
           {...props}
           onLeave={() => {
             // Clear the store first, then run the page-level cleanup that the

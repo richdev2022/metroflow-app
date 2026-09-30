@@ -37,7 +37,10 @@ import MetricAiChat from "./pages/MetricAiChat";
 import Calls from "./pages/Calls";
 import Recordings from "./pages/Recordings";
 import JoinMeeting from "./pages/JoinMeeting";
-import JoinCall from "./pages/JoinCall";
+import CallDetail, { CallDetailRoute } from "./pages/CallDetail";
+import MeetingDetail, { MeetingDetailRoute } from "./pages/MeetingDetail";
+import JoinCallRing from "./pages/JoinCallRing";
+import PushManager from "./components/push/PushManager";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
 import { MaintenanceGate } from "./components/MaintenanceGate";
@@ -120,6 +123,8 @@ const App = () => (
           {/* Highest-level gate: shows the branded maintenance screen instead
               of ALL routes (authed + public) while maintenance_mode is on. */}
           <MaintenanceGate>
+          {/* Web push bridge: SW registration + sw-call-action handling */}
+          <PushManager />
           <Routes>
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
@@ -196,11 +201,23 @@ const App = () => (
             />
             <Route
               path="/meetings/:meetingCode"
-              element={<JoinMeeting />}
+              element={<MeetingDetailRoute />}
+            />
+            <Route
+              path="/meetings/detail/:meetingId"
+              element={<TokenProtectedRoute element={<MeetingDetail />} />}
             />
             <Route
               path="/calls/:callCode"
-              element={<JoinCall />}
+              element={<CallDetailRoute />}
+            />
+            <Route
+              path="/calls/detail/:callId"
+              element={<TokenProtectedRoute element={<CallDetail />} />}
+            />
+            <Route
+              path="/join-call"
+              element={<JoinCallRing />}
             />
             <Route
               path="/chat"

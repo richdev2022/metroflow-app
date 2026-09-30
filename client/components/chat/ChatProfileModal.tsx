@@ -1,5 +1,5 @@
-import { useMemo } from "react";
-import { AtSign, Briefcase, Crown, Mail, MessageSquare, ShieldCheck, Users } from "lucide-react";
+import { useMemo, useState } from "react";
+import { AtSign, Ban, Briefcase, Crown, Loader2, Mail, MessageSquare, ShieldCheck, UserCheck, Users } from "lucide-react";
 import {
   Dialog,
   DialogContent,
@@ -7,6 +7,16 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -36,10 +46,16 @@ interface ChatProfileModalProps {
   groupAvatarUrl?: string | null;
   /** Group members rendered under the group header. */
   members?: ChatProfilePerson[];
-  /** Status line for direct chats ("Online", "Last seen 5 min ago", ...). */
+  /** Status line for direct chats ("Online", "Last seen today at 7:46 PM", ...). */
   presenceLabel?: string | null;
   /** Quick action: closes the modal and focuses the chat composer. */
   onMessage?: () => void;
+  /** Block state for direct chats (hydrated from conversation flags / /users/blocked). */
+  isBlockedByMe?: boolean;
+  /** Toggle block; when provided the Block/Unblock button renders with confirm. */
+  onToggleBlock?: () => void;
+  /** True while the block request is in flight. */
+  blockBusy?: boolean;
 }
 
 const ROLE_STYLES: Record<string, string> = {
@@ -71,7 +87,11 @@ export function ChatProfileModal({
   members = [],
   presenceLabel,
   onMessage,
+  isBlockedByMe = false,
+  onToggleBlock,
+  blockBusy = false,
 }: ChatProfileModalProps) {
+  const [blockConfirmOpen, setBlockConfirmOpen] = useState(false);
   const avatarSrc = useMemo(
     () => (isGroup ? resolveMediaUrl(groupAvatarUrl) : resolveMediaUrl(person?.avatarUrl)),
     [isGroup, groupAvatarUrl, person?.avatarUrl]
@@ -187,6 +207,29 @@ export function ChatProfileModal({
                 <AtSign className="h-4 w-4" />
               </Button>
             )}
+            {!isGroup && onToggleBlock && (
+              <Button
+                variant="outline"
+                className={cn(
+                  "rounded-xl",
+                  isBlockedByMe
+                    ? "border-emerald-500/40 text-emerald-600 hover:bg-emerald-500/10 hover:text-emerald-600 dark:text-emerald-400"
+                    : "border-red-500/40 text-red-600 hover:bg-red-500/10 hover:text-red-600 dark:text-red-400",
+                )}
+                title={isBlockedByMe ? "Unblock contact" : "Block contact"}
+                aria-label={isBlockedByMe ? "Unblock contact" : "Block contact"}
+                disabled={blockBusy}
+                onClick={() => setBlockConfirmOpen(true)}
+              >
+                {blockBusy ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : isBlockedByMe ? (
+                  <UserCheck className="h-4 w-4" />
+                ) : (
+                  <Ban className="h-4 w-4" />
+                )}
+              </Button>
+            )}
           </div>
 
           {/* Group member list */}
@@ -250,6 +293,39 @@ export function ChatProfileModal({
             </div>
           )}
         </div>
+
+        {/* Block / unblock confirmation */}
+        <AlertDialog open={blockConfirmOpen} onOpenChange={setBlockConfirmOpen}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {isBlockedByMe ? `Unblock ${person?.name || "this contact"}?` : `Block ${person?.name || "this contact"}?`}
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {isBlockedByMe
+                  ? "They'll be able to send you messages and call you again."
+                  : "They won't be able to send you messages or call you. You can unblock them anytime."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                className={cn(
+                  isBlockedByMe
+                    ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                    : "bg-red-600 text-white hover:bg-red-700",
+                )}
+                onClick={(e) => {
+                  e.preventDefault();
+                  setBlockConfirmOpen(false);
+                  onToggleBlock?.();
+                }}
+              >
+                {isBlockedByMe ? "Unblock" : "Block"}
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </DialogContent>
     </Dialog>
   );

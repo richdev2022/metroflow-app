@@ -1,3 +1,4 @@
+import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 import {
   Mic,
@@ -13,7 +14,13 @@ import {
   PhoneOff,
   PictureInPicture2,
   SwitchCamera,
+  Volume2,
+  Bluetooth,
+  Headphones,
+  Phone,
+  Check,
 } from "lucide-react";
+import type { AudioOutputDevice } from "@/lib/calling";
 
 interface ControlButtonSpec {
   key: string;
@@ -51,6 +58,11 @@ interface ControlBarProps {
   showSwitchCamera?: boolean;
   /** Audio-only room — camera control disabled. */
   audioOnlyRoom?: boolean;
+  /** Audio output routing (speaker / earpiece / bluetooth). */
+  speakerDevices?: AudioOutputDevice[];
+  selectedSinkId?: string;
+  sinkSupported?: boolean;
+  onSelectSpeaker?: (deviceId: string) => void;
 }
 
 function CtrlButton({ spec, small }: { spec: ControlButtonSpec; small?: boolean }) {
@@ -78,6 +90,116 @@ function CtrlButton({ spec, small }: { spec: ControlButtonSpec; small?: boolean 
         </span>
       ) : null}
     </button>
+  );
+}
+
+function routeIcon(kind: AudioOutputDevice["kind"]) {
+  if (kind === "bluetooth") return <Bluetooth className="h-4 w-4 shrink-0" />;
+  if (kind === "headset") return <Headphones className="h-4 w-4 shrink-0" />;
+  if (kind === "earpiece") return <Phone className="h-4 w-4 shrink-0" />;
+  return <Volume2 className="h-4 w-4 shrink-0" />;
+}
+
+/**
+ * Speaker-route popover (Google-Dialer-style output picker). Falls back to a
+ * friendly system-routing notice on browsers without setSinkId (iOS Safari).
+ */
+function SpeakerRouteControl({
+  devices,
+  selectedSinkId,
+  sinkSupported,
+  onSelect,
+}: {
+  devices: AudioOutputDevice[];
+  selectedSinkId: string;
+  sinkSupported: boolean;
+  onSelect: (deviceId: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const rootRef = useRef<HTMLDivElement>(null);
+
+  // Close on outside press (touch + mouse).
+  useEffect(() => {
+    if (!open) return;
+    const onDown = (e: PointerEvent) => {
+      if (!rootRef.current?.contains(e.target as Node)) setOpen(false);
+    };
+    window.addEventListener("pointerdown", onDown, { capture: true });
+    return () => window.removeEventListener("pointerdown", onDown, { capture: true } as any);
+  }, [open]);
+
+  const activeDevice = useMemo(
+    () => devices.find((d) => (d.deviceId || "") === (selectedSinkId || "")),
+    [devices, selectedSinkId],
+  );
+
+  if (!sinkSupported) {
+    return (
+      <div
+        title="Audio routing follows the system — connect Bluetooth from Control Center"
+        aria-label="Audio routing follows the system"
+        className={cn(
+          "relative flex h-12 w-12 shrink-0 cursor-help items-center justify-center rounded-full border border-white/10 bg-white/10 text-white/60 backdrop-blur sm:h-11 sm:w-11",
+          "phone-landscape:h-10 phone-landscape:w-10",
+        )}
+      >
+        <Volume2 className="h-5 w-5" />
+      </div>
+    );
+  }
+
+  return (
+    <div ref={rootRef} className="relative shrink-0">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        title={activeDevice ? `Audio output: ${activeDevice.label}` : "Audio output"}
+        aria-label="Audio output"
+        aria-expanded={open}
+        className={cn(
+          "relative flex h-12 w-12 items-center justify-center rounded-full border transition-all sm:h-11 sm:w-11",
+          "phone-landscape:h-10 phone-landscape:w-10",
+          "border-white/10 bg-white/10 text-white backdrop-blur hover:bg-white/20 active:scale-95",
+          open && "border-transparent bg-white text-[#0B0F1A] hover:bg-white/90",
+        )}
+      >
+        {activeDevice ? routeIcon(activeDevice.kind) : <Volume2 className="h-5 w-5" />}
+      </button>
+      {open && (
+        <div
+          role="menu"
+          aria-label="Audio output devices"
+          className="absolute bottom-[calc(100%+0.6rem)] left-1/2 z-40 w-60 max-w-[80vw] -translate-x-1/2 overflow-hidden rounded-2xl border border-white/10 bg-[#141B2E]/95 p-1.5 shadow-2xl shadow-black/50 backdrop-blur-xl animate-in fade-in slide-in-from-bottom-2 duration-150"
+        >
+          <p className="px-2.5 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-white/40">
+            Audio output
+          </p>
+          {(devices.length > 0 ? devices : [{ deviceId: "", label: "System default", kind: "default" as const }]).map((d) => {
+            const active = (d.deviceId || "") === (selectedSinkId || "");
+            return (
+              <button
+                key={d.deviceId || "system-default"}
+                type="button"
+                role="menuitemradio"
+                aria-checked={active}
+                onClick={() => {
+                  onSelect(d.deviceId);
+                  setOpen(false);
+                }}
+                className={cn(
+                  "flex min-h-10 w-full items-center gap-2 rounded-xl px-2.5 text-left text-sm transition-colors",
+                  active ? "bg-[#2563EB]/25 text-white" : "text-white/75 hover:bg-white/10",
+                )}
+              >
+                {routeIcon(d.kind)}
+                <span className="min-w-0 flex-1 truncate">{d.label}</span>
+                {active && <Check className="h-3.5 w-3.5 shrink-0 text-emerald-400" />}
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -136,7 +258,7 @@ export function ControlBar(props: ControlBarProps) {
   ];
 
   return (
-    <div className="pointer-events-auto flex w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
+    <div className="pointer-events-auto flex w-full max-w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
       {buttons.map((spec) => (
         <CtrlButton key={spec.key} spec={spec} />
       ))}
@@ -148,6 +270,14 @@ export function ControlBar(props: ControlBarProps) {
             label: "Switch camera",
             onClick: props.onSwitchCamera || (() => {}),
           }}
+        />
+      )}
+      {props.onSelectSpeaker && (
+        <SpeakerRouteControl
+          devices={props.speakerDevices || []}
+          selectedSinkId={props.selectedSinkId || ""}
+          sinkSupported={props.sinkSupported !== false}
+          onSelect={props.onSelectSpeaker}
         />
       )}
       {props.onMinimize && (
@@ -170,14 +300,16 @@ export function ControlBar(props: ControlBarProps) {
           }}
         />
       )}
+      {/* Leave — ≥44px hit target on every device, never clipped, icon-only on
+          small screens; label appears from sm up when there's room. */}
       <button
         type="button"
         onClick={props.onLeave}
         title={props.leaveLabel || "Leave"}
         aria-label={props.leaveLabel || "Leave"}
         className={cn(
-          "flex h-12 shrink-0 items-center justify-center rounded-full bg-red-600 text-white transition-all hover:bg-red-500 active:scale-95 sm:h-11 sm:w-16",
-          "phone-landscape:h-10",
+          "flex h-12 min-h-[44px] min-w-[44px] max-w-full shrink-0 items-center justify-center whitespace-nowrap rounded-full bg-red-600 px-4 text-white transition-all hover:bg-red-500 active:scale-95 sm:h-11 sm:min-w-16 sm:px-5",
+          "phone-landscape:h-10 phone-landscape:min-h-[40px]",
         )}
       >
         <PhoneOff className="h-5 w-5" />

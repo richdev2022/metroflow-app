@@ -1072,6 +1072,15 @@ export interface CreateConversationInput {
   participantIds: string[];
 }
 
+export interface MessageReplySnapshot {
+  id: string;
+  senderId?: string;
+  senderName?: string | null;
+  content?: string | null;
+  messageType?: string | null;
+  attachmentType?: string | null;
+}
+
 export interface Message {
   id: string;
   conversationId: string;
@@ -1093,6 +1102,17 @@ export interface Message {
   message_type?: string;
   createdAt: string;
   senderName?: string;
+  /** Present when the message body was edited (PATCH messages/:mid). */
+  editedAt?: string | null;
+  edited_at?: string | null;
+  /** Tombstone flags (DELETE ?scope=everyone|me). */
+  deletedForEveryone?: boolean | null;
+  deleted_for_everyone?: boolean | null;
+  deletedForMe?: boolean | null;
+  deleted_for_me?: boolean | null;
+  /** Quoted-parent snapshot when the message was sent as a reply. */
+  replyTo?: MessageReplySnapshot | null;
+  reply_to?: MessageReplySnapshot | null;
 }
 
 export type MessageTypeName =
@@ -1108,10 +1128,15 @@ export type MessageTypeName =
 /** Payload of a `messageType === 'call-log'` chat message (content is JSON). */
 export interface ChatCallLogMeta {
   callType: 'audio' | 'video';
-  status: 'completed' | 'missed' | 'cancelled';
+  status: 'completed' | 'missed' | 'cancelled' | 'declined' | 'no-answer';
   durationSeconds: number | null;
   initiatorName: string | null;
   callCode: string | null;
+  /** Present on newer payloads — links the row to GET /calls/:id. */
+  callId?: string | null;
+  conversationId?: string | null;
+  hasTranscript?: boolean | null;
+  endedAt?: string | null;
 }
 
 export interface SendMessageInput {
@@ -1122,6 +1147,8 @@ export interface SendMessageInput {
   attachmentName?: string;
   attachmentSize?: number;
   messageType?: MessageTypeName;
+  /** Id of the message being quoted/replied to. */
+  replyToId?: string;
 }
 
 export interface CreateCallInput {

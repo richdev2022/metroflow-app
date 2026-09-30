@@ -58,6 +58,7 @@
     "express": "^5.2.1",
     "framer-motion": "^12.23.12",
     "input-otp": "^1.4.2",
+    "jspdf": "^4.2.1",
     "livekit-client": "^2.22.3",
     "lucide-react": "^0.539.0",
     "mediasoup": "^3.21.0",
