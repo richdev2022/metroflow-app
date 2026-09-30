@@ -16,6 +16,16 @@ import {
   type LocalMediaState,
   type RemoteParticipant,
 } from "./types";
+import {
+  applySinkToAll,
+  loadPersistedSinkId,
+  registerAudioElement,
+  unregisterAudioElement,
+} from "./audio-routing";
+
+// Restore the user's last speaker-route choice as early as possible so every
+// audio element created afterwards inherits it.
+loadPersistedSinkId();
 
 /**
  * LiveKit implementation of the Metricorex CallingClient.
@@ -171,23 +181,71 @@ export class LiveKitCallingClient implements CallingClient {
     this.syncAllParticipants();
   }
 
+  /**
+   * Back-compat alias — `disconnect` and `destroy` are the same authoritative
+   * teardown so no code path can accidentally half-leave a call.
+   */
   async disconnect(): Promise<void> {
+    return this.destroy();
+  }
+
+  /**
+   * Authoritative teardown. Stops every local track, detaches all hidden audio
+   * elements, closes the room and resets ALL internal state so the next call
+   * starts from a clean slate. Idempotent.
+   */
+  async destroy(): Promise<void> {
     if (this.disconnected) return;
     this.disconnected = true;
+
+    // 1. Detach + remove every hidden audio element.
     for (const el of this.audioEls.values()) {
       try {
+        el.pause();
         el.srcObject = null;
         el.remove();
+        unregisterAudioElement(el);
       } catch {
         // ignore
       }
     }
     this.audioEls.clear();
+
+    // 2. Stop local tracks synchronously (camera light must go off even if
+    //    room.disconnect() stalls).
+    try {
+      this.room.localParticipant.trackPublications.forEach((pub) => {
+        const track = (pub as LocalTrackPublication).track;
+        try {
+          track?.mediaStreamTrack?.stop?.();
+        } catch {
+          // ignore
+        }
+      });
+    } catch {
+      // ignore
+    }
+
+    // 3. Clear caches/timers before the async disconnect.
+    this.participants.clear();
+    this.localVideoStream = null;
+    this.localScreenStream = null;
+    this.activeSpeakerId = null;
+    this.micAvailable = true;
+    this.camAvailable = true;
+    this.localState = { audioEnabled: false, videoEnabled: false, screenSharing: false };
+
+    // 4. Close the room.
     try {
       await this.room.disconnect();
     } catch {
       // ignore — disconnecting anyway
     }
+
+    // 5. Final state broadcast so stale UI (bubble/tiles) clears immediately.
+    this.emitter.emit("local:stream", null);
+    this.emitter.emit("local:screen", null);
+    emitParticipantsSnapshot(this.emitter, []);
     this.emitter.emit("connection", "disconnected");
   }
 
@@ -216,6 +274,7 @@ export class LiveKitCallingClient implements CallingClient {
     if (el.srcObject !== participant.audioStream) {
       el.srcObject = participant.audioStream;
     }
+    registerAudioElement(el);
     el.muted = false;
     el.play().catch(() => {
       // Autoplay blocked until a user gesture — retried on next update/interaction.
@@ -233,13 +292,20 @@ export class LiveKitCallingClient implements CallingClient {
     const el = this.audioEls.get(identity);
     if (el) {
       try {
+        el.pause();
         el.srcObject = null;
         el.remove();
+        unregisterAudioElement(el);
       } catch {
         // ignore
       }
       this.audioEls.delete(identity);
     }
+  }
+
+  /** Route every pooled audio element (and future ones) to the chosen output. */
+  applyAudioSink(sinkId: string): void {
+    applySinkToAll(sinkId);
   }
 
   private wireRoomEvents() {
@@ -325,7 +391,10 @@ export class LiveKitCallingClient implements CallingClient {
 
     room.on(RoomEvent.LocalTrackPublished, (pub: LocalTrackPublication) => {
       if (pub.source === Track.Source.Camera) {
-        this.localVideoStream = pub.videoTrack?.mediaStream ?? null;
+        // Always surface a fresh MediaStream wrapper — a re-publish after
+        // unpublish must never be masked by a stale stream object.
+        const track = pub.videoTrack?.mediaStreamTrack;
+        this.localVideoStream = track ? new MediaStream([track]) : pub.videoTrack?.mediaStream ?? null;
         this.localState.videoEnabled = !pub.isMuted;
         this.camAvailable = true;
         this.emitter.emit("local:stream", this.localVideoStream);
@@ -462,17 +531,53 @@ export class LiveKitCallingClient implements CallingClient {
   }
 
   async setAudioEnabled(enabled: boolean): Promise<void> {
-    await this.room.localParticipant.setMicrophoneEnabled(enabled);
+    const lp = this.room.localParticipant;
+    try {
+      await lp.setMicrophoneEnabled(enabled);
+    } catch (err: any) {
+      // If the mic was never published (denied at join, device unplugged),
+      // setMicrophoneEnabled(true) re-acquires it — surface the real error only
+      // if the retry also fails.
+      if (!enabled) throw err;
+      const existing = lp.getTrackPublication(Track.Source.Microphone);
+      if (existing?.track) throw err;
+      await lp.setMicrophoneEnabled(true);
+    }
     this.micAvailable = true;
     this.localState.audioEnabled = enabled;
     this.emitter.emit("local:state", { ...this.localState });
   }
 
+  /**
+   * Camera ON/OFF — deterministic across browsers (incl. iOS Safari).
+   *
+   * Root cause of the production "camera never comes back" bug: LiveKit mutes
+   * (not unpublishes) the camera track, the MediaStream object never changes,
+   * and on iOS the <video> element keeps showing the last frozen frame (or the
+   * element keeps the stale attachment) after the track is re-enabled. Fix:
+   * after every re-enable we re-emit `local:stream` with a FRESH MediaStream
+   * wrapping the live track, forcing every tile to re-attach + play().
+   */
   async setVideoEnabled(enabled: boolean): Promise<void> {
-    await this.room.localParticipant.setCameraEnabled(enabled);
+    const lp = this.room.localParticipant;
+    // setCameraEnabled handles both paths: unmute when the publication still
+    // exists, and re-acquire + republish when it was lost (server unpublish,
+    // iOS low-power mode). Both end with a live track.
+    await lp.setCameraEnabled(enabled);
     this.camAvailable = true;
     this.localState.videoEnabled = enabled;
     this.emitter.emit("local:state", { ...this.localState });
+
+    if (enabled) {
+      const camPub = lp.getTrackPublication(Track.Source.Camera);
+      const videoTrack = camPub?.videoTrack;
+      if (videoTrack?.mediaStreamTrack) {
+        // FRESH MediaStream (same underlying track) → tiles re-attach the
+        // <video> element and call play() → deterministic resume on iOS.
+        this.localVideoStream = new MediaStream([videoTrack.mediaStreamTrack]);
+        this.emitter.emit("local:stream", this.localVideoStream);
+      }
+    }
   }
 
   async switchCamera(): Promise<void> {

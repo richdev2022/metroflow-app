@@ -6,6 +6,26 @@ import type { CallingClient, CallingCredentials } from "./types";
 export * from "./types";
 export { LiveKitCallingClient } from "./LiveKitCallingClient";
 export { MediaSoupCallingClient, type MediaSoupClientOptions } from "./MediaSoupCallingClient";
+export {
+  applySinkToAll,
+  applySinkToElement,
+  buildAudioOutputOptions,
+  getCurrentSinkId,
+  listAudioOutputDevices,
+  loadPersistedSinkId,
+  selectAudioOutput,
+  supportsSinkId,
+  unregisterAudioElement,
+  type AudioOutputDevice,
+} from "./audio-routing";
+export {
+  applyCaptionSegment,
+  CAPTION_AUTOHIDE_MS,
+  latestCaptionKey,
+  nextCaptionId,
+  visibleCaptions,
+  type CaptionItem,
+} from "./captions";
 
 export interface CreateClientOptions {
   credentials: CallingCredentials | null | undefined;

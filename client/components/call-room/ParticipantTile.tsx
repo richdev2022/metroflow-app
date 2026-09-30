@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import { cn } from "@/lib/utils";
-import { Mic, MicOff, Video, VideoOff, MonitorUp, Loader2, Pin, PinOff, SignalHigh, SignalLow, SignalMedium } from "lucide-react";
+import { Mic, MicOff, VideoOff, MonitorUp, Loader2, Pin, PinOff } from "lucide-react";
 import type { LocalMediaState, RemoteParticipant } from "@/lib/calling";
 
 interface ParticipantTileProps {
@@ -21,12 +21,12 @@ interface ParticipantTileProps {
   hidePin?: boolean;
 }
 
-function QualityIcon({ quality }: { quality: RemoteParticipant["connectionQuality"] }) {
-  if (quality === "good") return <SignalHigh className="h-3 w-3" />;
-  if (quality === "fair") return <SignalMedium className="h-3 w-3" />;
-  if (quality === "poor") return <SignalLow className="h-3 w-3" />;
-  return null;
-}
+const QUALITY_DOT: Record<RemoteParticipant["connectionQuality"], string | null> = {
+  good: "bg-emerald-400",
+  fair: "bg-amber-400",
+  poor: "bg-red-400",
+  unknown: null,
+};
 
 /**
  * One video tile in the call room grid. Renders remote camera video, a local
@@ -51,16 +51,33 @@ export function ParticipantTile({
   const videoRef = useRef<HTMLVideoElement>(null);
   const videoStream = isLocal ? localStream : participant?.videoStream || null;
 
+  const audioEnabled = isLocal
+    ? (localMediaState?.audioEnabled ?? true)
+    : !participant?.audioMuted;
+  const videoEnabled = isLocal
+    ? (localMediaState?.videoEnabled ?? !!videoStream)
+    : !participant?.videoMuted;
+  const hasVideo = !!videoStream && videoEnabled;
+
   useEffect(() => {
     const el = videoRef.current;
     if (!el) return;
+    if (!hasVideo) {
+      if (el.srcObject) el.srcObject = null;
+      return;
+    }
+    // Re-attach whenever the stream OR the enabled flag changes. On iOS Safari
+    // a track that was disabled (camera off) can leave the <video> element
+    // stuck on the last frame even after re-enable — forcing srcObject re-set
+    // + play() makes OFF→ON deterministic on every browser.
     if (el.srcObject !== videoStream) {
-      el.srcObject = videoStream || null;
+      el.srcObject = videoStream;
+    } else {
+      el.srcObject = null;
+      el.srcObject = videoStream;
     }
-    if (videoStream) {
-      el.play().catch(() => {});
-    }
-  }, [videoStream]);
+    el.play().catch(() => {});
+  }, [videoStream, hasVideo]);
 
   const displayName = isLocal ? `${label || "You"} (You)` : participant?.name || label || "Guest";
   const initials = useMemo(() => {
@@ -72,21 +89,15 @@ export function ParticipantTile({
       .join("");
   }, [participant?.name, label]);
 
-  const audioEnabled = isLocal
-    ? (localMediaState?.audioEnabled ?? true)
-    : !participant?.audioMuted;
-  const videoEnabled = isLocal
-    ? (localMediaState?.videoEnabled ?? !!videoStream)
-    : !participant?.videoMuted;
-
   const speaking = isLocal ? !!localSpeaking && audioEnabled : !!participant?.isSpeaking && !participant?.audioMuted;
-  const hasVideo = isLocal ? (!!videoStream && videoEnabled) : !!videoStream && videoEnabled;
   const quality = isLocal ? "unknown" : participant?.connectionQuality || "unknown";
+  const qualityDot = QUALITY_DOT[quality];
 
   return (
     <div
       className={cn(
-        "group/tile relative min-h-0 overflow-hidden rounded-2xl border bg-[#141B2E] transition-all duration-300",
+        "group/tile relative min-h-0 overflow-hidden rounded-2xl border bg-white/[0.06] backdrop-blur-sm transition-all duration-300",
+        "animate-in fade-in zoom-in-95 duration-200",
         speaking
           ? "speak-glow border-emerald-400/80"
           : pinned
@@ -107,16 +118,17 @@ export function ParticipantTile({
           className={cn("h-full w-full object-cover", isLocal && "scale-x-[-1]")}
         />
       ) : (
-        <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 bg-gradient-to-b from-[#141B2E] to-[#0B0F1A] px-2">
+        <div className="flex h-full w-full flex-col items-center justify-center gap-2.5 bg-gradient-to-b from-white/[0.07] to-transparent px-2">
           <div
             className={cn(
-              "relative flex items-center justify-center rounded-full bg-gradient-to-br from-[#2563EB] to-[#3B82F6] font-semibold text-white",
+              "relative flex items-center justify-center rounded-full font-semibold text-white ring-2 ring-white/15",
+              "bg-gradient-to-br from-[#2563EB] via-[#3B82F6] to-[#60A5FA]",
               large ? "h-24 w-24 text-3xl" : "h-14 w-14 text-lg",
-              speaking && "speak-glow rounded-full",
+              speaking && "speak-glow rounded-full ring-emerald-300/40",
             )}
           >
             {initials || <Loader2 className="h-5 w-5 animate-spin text-white/60" />}
-            {speaking && <span className="absolute inset-0 rounded-full animate-ping bg-emerald-400/25" />}
+            {speaking && <span className="absolute inset-0 animate-ping rounded-full bg-emerald-400/25" />}
           </div>
           <span className="max-w-full truncate text-sm text-white/70">{displayName}</span>
           {isRoomAudioOnly && !isLocal && (
@@ -159,26 +171,34 @@ export function ParticipantTile({
         </span>
       )}
 
+      {/* Name chip with initials avatar + status cluster */}
       <div className="absolute inset-x-2 bottom-2 flex items-center justify-between gap-2">
-        <span className="max-w-[70%] truncate rounded-lg bg-black/55 px-2 py-1 text-xs font-medium text-white backdrop-blur-sm">
-          {displayName}
+        <span className="flex min-w-0 max-w-[75%] items-center gap-1.5 rounded-lg bg-black/55 py-0.5 pl-0.5 pr-2 backdrop-blur-sm">
+          <span
+            className={cn(
+              "flex h-5 w-5 shrink-0 items-center justify-center rounded-md bg-gradient-to-br from-[#2563EB] to-[#60A5FA] text-[9px] font-bold text-white",
+            )}
+          >
+            {initials || "?"}
+          </span>
+          <span className="truncate text-xs font-medium text-white">{displayName}</span>
         </span>
-        <span className="flex items-center gap-1">
+        <span className="flex shrink-0 items-center gap-1">
+          {isLocal && hasVideo && (
+            <span className="rounded-lg bg-black/55 px-1.5 py-1 text-[9px] font-bold tracking-wide text-emerald-300 backdrop-blur-sm" title="High definition">
+              HD
+            </span>
+          )}
           {participant?.screenSharing && (
             <span className="rounded-lg bg-indigo-500/90 p-1 text-white" title="Sharing screen">
               <MonitorUp className="h-3 w-3" />
             </span>
           )}
-          {quality !== "unknown" && (
+          {qualityDot && (
             <span
-              className={cn(
-                "rounded-lg bg-black/55 p-1 text-white backdrop-blur-sm",
-                quality === "poor" && "text-amber-400",
-              )}
+              className={cn("h-2 w-2 rounded-full ring-1 ring-black/40", qualityDot)}
               title={`Connection: ${quality}`}
-            >
-              <QualityIcon quality={quality} />
-            </span>
+            />
           )}
           {audioEnabled ? (
             <span
@@ -195,11 +215,7 @@ export function ParticipantTile({
               <MicOff className="h-3 w-3" />
             </span>
           )}
-          {hasVideo ? (
-            <span className="rounded-lg bg-black/55 p-1 text-white backdrop-blur-sm" title="Camera on">
-              <Video className="h-3 w-3" />
-            </span>
-          ) : (
+          {!hasVideo && (
             <span className="rounded-lg bg-black/55 p-1 text-white/60 backdrop-blur-sm" title="Camera off">
               <VideoOff className="h-3 w-3" />
             </span>
