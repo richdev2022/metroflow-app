@@ -231,17 +231,20 @@ const getParticipantName = (
   return members.find((m) => m.id === userId)?.name || userId;
 };
 
-const getDirectParticipant = (conv: ConversationView) => {
+const getDirectParticipant = (conv?: ConversationView | null) => {
   const uid = CURRENT_USER_ID();
-  return (
-    (conv.participants as ChatParticipant[]).find((p) => getParticipantUserId(p) !== uid) ||
-    (conv.participants as ChatParticipant[])[0]
-  );
+  const list = ((conv?.participants ?? []) as ChatParticipant[]);
+  return list.find((p) => getParticipantUserId(p) !== uid) || list[0];
 };
 
-const getConversationName = (members: TeamMember[], conv: ConversationView) => {
+const getConversationName = (members: TeamMember[], conv?: ConversationView | null): string => {
   // Backend-provided display name wins: direct chats already resolve to the
   // OTHER participant's name, groups to the group name.
+  // Null-safe on purpose: sheet/modal props below are computed on EVERY render
+  // even while no conversation is selected — passing null here used to crash
+  // the whole chat page with "Cannot read properties of null (reading
+  // 'displayName')" on entry.
+  if (!conv) return "";
   const backendName = conv.displayName?.trim();
   if (backendName) return backendName;
   if (conv.name?.trim()) return conv.name;
@@ -254,10 +257,10 @@ const getConversationName = (members: TeamMember[], conv: ConversationView) => {
 
 /** Best avatar for a conversation row/header: backend display avatar (direct
  *  chats) resolved to an absolute URL, else the other participant's avatar. */
-const getConversationAvatarUrl = (conv: ConversationView) => {
+const getConversationAvatarUrl = (conv?: ConversationView | null) => {
   const raw =
-    conv.displayAvatarUrl ||
-    (conv.type === "direct" ? getDirectParticipant(conv)?.avatarUrl : null) ||
+    conv?.displayAvatarUrl ||
+    (conv?.type === "direct" ? getDirectParticipant(conv)?.avatarUrl : null) ||
     "";
   return resolveMediaUrl(raw);
 };
@@ -2919,12 +2922,12 @@ export default function Chat() {
         person={profilePerson}
         isGroup={profileIsGroup}
         groupName={
-          profileIsGroup
+          profileIsGroup && selectedConversation
             ? getConversationName(teamMembers, selectedConversation as ConversationView)
             : null
         }
         groupAvatarUrl={
-          profileIsGroup
+          profileIsGroup && selectedConversation
             ? getConversationAvatarUrl(selectedConversation as ConversationView)
             : null
         }
@@ -2947,8 +2950,16 @@ export default function Chat() {
         open={groupInfoOpen}
         onOpenChange={setGroupInfoOpen}
         conversationId={selectedConversation?.id || ""}
-        groupName={getConversationName(teamMembers, selectedConversation as ConversationView)}
-        groupAvatarUrl={getConversationAvatarUrl(selectedConversation as ConversationView)}
+        groupName={
+          selectedConversation
+            ? getConversationName(teamMembers, selectedConversation as ConversationView)
+            : ""
+        }
+        groupAvatarUrl={
+          selectedConversation
+            ? getConversationAvatarUrl(selectedConversation as ConversationView)
+            : ""
+        }
         myRole={myGroupRole}
         onLeft={() => {
           setSelectedConversation(null);
