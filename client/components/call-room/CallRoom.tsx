@@ -863,6 +863,9 @@ export function CallRoom({
   }, [displayName, effectiveRoomId, emitRoom, localUserId]);
 
   const leaveRoom = useCallback(() => {
+    // If this participant was recording, broadcast the stop first (previous
+    // behaviour) — then run the shared authoritative teardown.
+    stopRecording(true);
     // 1. Authoritative media teardown (tracks, room, elements, timers).
     cleanupCallMedia();
     // 2. Existing socket leave event (plus host end).
@@ -1229,7 +1232,7 @@ export function CallRoom({
           opts.filmstrip && "h-full w-[9.5rem] shrink-0 snap-center sm:w-44",
           // Stage keeps a true 16:9 box: portrait derives height from width,
           // landscape derives width from height — never stretched.
-          opts.stage && "aspect-video h-auto max-h-full w-full sm:h-full sm:w-auto",
+          opts.stage && "aspect-video h-auto max-h-full w-full max-w-full sm:h-full sm:w-auto",
           !opts.filmstrip && !opts.stage && gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center",
         )}
       />
