@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import VideoCallRoom from '@/components/VideoCallRoom';
+import { CallRoom } from '@/components/call-room/CallRoom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -59,7 +59,7 @@ const JoinCall = () => {
   const [guestValidateResult, setGuestValidateResult] = useState<any>(null);
   const [guestName, setGuestName] = useState('');
   const [guestJoining, setGuestJoining] = useState(false);
-  const [guestInfo, setGuestInfo] = useState<{ guestId: string; guestName: string; call: any } | null>(null);
+  const [guestInfo, setGuestInfo] = useState<{ guestId: string; guestName: string; call: any; calling?: any } | null>(null);
 
   const [password, setPassword] = useState('');
   const [passwordError, setPasswordError] = useState('');
@@ -129,7 +129,7 @@ const JoinCall = () => {
         localStorage.setItem('userName', result.guestName);
         (window as any).__mfGuestRestore = { prevUserId, prevUserName };
         setSocketAuth({ guestToken: result.guestToken });
-        setGuestInfo({ guestId: result.guestId, guestName: result.guestName, call: result.call });
+        setGuestInfo({ guestId: result.guestId, guestName: result.guestName, call: result.call, calling: (result as any).calling });
         setCall(result.call as any);
         // Always mount the VideoCallRoom: it renders its own waiting-room
         // screen AND emits `waiting-room:request` so the host actually gets
@@ -551,7 +551,7 @@ const JoinCall = () => {
   if (isGuest && isJoined && guestInfo) {
     return (
       <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <VideoCallRoom
+        <CallRoom
           roomId={guestInfo.call?.callCode || callCode}
           callId={guestInfo.call?.id}
           callType={(guestInfo.call?.type as 'audio' | 'video') || 'video'}
@@ -559,6 +559,7 @@ const JoinCall = () => {
           userName={guestInfo.guestName}
           isHost={false}
           waitingRoomEnabled={guestInfo.call?.waitingRoomEnabled}
+          calling={(guestInfo as any).calling || null}
           inviteDetails={{
             code: guestInfo.call?.callCode || callCode,
             password: null,
@@ -741,7 +742,7 @@ const JoinCall = () => {
   if (isJoined && effectiveCall) {
     return (
       <div className="fixed inset-0 bg-black z-50 overflow-hidden">
-        <VideoCallRoom
+        <CallRoom
           roomId={effectiveCall.callCode}
           callId={effectiveCall.id}
           callType={effectiveCall.type}
@@ -749,6 +750,7 @@ const JoinCall = () => {
           userName={localStorage.getItem('userName') || 'User'}
           isHost={effectiveIsHost}
           waitingRoomEnabled={effectiveCall.waitingRoomEnabled}
+          calling={(call as any)?.calling || (effectiveCall as any)?.calling || null}
           inviteDetails={{
             code: effectiveCall.callCode,
             password: effectiveIsHost ? (effectiveCall as any).password || null : null,

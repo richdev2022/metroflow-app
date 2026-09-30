@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import Layout from "@/components/layout";
-import VideoCallRoom from "@/components/VideoCallRoom";
+import { CallRoom } from "@/components/call-room/CallRoom";
 import TimezoneDropdown from "@/components/TimezoneDropdown";
 import {
   Card,
@@ -1164,13 +1164,15 @@ export default function Meetings() {
           >
             <DialogTitle className="sr-only">Meeting Room: {selectedMeeting.title}</DialogTitle>
             <div className="min-h-0 flex-1 h-full">
-              <VideoCallRoom
+              <CallRoom
                 roomId={selectedMeeting.meetingCode}
                 meetingId={selectedMeeting.id}
                 onLeave={() => handleLeaveMeeting(selectedMeeting)}
                 userName={localStorage.getItem("userName") || "User"}
                 isHost={isCurrentUserHost(selectedMeeting)}
                 waitingRoomEnabled={selectedMeeting.waitingRoomEnabled}
+                calling={(selectedMeeting as any)?.calling || null}
+                title={selectedMeeting.title}
                 inviteDetails={{
                   title: selectedMeeting.title,
                   code: selectedMeeting.meetingCode,
