@@ -66,6 +66,8 @@ import {
 
 const METRIC_AI_LOGO = "/icon-192.png"; // square brand mark — the wide wordmark gets cropped to blank inside rounded-full avatar circles
 const ASK_PANEL_ANIMATION = "ask-widget-in";
+// Persisted position of the draggable floating bubble (viewport coords).
+const ASK_BUBBLE_POS_KEY = "metricorex:ask-bubble-pos";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 type WidgetEntry =
@@ -77,14 +79,14 @@ export default function AskMetricAiWidget() {
   const location = useLocation();
   const { toast } = useToast();
 
-  // Hidden on the fullscreen call-room routes (JoinMeeting / JoinCall render
-  // VideoCallRoom edge-to-edge there; the Meetings/Calls list pages open the
-  // room in a z-50 dialog that covers the widget anyway) and on the MetricAi
-  // chat page itself — the floating avatar sat exactly on top of the send
-  // button on mobile, blocking the send CTA.
+  // Hidden ONLY on the fullscreen call-room routes (JoinMeeting / JoinCall
+  // render the call room edge-to-edge there; the Meetings/Calls list pages
+  // open the room in a z-50 dialog that covers the widget anyway). The
+  // MetricAi page itself no longer hides the bubble — the bubble is
+  // DRAGGABLE now, so the user moves it away from the send button instead of
+  // losing it entirely on that page.
   const onCallRoomRoute =
-    /^\/(meetings|calls)\/[^/]+/i.test(location.pathname || "") ||
-    /^\/metric-ai\/?$/i.test(location.pathname || "");
+    /^\/(meetings|calls)\/[^/]+/i.test(location.pathname || "");
 
   const [open, setOpen] = useState(false);
   const [mode, setMode] = useState<"ai" | "support">("ai");
@@ -385,6 +387,110 @@ export default function AskMetricAiWidget() {
     el.style.height = `${Math.min(el.scrollHeight, 110)}px`;
   }, []);
 
+  // ---- Draggable floating bubble -------------------------------------------
+  // The bubble used to be pinned bottom-right, where it sat exactly on top of
+  // the MetricAi page's send button on small screens. It is now draggable:
+  // press + move repositions it anywhere in the viewport and the position is
+  // persisted in localStorage. A press WITHOUT movement still opens the
+  // panel, and keyboard users keep Enter/Space activation.
+  const bubblePosRef = useRef<{ x: number; y: number } | null>(null);
+  const [bubblePos, setBubblePos] = useState<{ x: number; y: number } | null>(null);
+  const dragStateRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    origX: number;
+    origY: number;
+    moved: boolean;
+  } | null>(null);
+
+  const clampBubblePos = useCallback((x: number, y: number) => {
+    // Keep the 56px bubble fully inside the viewport with an 8px margin.
+    const size = 56;
+    const margin = 8;
+    const maxX = Math.max(margin, window.innerWidth - size - margin);
+    const maxY = Math.max(margin, window.innerHeight - size - margin);
+    return {
+      x: Math.min(Math.max(x, margin), maxX),
+      y: Math.min(Math.max(y, margin), maxY),
+    };
+  }, []);
+
+  // Restore the persisted position on mount (re-clamped for orientation /
+  // window-size changes since the last visit).
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(ASK_BUBBLE_POS_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw);
+      if (typeof parsed?.x === "number" && typeof parsed?.y === "number") {
+        const clamped = clampBubblePos(parsed.x, parsed.y);
+        bubblePosRef.current = clamped;
+        setBubblePos(clamped);
+      }
+    } catch {
+      /* corrupted position — fall back to the default corner */
+    }
+  }, [clampBubblePos]);
+
+  const handleBubblePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      // Ignore multi-touch: only the first pointer drags.
+      if (dragStateRef.current) return;
+      try {
+        e.currentTarget.setPointerCapture(e.pointerId);
+      } catch {
+        /* pointer capture unsupported — drag still works via move events */
+      }
+      const rect = e.currentTarget.getBoundingClientRect();
+      dragStateRef.current = {
+        pointerId: e.pointerId,
+        startX: e.clientX,
+        startY: e.clientY,
+        origX: rect.left,
+        origY: rect.top,
+        moved: false,
+      };
+    },
+    [],
+  );
+
+  const handleBubblePointerMove = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      const st = dragStateRef.current;
+      if (!st || st.pointerId !== e.pointerId) return;
+      const dx = e.clientX - st.startX;
+      const dy = e.clientY - st.startY;
+      if (!st.moved && Math.hypot(dx, dy) < 6) return; // dead-zone → still a tap
+      st.moved = true;
+      const next = clampBubblePos(st.origX + dx, st.origY + dy);
+      bubblePosRef.current = next;
+      setBubblePos(next);
+    },
+    [clampBubblePos],
+  );
+
+  const handleBubblePointerUp = useCallback(
+    (e: React.PointerEvent<HTMLButtonElement>) => {
+      const st = dragStateRef.current;
+      dragStateRef.current = null;
+      if (!st || st.pointerId !== e.pointerId) return;
+      if (st.moved) {
+        const pos = bubblePosRef.current;
+        if (pos) {
+          try {
+            localStorage.setItem(ASK_BUBBLE_POS_KEY, JSON.stringify(pos));
+          } catch {
+            /* storage unavailable — position just won't persist */
+          }
+        }
+      } else {
+        void handleOpen(); // press without movement = open the panel
+      }
+    },
+    [handleOpen],
+  );
+
   if (onCallRoomRoute) return null;
 
   // --------------------------------------------------------------------------
@@ -392,23 +498,44 @@ export default function AskMetricAiWidget() {
   // --------------------------------------------------------------------------
   return (
     <>
-      {/* Floating action button (z-40 — below shadcn modals at z-50) */}
+      {/* Floating action button (z-40 — below shadcn modals at z-50).
+          Draggable: default bottom-right until the user moves it, then the
+          persisted position wins. touch-none + pointer capture make the drag
+          work with mouse, touch and pen. */}
       {!open && (
-        <div className="fixed bottom-5 right-5 z-40">
+        <div
+          className="fixed z-40 touch-none select-none"
+          style={
+            bubblePos
+              ? { left: bubblePos.x, top: bubblePos.y }
+              : { right: 20, bottom: 20 }
+          }
+        >
           <TooltipProvider delayDuration={250}>
             <Tooltip>
               <TooltipTrigger asChild>
                 <button
                   type="button"
-                  onClick={() => void handleOpen()}
                   aria-label="Ask MetricAi"
-                  className="metric-ai-glow flex h-14 w-14 items-center justify-center rounded-full bg-gradient-to-br from-[#4F46E5] to-[#2563EB] shadow-lg transition-transform hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 focus-visible:ring-offset-2"
+                  title="Ask MetricAi — drag to move"
+                  onPointerDown={handleBubblePointerDown}
+                  onPointerMove={handleBubblePointerMove}
+                  onPointerUp={handleBubblePointerUp}
+                  onPointerCancel={handleBubblePointerUp}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault();
+                      void handleOpen();
+                    }
+                  }}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="metric-ai-glow flex h-14 w-14 cursor-grab items-center justify-center rounded-full bg-gradient-to-br from-[#4F46E5] to-[#2563EB] shadow-lg transition-transform hover:scale-105 active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500/60 focus-visible:ring-offset-2"
                 >
                   <img src={METRIC_AI_LOGO} alt="" className="h-9 w-9 rounded-full object-cover" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="left" sideOffset={10}>
-                Ask MetricAi
+                Ask MetricAi — drag to move
               </TooltipContent>
             </Tooltip>
           </TooltipProvider>
