@@ -369,9 +369,10 @@ export function CaptionsOverlay({
       aria-live="polite"
       className={cn(
         "pointer-events-none absolute inset-x-0 z-20 flex justify-center px-3",
-        // Bottom-center, directly above the control bar; safe-area is handled
-        // by the footer below us — keep a tight gap instead.
-        "bottom-2.5 phone-landscape:bottom-1",
+        // Bottom-center, above the control bar (the overlay lives inside the
+        // stage container, so it can never cover the dock itself). Extra
+        // clearance on phones where the dock wraps to multiple rows.
+        "bottom-5 phone-landscape:bottom-2 sm:bottom-2.5",
         className,
       )}
     >

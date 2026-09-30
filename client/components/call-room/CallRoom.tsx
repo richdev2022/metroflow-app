@@ -318,7 +318,17 @@ export function CallRoom({
         }
       }),
       client.on("active-speaker", ({ id }) => setActiveSpeakerId(id || null)),
-      client.on("media:error", (e) => setMediaBlocked(e.message)),
+      client.on("media:error", (e) => {
+        const msg = String(e?.message || "");
+        // Screen-share failures are NOT a mic/cam permission problem — the
+        // "Enable" banner (mic/cam recovery) made no sense for them and
+        // stacked on top of the control dock on mobile. Toast instead.
+        if (/screen|getDisplayMedia/i.test(msg)) {
+          toast({ title: "Screen share unavailable", description: msg });
+          return;
+        }
+        setMediaBlocked(e.message);
+      }),
       client.on("error", (e) => {
         setConnectionError(e.message);
         toast({ title: "Connection notice", description: e.message });
@@ -837,6 +847,19 @@ export function CallRoom({
   }, [callType, mediaState.audioEnabled, mediaState.videoEnabled, toast]);
 
   const toggleScreenShare = useCallback(async () => {
+    // Mobile browsers (Android/iOS Chrome, Safari) don't expose getDisplayMedia
+    // — a friendly toast beats a dead "Enable" banner stacking on the dock.
+    const supported =
+      typeof navigator !== "undefined" &&
+      !!navigator.mediaDevices &&
+      typeof (navigator.mediaDevices as any).getDisplayMedia === "function";
+    if (!supported) {
+      toast({
+        title: "Screen share unavailable",
+        description: "Screen sharing is not supported on this device.",
+      });
+      return;
+    }
     try {
       if (mediaState.screenSharing) {
         await clientRef.current?.stopScreenShare();
@@ -846,7 +869,7 @@ export function CallRoom({
     } catch {
       // media:error event already surfaced details
     }
-  }, [mediaState.screenSharing]);
+  }, [mediaState.screenSharing, toast]);
 
   const switchCamera = useCallback(() => {
     clientRef.current?.switchCamera().catch(() => {});
@@ -1524,6 +1547,11 @@ export function CallRoom({
           captionsSupported={captionsSupported}
           unreadChat={unreadChat}
           audioOnlyRoom={callType === "audio"}
+          screenShareSupported={
+            typeof navigator !== "undefined" &&
+            !!navigator.mediaDevices &&
+            typeof (navigator.mediaDevices as any).getDisplayMedia === "function"
+          }
           showSwitchCamera={!!mediaState.videoEnabled && !isGuest}
           speakerDevices={audioOutputs}
           selectedSinkId={selectedSinkId}

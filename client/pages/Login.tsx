@@ -61,7 +61,10 @@ export default function Login() {
           localStorage.setItem("token", data.token);
           localStorage.setItem("userId", data.userId || "");
           localStorage.setItem("businessId", data.businessId || "");
-          localStorage.setItem("userName", loginData.email);
+          // Greet the user by NAME — never by their email address. The
+          // backend now returns the profile name on every login method;
+          // fall back to the email only if the profile has no name yet.
+          localStorage.setItem("userName", data.name?.trim() || loginData.email.trim());
           setSuccessMessage("Login successful! Redirecting...");
           setTimeout(() => navigate("/dashboard"), 1200);
         } else {
@@ -98,7 +101,7 @@ export default function Login() {
         localStorage.setItem("token", data.token);
         localStorage.setItem("userId", data.userId || "");
         localStorage.setItem("businessId", data.businessId || "");
-        localStorage.setItem("userName", otpData.email);
+        localStorage.setItem("userName", data.name?.trim() || otpData.email.trim());
         setSuccessMessage("Verified! Redirecting...");
         setTimeout(() => navigate("/dashboard"), 1200);
       } else {
