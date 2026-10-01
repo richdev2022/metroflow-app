@@ -405,6 +405,9 @@ export function CallRoom({
       `${prefix}:join`,
       {
         roomId: effectiveRoomId,
+        // meeting:join historically read `data.meetingId`; send both keys so
+        // the server resolves regardless of which one it keys on.
+        meetingId: isMeeting ? effectiveRoomId : undefined,
         userId: localUserId,
         userName: displayName,
         isHost,
@@ -742,7 +745,7 @@ export function CallRoom({
       try {
         const socket = getSingletonSocket();
         if (socket && effectiveRoomId && joinAckedRef.current) {
-          socket.emit(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
+          socket.emit(`${prefix}:leave`, { roomId: effectiveRoomId, meetingId: isMeeting ? effectiveRoomId : undefined, userId: localUserId, userName: displayName });
         }
       } catch {
         // ignore
@@ -772,7 +775,7 @@ export function CallRoom({
       stopRecording(false);
       reportLocalStream(null);
       if (effectiveRoomId && joinAckedRef.current) {
-        emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
+        emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, meetingId: isMeeting ? effectiveRoomId : undefined, userId: localUserId, userName: displayName });
       }
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -892,7 +895,7 @@ export function CallRoom({
     // 1. Authoritative media teardown (tracks, room, elements, timers).
     cleanupCallMedia();
     // 2. Existing socket leave event (plus host end).
-    emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, userId: localUserId, userName: displayName });
+    emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, meetingId: isMeeting ? effectiveRoomId : undefined, userId: localUserId, userName: displayName });
     if (isHost) {
       emitRoom(`${prefix}:end`, isMeeting ? { meetingId: effectiveRoomId } : { roomId: effectiveRoomId });
     }
@@ -1308,6 +1311,14 @@ export function CallRoom({
               setConnectionError("");
               teardownMediaClient();
               mediaRetryRef.current = 0;
+              // If the app-level socket join never acked, a media-only
+              // reconnect would enter the room WITHOUT presence (no
+              // participants/chat). Redo the full join instead — the join
+              // effect re-fires on the phase change below.
+              if (!joinAckedRef.current) {
+                setPhase("joining");
+                return;
+              }
               const fresh = await refreshCredentials();
               const creds = fresh || credentialsRef.current;
               if (!creds) {
@@ -1566,6 +1577,8 @@ export function CallRoom({
           }}
           onToggleParticipants={() => setParticipantsOpen((v) => !v)}
           onToggleCaptions={toggleCaptions}
+          recordingActive={recordingActive}
+          onToggleRecording={isHost && !isGuest ? toggleRecording : undefined}
           onMore={() => setInfoOpen(true)}
           onMinimize={minimizeCall}
           onSwitchCamera={switchCamera}

@@ -92,6 +92,7 @@ export default function Meetings() {
     error: meetingsError,
   } = useMeetings();
   const createMeeting = useCreateMeeting();
+  const [instantStarting, setInstantStarting] = useState(false);
   const updateMeeting = useUpdateMeeting();
   const deleteMeeting = useDeleteMeeting();
   const joinMeeting = useJoinMeeting();
@@ -153,6 +154,35 @@ export default function Meetings() {
           description: getApiMessage(err, "Failed to fetch team members"),
         });
       });
+  };
+
+  // Google-style INSTANT meeting: create (isInstant=true) then jump straight
+  // into the room so the host can invite people from inside the call.
+  const handleStartInstantMeeting = async () => {
+    setInstantStarting(true);
+    try {
+      const created = await createMeeting.mutateAsync({
+        title: `${localStorage.getItem("userName") || "Instant"}'s meeting`,
+        isInstant: true,
+        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+        maxParticipants: 100,
+        waitingRoomEnabled: false,
+        recordingEnabled: false,
+        screenSharingEnabled: true,
+        attendeeIds: [],
+      });
+      if (created) {
+        handleJoinMeeting(created);
+      }
+    } catch (err) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: getApiMessage(err, "Failed to start an instant meeting"),
+      });
+    } finally {
+      setInstantStarting(false);
+    }
   };
 
   const handleCreateMeeting = async () => {
@@ -573,7 +603,21 @@ export default function Meetings() {
               Schedule and manage your team meetings
             </p>
           </div>
-          <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
+          <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+            <Button
+              variant="outline"
+              className="border-blue-500/40 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
+              disabled={instantStarting}
+              onClick={handleStartInstantMeeting}
+            >
+              {instantStarting ? (
+                <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              ) : (
+                <Video className="h-4 w-4 mr-2" />
+              )}
+              Start instant meeting
+            </Button>
+            <Dialog open={isCreateDialogOpen} onOpenChange={setIsCreateDialogOpen}>
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-2" />
@@ -744,6 +788,7 @@ export default function Meetings() {
               </DialogFooter>
             </DialogContent>
           </Dialog>
+          </div>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
