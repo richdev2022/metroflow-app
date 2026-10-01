@@ -236,7 +236,10 @@ export const AddParticipantsModal: React.FC<AddParticipantsModalProps> = ({
 
   return (
     <Dialog open={open} onOpenChange={handleClose}>
-      <DialogContent className="sm:max-w-[425px] max-h-[90vh] overflow-y-auto">
+      <DialogContent
+        overlayClassName="z-[96]"
+        className="z-[96] sm:max-w-[425px] max-h-[90vh] overflow-y-auto"
+      >
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <UserPlus className="h-5 w-5" />
