@@ -14,6 +14,8 @@ interface StatCardProps {
   deltaTone?: DeltaTone;
   /** Optional footer content rendered under a subtle divider */
   footer?: React.ReactNode;
+  /** Native hover description shown on mouse-over (explains the metric). */
+  tooltip?: string;
   className?: string;
 }
 
@@ -35,10 +37,12 @@ export function StatCard({
   delta,
   deltaTone = "neutral",
   footer,
+  tooltip,
   className,
 }: StatCardProps) {
   return (
     <div
+      title={tooltip}
       className={cn(
         "group relative overflow-hidden rounded-2xl bg-card p-5 shadow-sm ring-1 ring-border",
         "transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md",
