@@ -267,6 +267,8 @@ export interface WalletInfo {
   success: boolean;
   user_wallet?: Wallet;
   business_wallet?: Wallet;
+  /** Owner/admin only — invited members must never see the business wallet. */
+  canManageBusinessWallet?: boolean;
 }
 
 export interface CreateVirtualAccountInput {
@@ -1017,8 +1019,9 @@ export interface Meeting {
 export interface CreateMeetingInput {
   title: string;
   description?: string;
-  startTime: string;
-  endTime: string;
+  /** Optional for instant meetings (backend derives start/end from now). */
+  startTime?: string;
+  endTime?: string;
   timezone: string;
   isInstant: boolean;
   password?: string;
