@@ -374,11 +374,15 @@ export function CallRoom({
       client.on("active-speaker", ({ id }) => setActiveSpeakerId(id || null)),
       client.on("media:error", (e) => {
         const msg = String(e?.message || "");
-        // Screen-share failures are NOT a mic/cam permission problem — the
-        // "Enable" banner (mic/cam recovery) made no sense for them and
-        // stacked on top of the control dock on mobile. Toast instead.
+        // Screen-share and camera-switch failures are NOT a mic/cam
+        // permission problem — the "Enable" banner (mic/cam recovery) makes
+        // no sense for them. Toast instead.
         if (/screen|getDisplayMedia/i.test(msg)) {
           toast({ title: "Screen share unavailable", description: msg });
+          return;
+        }
+        if (/camera switch|other camera/i.test(msg)) {
+          toast({ title: "Camera", description: msg });
           return;
         }
         setMediaBlocked(e.message);
@@ -948,8 +952,13 @@ export function CallRoom({
   }, [mediaState.screenSharing, toast]);
 
   const switchCamera = useCallback(() => {
-    clientRef.current?.switchCamera().catch(() => {});
-  }, []);
+    clientRef.current?.switchCamera().catch(() => {
+      toast({
+        title: "Camera switch failed",
+        description: "Could not switch the camera. Try turning it off and on again.",
+      });
+    });
+  }, [toast]);
 
   const sendChat = useCallback((text: string) => {
     emitRoom(`meeting-chat:message`, {
