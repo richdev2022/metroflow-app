@@ -324,7 +324,7 @@ export interface MeetingReportData {
     endTime?: string | null;
     meetingCode?: string | null;
   } | null;
-  attendees?: Array<{ userId?: string; name?: string | null; email?: string | null }> | null;
+  attendees?: Array<{ userId?: string; name?: string | null; email?: string | null; avatarUrl?: string | null }> | null;
   notes?: {
     summary?: string | null;
     keyPoints?: string[] | string | null;
@@ -333,7 +333,7 @@ export interface MeetingReportData {
     importantTimestamps?: Array<{ label?: string; timestamp?: string }> | string[] | null;
   } | null;
   transcripts?: Array<{ id?: string; speakerName?: string | null; text: string; createdAt?: string | null }> | null;
-  recordings?: Array<{ storageUrl?: string; duration?: number | null }> | null;
+  recordings?: Array<{ id?: string; storageUrl?: string; duration?: number | null }> | null;
 }
 
 function toStringList(value: string[] | string | null | undefined): string[] {

@@ -69,16 +69,6 @@ interface TranscriptEntry {
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-const STATUS_STYLES: Record<string, string> = {
-  completed: "bg-emerald-500/15 text-emerald-600 dark:text-emerald-400 border-emerald-500/30",
-  ongoing: "bg-blue-500/15 text-blue-600 dark:text-blue-400 border-blue-500/30",
-  ringing: "bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/30",
-  missed: "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30",
-  cancelled: "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30",
-  declined: "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30",
-  "no-answer": "bg-red-500/15 text-red-600 dark:text-red-400 border-red-500/30",
-};
-
 function initialsOf(name?: string | null): string {
   const trimmed = (name || "?").trim();
   if (!trimmed) return "?";
@@ -183,49 +173,61 @@ export default function CallDetail() {
   return (
     <Layout>
       <div className="mx-auto max-w-4xl space-y-6 px-4 py-6">
-        {/* Header */}
-        <div className="flex items-start justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0" onClick={() => window.history.back()} aria-label="Go back">
-              <ArrowLeft className="h-5 w-5" />
-            </Button>
-            <div className="min-w-0">
-              <h1 className="flex items-center gap-2 text-xl sm:text-2xl font-bold">
-                {detail?.call?.type === "video" ? (
-                  <Video className="h-5 w-5 shrink-0" />
-                ) : (
-                  <Phone className="h-5 w-5 shrink-0" />
-                )}
-                <span className="truncate">{callTypeLabel}</span>
-              </h1>
-              <p className="text-xs text-muted-foreground mt-0.5 truncate">
-                {detail?.call?.callCode ? `Call code ${detail.call.callCode} · ` : ""}
-                {fmtDateTime(detail?.call?.startedAt)}
-              </p>
+        {/* Gradient hero */}
+        <Card className="overflow-hidden border-0 bg-gradient-to-br from-slate-900 via-blue-900 to-indigo-900 text-white shadow-xl">
+          <CardContent className="space-y-5 py-7">
+            <div className="flex items-start justify-between gap-4">
+              <div className="flex items-center gap-3 min-w-0">
+                <Button variant="ghost" size="icon" className="h-9 w-9 shrink-0 text-white hover:bg-white/15" onClick={() => window.history.back()} aria-label="Go back">
+                  <ArrowLeft className="h-5 w-5" />
+                </Button>
+                <div className="min-w-0">
+                  <h1 className="flex items-center gap-2 text-xl font-bold sm:text-2xl">
+                    {detail?.call?.type === "video" ? <Video className="h-5 w-5 shrink-0" /> : <Phone className="h-5 w-5 shrink-0" />}
+                    <span className="truncate">{callTypeLabel}</span>
+                  </h1>
+                  <p className="mt-0.5 truncate text-xs text-white/70">
+                    {detail?.call?.callCode ? `Call code ${detail.call.callCode} · ` : ""}
+                    {fmtDateTime(detail?.call?.startedAt)}
+                  </p>
+                </div>
+              </div>
+              <Button
+                size="sm"
+                className="shrink-0 rounded-xl bg-white text-blue-900 hover:bg-white/90"
+                disabled={!detail || downloading}
+                onClick={handleDownloadReport}
+              >
+                {downloading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
+                Report
+              </Button>
             </div>
-          </div>
-          <div className="flex flex-wrap items-center gap-2 justify-end shrink-0">
-            {detail?.call?.status && (
-              <Badge variant="outline" className={cn("border capitalize", STATUS_STYLES[detail.call.status] || "")}>
-                {detail.call.status}
-              </Badge>
-            )}
-            {detail?.call?.durationSeconds ? (
-              <Badge variant="outline" className="border-border font-mono">
-                {formatDuration(detail.call.durationSeconds)}
-              </Badge>
-            ) : null}
-            <Button
-              size="sm"
-              className="rounded-xl"
-              disabled={!detail || downloading}
-              onClick={handleDownloadReport}
-            >
-              {downloading ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Download className="h-4 w-4 mr-2" />}
-              Download report
-            </Button>
-          </div>
-        </div>
+            {/* Stat tiles */}
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+              <div className="rounded-xl bg-white/10 px-3 py-2.5 backdrop-blur">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">Status</p>
+                <p className="mt-0.5 flex items-center gap-1.5 text-sm font-semibold capitalize">
+                  <span className={cn("inline-block h-2 w-2 rounded-full", detail?.call?.status === "completed" ? "bg-emerald-400" : detail?.call?.status === "ongoing" ? "bg-blue-300" : "bg-amber-300")} />
+                  {detail?.call?.status || "—"}
+                </p>
+              </div>
+              <div className="rounded-xl bg-white/10 px-3 py-2.5 backdrop-blur">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">Duration</p>
+                <p className="mt-0.5 text-sm font-semibold font-mono">
+                  {detail?.call?.durationSeconds ? formatDuration(detail.call.durationSeconds) : "—"}
+                </p>
+              </div>
+              <div className="rounded-xl bg-white/10 px-3 py-2.5 backdrop-blur">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">Participants</p>
+                <p className="mt-0.5 text-sm font-semibold">{detail?.participants?.length ?? 0}</p>
+              </div>
+              <div className="rounded-xl bg-white/10 px-3 py-2.5 backdrop-blur">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-white/60">Recording</p>
+                <p className="mt-0.5 text-sm font-semibold">{detail?.recording ? (detail.recording.duration ? `${Math.round(detail.recording.duration / 60)} min` : "Saved") : "None"}</p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
 
         {loading && (
           <Card>

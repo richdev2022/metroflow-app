@@ -464,13 +464,15 @@ export default function Meetings() {
     async (meeting: Meeting) => {
       setIsProcessing(true);
       try {
-        const updatedMeeting = await leaveMeeting.mutateAsync(meeting.id);
-        setSelectedMeeting(updatedMeeting);
+        await leaveMeeting.mutateAsync(meeting.id);
         setIsMeetingRoomOpen(false);
         toast({
           title: "Left Meeting",
           description: "You have left the meeting",
         });
+        // Post-meeting completion screen: details, AI summary, transcript,
+        // recordings and the downloadable report in one place.
+        navigate(`/meetings/complete/${meeting.id}`);
       } catch (err) {
         toast({
           variant: "destructive",
@@ -481,7 +483,7 @@ export default function Meetings() {
         setIsProcessing(false);
       }
     },
-    [leaveMeeting, toast]
+    [leaveMeeting, navigate, toast]
   );
 
   const transformAttendeesToInitialParticipants = (meeting: Meeting) =>
