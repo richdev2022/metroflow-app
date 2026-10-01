@@ -4,6 +4,10 @@ import { triggerUpgradePrompt, isPlanUpgradeError } from "@/components/UpgradePr
 
 export const api = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
+  // Hard cap on every request — without it a hung/slow backend response left
+  // pages spinning "Loading…" forever (e.g. call/meeting detail pages). Long
+  // operations (uploads, AI generation) override this per request.
+  timeout: 45_000,
 });
 
 const IS_DEV = import.meta.env.DEV;
