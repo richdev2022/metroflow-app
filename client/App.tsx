@@ -33,6 +33,7 @@ import Board from "./pages/Board";
 import NotFound from "./pages/NotFound";
 import Meetings from "./pages/Meetings";
 import CalendarPage from "./pages/Calendar";
+import MeetingComplete from "./pages/MeetingComplete";
 import Chat from "./pages/Chat";
 import MetricAiChat from "./pages/MetricAiChat";
 import Calls from "./pages/Calls";
@@ -215,6 +216,10 @@ const App = () => (
             <Route
               path="/meetings/detail/:meetingId"
               element={<TokenProtectedRoute element={<MeetingDetail />} />}
+            />
+            <Route
+              path="/meetings/complete/:meetingId"
+              element={<TokenProtectedRoute element={<MeetingComplete />} />}
             />
             <Route
               path="/calls/:callCode"
