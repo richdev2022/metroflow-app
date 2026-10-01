@@ -394,7 +394,9 @@ export class LiveKitCallingClient implements CallingClient {
         // Always surface a fresh MediaStream wrapper — a re-publish after
         // unpublish must never be masked by a stale stream object.
         const track = pub.videoTrack?.mediaStreamTrack;
-        this.localVideoStream = track ? new MediaStream([track]) : pub.videoTrack?.mediaStream ?? null;
+        this.localVideoStream = track
+          ? this.buildLocalPreviewStream(track)
+          : pub.videoTrack?.mediaStream ?? null;
         this.localState.videoEnabled = !pub.isMuted;
         this.camAvailable = true;
         this.emitter.emit("local:stream", this.localVideoStream);
@@ -405,6 +407,13 @@ export class LiveKitCallingClient implements CallingClient {
       } else if (pub.source === Track.Source.Microphone) {
         this.localState.audioEnabled = !pub.isMuted;
         this.micAvailable = true;
+        // Mic published AFTER the camera — fold it into the local stream so
+        // composite recordings capture the host's voice from the start.
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
+        if (this.localVideoStream && camTrack && camTrack.readyState === "live") {
+          this.localVideoStream = this.buildLocalPreviewStream(camTrack);
+          this.emitter.emit("local:stream", this.localVideoStream);
+        }
       }
       this.emitter.emit("local:state", { ...this.localState });
     });
@@ -530,6 +539,23 @@ export class LiveKitCallingClient implements CallingClient {
     return this.localScreenStream;
   }
 
+  /**
+   * Local preview stream = camera video + local microphone (when published).
+   * LiveKit publishes audio and video as separate tracks; without folding the
+   * mic in, client-side composite recordings (the recorder consumes the
+   * emitted `local:stream`) captured everyone EXCEPT the host's own voice.
+   * The local preview <video> is muted, so the extra audio track cannot echo.
+   */
+  private buildLocalPreviewStream(videoTrack: MediaStreamTrack): MediaStream {
+    const stream = new MediaStream([videoTrack]);
+    const micPub = this.room.localParticipant?.getTrackPublication(Track.Source.Microphone);
+    const micTrack = (micPub?.audioTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    if (micTrack && micTrack.readyState === "live") {
+      stream.addTrack(micTrack);
+    }
+    return stream;
+  }
+
   async setAudioEnabled(enabled: boolean): Promise<void> {
     const lp = this.room.localParticipant;
     try {
@@ -574,7 +600,7 @@ export class LiveKitCallingClient implements CallingClient {
       if (videoTrack?.mediaStreamTrack) {
         // FRESH MediaStream (same underlying track) → tiles re-attach the
         // <video> element and call play() → deterministic resume on iOS.
-        this.localVideoStream = new MediaStream([videoTrack.mediaStreamTrack]);
+        this.localVideoStream = this.buildLocalPreviewStream(videoTrack.mediaStreamTrack);
         this.emitter.emit("local:stream", this.localVideoStream);
       }
     }
@@ -618,7 +644,7 @@ export class LiveKitCallingClient implements CallingClient {
       // preview stream from the LIVE track so the flip is visible right away.
       const freshTrack = lp.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
       if (freshTrack) {
-        this.localVideoStream = new MediaStream([freshTrack]);
+        this.localVideoStream = this.buildLocalPreviewStream(freshTrack);
         this.emitter.emit("local:stream", this.localVideoStream);
       }
     } catch (err) {
