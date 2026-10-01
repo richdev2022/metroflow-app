@@ -64,6 +64,16 @@ import {
   UserCheck,
   PencilLine,
   Reply,
+  Forward,
+  CheckSquare,
+  Square,
+  Languages,
+  Bold,
+  Italic,
+  Strikethrough,
+  Code2,
+  Download,
+  ListChecks,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -124,8 +134,12 @@ import {
   isSoloEmojiMessage,
   guessMediaKind,
   parseCallLogContent,
+  downloadChatAttachment,
 } from "@/lib/chat-media";
 import type { ChatCallLogMeta, GifObject, MessageReplySnapshot } from "@shared/api";
+import { renderStyledText, wrapSelectionWithMarker } from "@/components/chat/styled-text";
+import { MarkdownRenderer } from "@/components/markdown-renderer";
+import { getMetricAiStatus } from "@/lib/metric-ai";
 
 // ==========================================
 // Types & Interfaces
@@ -175,6 +189,8 @@ export type ChatMessage = {
   /** Quoted-parent snapshot (replies). */
   replyTo?: MessageReplySnapshot | null;
   reply_to?: MessageReplySnapshot | null;
+ /** WhatsApp-style "Forwarded" label (multi-select forward flow). */
+  forwarded?: boolean | null;
   /** Ephemeral system rows ("X left the group") — socket-driven, not persisted. */
   system?: boolean;
   /** Local blob URL for optimistic image/video previews while uploading. */
@@ -529,6 +545,10 @@ const MessageBubble = ({
   onQuoteClick,
   onOpenMenu,
   onReplySwipe,
+  translatedText,
+  selectionActive,
+  selected,
+  onToggleSelect,
 }: {
   message: ChatMessage;
   isOwn: boolean;
@@ -548,6 +568,14 @@ const MessageBubble = ({
   onOpenMenu?: (message: ChatMessage, x: number, y: number) => void;
   /** Swipe-to-reply (touch). */
   onReplySwipe?: (message: ChatMessage) => void;
+  /** MetricAi translation shown under the message body. */
+  translatedText?: string;
+  /** Multi-select mode active (bubble click toggles selection). */
+  selectionActive?: boolean;
+  /** This bubble is currently ticked in selection mode. */
+  selected?: boolean;
+  /** Toggle this message's selected state. */
+  onToggleSelect?: (id: string) => void;
 }) => {
   const isFailed = message.status === "failed";
   const isSending = message.status === "sending";
@@ -668,7 +696,15 @@ const MessageBubble = ({
   // ------------------------------------------------------------
   if (transparent) {
     return (
-      <div className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}>
+      <div
+        className={cn(
+          "flex items-end gap-2 group",
+          isOwn ? "justify-end" : "justify-start",
+          isGrouped ? "mt-0.5" : "mt-2",
+          selectionActive && "cursor-pointer"
+        )}
+        onClick={selectionActive && onToggleSelect ? (e) => { e.stopPropagation(); onToggleSelect(message.id); } : undefined}
+      >
         {!isOwn && (
           <div className="w-7 shrink-0 flex items-end">
             {!isGrouped && (
@@ -714,6 +750,17 @@ const MessageBubble = ({
           )}
           <div className="mt-0.5 w-full">{timestampRow}</div>
         </div>
+        {selectionActive && (
+          <span
+            className={cn(
+              "mb-1 flex h-5 w-5 shrink-0 items-center justify-center rounded-full border transition-colors",
+              selected ? "border-blue-500 bg-blue-500 text-white" : "border-border bg-background/80"
+            )}
+            aria-hidden
+          >
+            {selected && <Check className="h-3 w-3" />}
+          </span>
+        )}
       </div>
     );
   }
@@ -734,7 +781,10 @@ const MessageBubble = ({
         ),
     isFailed && "border-red-500/60 bg-red-50 dark:bg-red-950/30",
     // Quote-jump flash highlight (2s pulse driven by the parent's timeout).
-    highlighted && "ring-2 ring-blue-400/70 !bg-blue-500/10 dark:!bg-blue-500/10"
+    highlighted && "ring-2 ring-blue-400/70 !bg-blue-500/10 dark:!bg-blue-500/10",
+    // Multi-select tick state
+    selected && "ring-2 ring-blue-500/80",
+    selectionActive && "hover:ring-1 hover:ring-blue-400/40"
   );
 
   // Quoted-parent block rendered inside the bubble (WhatsApp-style).
@@ -766,13 +816,19 @@ const MessageBubble = ({
 
   return (
     <div
-      className={cn("flex items-end gap-2 group", isOwn ? "justify-end" : "justify-start", isGrouped ? "mt-0.5" : "mt-2")}
-      onTouchStart={handleTouchStart}
-      onTouchMove={handleTouchMove}
-      onTouchEnd={handleTouchEnd}
-      onTouchCancel={handleTouchEnd}
+      className={cn(
+        "flex items-end gap-2 group",
+        isOwn ? "justify-end" : "justify-start",
+        isGrouped ? "mt-0.5" : "mt-2",
+        selectionActive && "cursor-pointer"
+      )}
+      onTouchStart={selectionActive ? undefined : handleTouchStart}
+      onTouchMove={selectionActive ? undefined : handleTouchMove}
+      onTouchEnd={selectionActive ? undefined : handleTouchEnd}
+      onTouchCancel={selectionActive ? undefined : handleTouchEnd}
+      onClick={selectionActive && onToggleSelect ? (e) => { e.stopPropagation(); onToggleSelect(message.id); } : undefined}
       onContextMenu={
-        onOpenMenu && !tombstone
+        onOpenMenu && !tombstone && !selectionActive
           ? (e) => {
               e.preventDefault();
               onOpenMenu(message, e.clientX, e.clientY);
@@ -871,6 +927,15 @@ const MessageBubble = ({
 
             {quotedBlock}
 
+            {!!message.forwarded && !tombstone && (
+              <p className={cn(
+                "mb-1 flex items-center gap-1 text-[10.5px] italic",
+                isOwn ? "text-white/75" : "text-muted-foreground"
+              )}>
+                <Forward className="h-3 w-3" /> Forwarded
+              </p>
+            )}
+
             {isAudio && (
               <div className={cn("-mx-0.5", message.content && !hideContent && "mb-1.5")}>
                 <VoiceNotePlayer src={attachmentUrl} isOwn={isOwn} />
@@ -913,7 +978,23 @@ const MessageBubble = ({
             )}
 
             {message.content && !hideContent && (
-              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">{message.content}</p>
+              <p className="text-sm leading-relaxed whitespace-pre-wrap break-words">
+                {renderStyledText(message.content, message.id)}
+              </p>
+            )}
+
+            {translatedText && (
+              <div className={cn(
+                "mt-1.5 border-t pt-1.5",
+                isOwn ? "border-white/25" : "border-border/70"
+              )}>
+                <p className="mb-0.5 flex items-center gap-1 text-[10px] font-semibold uppercase tracking-wide text-violet-500 dark:text-violet-400">
+                  <Languages className="h-3 w-3" /> Translated
+                </p>
+                <p className="text-[13px] leading-relaxed whitespace-pre-wrap break-words opacity-90">
+                  {translatedText}
+                </p>
+              </div>
             )}
 
             {timestampRow}
@@ -1152,6 +1233,25 @@ export default function Chat() {
   const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
   const [lastSeenOverrides, setLastSeenOverrides] = useState<Record<string, string | null>>({});
   const [blockBusy, setBlockBusy] = useState(false);
+  // Multi-select mode (WhatsApp-style): forward / bulk copy / bulk delete-for-me
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedMessageIds, setSelectedMessageIds] = useState<Set<string>>(new Set());
+  const [forwardOpen, setForwardOpen] = useState(false);
+  const [forwardSearch, setForwardSearch] = useState("");
+  const [forwardBusy, setForwardBusy] = useState(false);
+
+  // MetricAi chat intelligence (translate / smart replies / summarize)
+  const [aiAvailable, setAiAvailable] = useState(false);
+  const [translations, setTranslations] = useState<Record<string, string>>({});
+  const [translatingId, setTranslatingId] = useState<string | null>(null);
+  const [smartReplies, setSmartReplies] = useState<string[]>([]);
+  const [smartRepliesLoading, setSmartRepliesLoading] = useState(false);
+  const [summarizeOpen, setSummarizeOpen] = useState(false);
+  const [summarizeLoading, setSummarizeLoading] = useState(false);
+  const [summarizeText, setSummarizeText] = useState("");
+
+  // Composer formatting toolbar (bold / italic / strike / code)
+  const [composerFocused, setComposerFocused] = useState(false);
   // Re-render periodically so relative "last seen" strings stay fresh.
   const [, setPresenceTick] = useState(0);
   const messageElsRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1221,6 +1321,15 @@ export default function Chat() {
     setActionMenu(null);
     setHighlightedId(null);
     messageElsRef.current.clear();
+    // Multi-select + AI state resets with the conversation
+    setSelectionMode(false);
+    setSelectedMessageIds(new Set());
+    setTranslations({});
+    setTranslatingId(null);
+    setSmartReplies([]);
+    setForwardOpen(false);
+    setSummarizeOpen(false);
+    setSummarizeText("");
 
     if (selectedConversation?.id) {
       // Inside a conversation on mobile -> hide the list panel.
@@ -1914,10 +2023,14 @@ export default function Chat() {
       } catch (err) {
         pendingMessageIdsRef.current.delete(tempId);
         setLocalMessages((prev) => prev.filter((m) => m.id !== tempId));
+        const status = (err as any)?.response?.status;
         toast({
           variant: "destructive",
           title: "Upload failed",
-          description: getApiMessage(err, "Could not upload the attachment. Please try again."),
+          description:
+            status === 413
+              ? "The server rejected this file as too large (proxy limit). Try a smaller file."
+              : getApiMessage(err, "Could not upload the attachment. Please try again."),
         });
       } finally {
         if (localPreviewUrl) window.setTimeout(() => URL.revokeObjectURL(localPreviewUrl), 5_000);
@@ -2080,6 +2193,346 @@ export default function Chat() {
       }
     },
     [deleteConfirm, handleMessageDelete]
+  );
+
+  // ==========================================================================
+  // MetricAi chat intelligence — availability probe, smart replies, translate,
+  // conversation summary. All soft-gated: when the backend reports MetricAi
+  // unavailable the UI simply never shows the entry points.
+  // ==========================================================================
+  useEffect(() => {
+    let cancelled = false;
+    getMetricAiStatus()
+      .then((status) => {
+        if (!cancelled) setAiAvailable(!!status?.available);
+      })
+      .catch(() => {
+        if (!cancelled) setAiAvailable(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  /** Whether the newest visible message was sent by someone else. */
+  const lastIncomingMessageId = useMemo(() => {
+    if (!selectedConversation) return null;
+    const visible = [...localMessages]
+      .filter((m) => m.conversationId === selectedConversation.id || m.conversation_id === selectedConversation.id)
+      .filter((m) => !m.isOptimistic && !isDeletedForMe(m) && !isDeletedForEveryone(m) && !isCallLogMessage(m));
+    if (visible.length === 0) return null;
+    const last = visible[visible.length - 1];
+    return getMsgSenderId(last) !== CURRENT_USER_ID() ? last.id : null;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [localMessages, selectedConversation?.id]);
+
+  useEffect(() => {
+    if (!aiAvailable || !selectedConversation || !lastIncomingMessageId) {
+      setSmartReplies([]);
+      return;
+    }
+    let cancelled = false;
+    setSmartRepliesLoading(true);
+    api
+      .post("/chat/ai/smart-replies", { conversationId: selectedConversation.id })
+      .then((res) => {
+        if (cancelled) return;
+        const data = unwrapApiData<any>(res.data, "");
+        const suggestions: string[] = Array.isArray(data?.suggestions) ? data.suggestions : [];
+        setSmartReplies(suggestions.slice(0, 3));
+      })
+      .catch(() => {
+        if (!cancelled) setSmartReplies([]);
+      })
+      .finally(() => {
+        if (!cancelled) setSmartRepliesLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [aiAvailable, selectedConversation?.id, lastIncomingMessageId]);
+
+  /** Send a smart-reply chip as a normal message. */
+  const handleSendSmartReply = useCallback(
+    async (suggestion: string) => {
+      setSmartReplies([]);
+      if (!selectedConversation || !suggestion.trim()) return;
+      await dispatchOptimisticMessage({ content: suggestion.trim() }, {}, "remove");
+    },
+    [selectedConversation, dispatchOptimisticMessage]
+  );
+
+  /** Translate a message body with MetricAi (target = browser language). */
+  const handleTranslateMessage = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      const text = (message.content || "").trim();
+      if (!text) {
+        toast({ title: "Nothing to translate", description: "Only text messages can be translated." });
+        return;
+      }
+      const target = (navigator.language || "en").slice(0, 2).toLowerCase();
+      setTranslatingId(message.id);
+      api
+        .post("/chat/ai/translate", { text, targetLanguage: target })
+        .then((res) => {
+          const data = unwrapApiData<any>(res.data, "");
+          if (data?.translation) {
+            setTranslations((prev) => ({ ...prev, [message.id]: String(data.translation) }));
+          }
+        })
+        .catch((err) => {
+          toast({
+            variant: "destructive",
+            title: "Translation failed",
+            description: getApiMessage(err, "MetricAi could not translate this message."),
+          });
+        })
+        .finally(() => setTranslatingId(null));
+    },
+    [toast]
+  );
+
+  /** Summarize the whole conversation with MetricAi (header dropdown). */
+  const handleSummarizeConversation = useCallback(() => {
+    if (!selectedConversation) return;
+    setSummarizeOpen(true);
+    setSummarizeLoading(true);
+    setSummarizeText("");
+    api
+      .post(`/chat/conversations/${selectedConversation.id}/ai/summarize`)
+      .then((res) => {
+        const data = unwrapApiData<any>(res.data, "");
+        setSummarizeText(String(data?.summary || "No summary available."));
+      })
+      .catch((err) => {
+        setSummarizeOpen(false);
+        toast({
+          variant: "destructive",
+          title: "Summary failed",
+          description: getApiMessage(err, "MetricAi could not summarize this conversation."),
+        });
+      })
+      .finally(() => setSummarizeLoading(false));
+  }, [selectedConversation, toast]);
+
+  // ==========================================================================
+  // Multi-select: forward / bulk copy / bulk delete-for-me
+  // ==========================================================================
+  const enterSelectionMode = useCallback((first: ChatMessage) => {
+    setActionMenu(null);
+    setSelectionMode(true);
+    setSelectedMessageIds(new Set([first.id]));
+  }, []);
+
+  const exitSelectionMode = useCallback(() => {
+    setSelectionMode(false);
+    setSelectedMessageIds(new Set());
+  }, []);
+
+  const toggleMessageSelection = useCallback((id: string) => {
+    setSelectedMessageIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const selectAllVisible = useCallback(() => {
+    const ids = new Set<string>();
+    localMessages.forEach((m) => {
+      if (!isDeletedForMe(m) && !isDeletedForEveryone(m) && !isCallLogMessage(m)) ids.add(m.id);
+    });
+    setSelectedMessageIds(ids);
+  }, [localMessages]);
+
+  /** Forward clicked straight from the action menu: preselect that message. */
+  const handleForwardFromMenu = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      setSelectionMode(true);
+      setSelectedMessageIds(new Set([message.id]));
+      setForwardOpen(true);
+    },
+    []
+  );
+
+  /** Copy every selected message's text (attachments noted by name). */
+  const handleCopySelected = useCallback(() => {
+    const lines: string[] = [];
+    localMessages
+      .filter((m) => selectedMessageIds.has(m.id))
+      .forEach((m) => {
+        const body = (m.content || "").trim();
+        const name = getAttachmentName(m);
+        if (body) lines.push(body);
+        else if (name) lines.push(`[Attachment: ${name}]`);
+      });
+    if (lines.length === 0) {
+      toast({ title: "Nothing to copy" });
+      return;
+    }
+    try {
+      navigator.clipboard.writeText(lines.join("\n"));
+      toast({ title: `Copied ${selectedMessageIds.size} message${selectedMessageIds.size === 1 ? "" : "s"}` });
+      exitSelectionMode();
+    } catch {
+      toast({ variant: "destructive", title: "Copy failed", description: "Clipboard is unavailable." });
+    }
+  }, [localMessages, selectedMessageIds, toast, exitSelectionMode]);
+
+  /** Delete every selected message for me (sequential, tolerates partial failure). */
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const handleDeleteSelected = useCallback(async () => {
+    if (!selectedConversation || selectedMessageIds.size === 0) return;
+    setBulkBusy(true);
+    const ids = [...selectedMessageIds];
+    let failed = 0;
+    for (const id of ids) {
+      const msg = localMessages.find((m) => m.id === id);
+      if (!msg) continue;
+      try {
+        await api.delete(`/chat/conversations/${selectedConversation.id}/messages/${id}?scope=me`);
+      } catch {
+        failed += 1;
+      }
+    }
+    setBulkBusy(false);
+    refetchConv();
+    exitSelectionMode();
+    if (failed > 0) {
+      toast({
+        variant: "destructive",
+        title: "Some deletes failed",
+        description: `${ids.length - failed} deleted, ${failed} could not be removed. Please try again.`,
+      });
+    } else {
+      toast({ title: `Deleted ${ids.length} message${ids.length === 1 ? "" : "s"}` });
+    }
+  }, [selectedConversation, selectedMessageIds, localMessages, refetchConv, exitSelectionMode, toast]);
+
+  /** Open the forward dialog from the selection bar. */
+  const openForwardDialog = useCallback(() => {
+    if (selectedMessageIds.size === 0) return;
+    setForwardOpen(true);
+  }, [selectedMessageIds]);
+
+  /** Fan the selected messages out into the target conversation (chronological). */
+  const performForward = useCallback(
+    async (targetConversationId: string) => {
+      if (selectedMessageIds.size === 0) return;
+      setForwardBusy(true);
+      const ordered = [...localMessages]
+        .filter((m) => selectedMessageIds.has(m.id))
+        .sort((a, b) => new Date(getMsgTime(a)).getTime() - new Date(getMsgTime(b)).getTime());
+      let sent = 0;
+      let failed = 0;
+      for (const m of ordered) {
+        const payload: Record<string, unknown> = { forwarded: true };
+        if ((m.content || "").trim()) payload.content = m.content;
+        const url = getAttachmentUrl(m);
+        if (url) {
+          payload.attachmentUrl = url;
+          payload.attachmentType = getAttachmentType(m) || getMessageType(m) || "document";
+          if (getAttachmentName(m)) payload.attachmentName = getAttachmentName(m);
+          if (getAttachmentSize(m)) payload.attachmentSize = getAttachmentSize(m);
+        }
+        if (!payload.content && !url) {
+          failed += 1;
+          continue;
+        }
+        try {
+          await api.post(`/chat/conversations/${targetConversationId}/messages`, payload);
+          sent += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+      setForwardBusy(false);
+      setForwardOpen(false);
+      exitSelectionMode();
+      refetchConv();
+      if (sent > 0) {
+        toast({ title: `Forwarded ${sent} message${sent === 1 ? "" : "s"}`, description: failed ? `${failed} failed.` : undefined });
+      } else {
+        toast({ variant: "destructive", title: "Forward failed", description: "Could not forward the selected messages. Please try again." });
+      }
+    },
+    [selectedMessageIds, localMessages, exitSelectionMode, refetchConv, toast]
+  );
+
+  /** Copy an image attachment to the OS clipboard (right-click equivalent). */
+  const handleCopyImage = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      const url = getAttachmentUrl(message);
+      if (!url) return;
+      (async () => {
+        try {
+          const resp = await api.get(url, { responseType: "blob" });
+          const blob: Blob = resp.data;
+          if (!navigator.clipboard || typeof ClipboardItem === "undefined" || !blob.type.startsWith("image/")) {
+            throw new Error("clipboard unsupported");
+          }
+          await navigator.clipboard.write([new ClipboardItem({ [blob.type || "image/png"]: blob })]);
+          toast({ title: "Image copied", description: "Paste it anywhere (Ctrl+V)." });
+        } catch {
+          toast({
+            variant: "destructive",
+            title: "Copy image failed",
+            description: "Your browser blocked clipboard image access. Use Download instead.",
+          });
+        }
+      })();
+    },
+    [toast]
+  );
+
+  /** Download any attachment (image / video / document / audio). */
+  const handleDownloadAttachment = useCallback(
+    (message: ChatMessage) => {
+      setActionMenu(null);
+      const url = getAttachmentUrl(message);
+      if (!url) return;
+      const name = getAttachmentName(message) || "attachment";
+      downloadChatAttachment(url, name).catch(() =>
+        toast({ variant: "destructive", title: "Download failed", description: "Could not download this attachment." })
+      );
+    },
+    [toast]
+  );
+
+  /** Composer formatting: wrap the textarea selection in a marker. */
+  const applyComposerFormat = useCallback(
+    (marker: string) => {
+      const el = composerRef.current;
+      if (!el) return;
+      const start = el.selectionStart ?? newMessage.length;
+      const end = el.selectionEnd ?? newMessage.length;
+      const next = wrapSelectionWithMarker(newMessage, start, end, marker);
+      setNewMessage(next.value);
+      requestAnimationFrame(() => {
+        el.focus();
+        el.setSelectionRange(next.selectionStart, next.selectionEnd);
+      });
+    },
+    [newMessage]
+  );
+
+  /** Paste an image straight from the clipboard into the composer. */
+  const handleComposerPaste = useCallback(
+    (e: React.ClipboardEvent<HTMLTextAreaElement>) => {
+      const files = e.clipboardData?.files;
+      if (files && files.length > 0) {
+        const file = files[0];
+        if (file.type.startsWith("image/") || file.type.startsWith("video/")) {
+          e.preventDefault();
+          handleFileSelected(file);
+        }
+      }
+    },
+    [handleFileSelected]
   );
 
   /** Scroll a quoted message into view + flash-highlight it for ~2s. */
@@ -2506,8 +2959,74 @@ export default function Chat() {
           <div className={cn("flex-1 flex flex-col min-w-0", mobileShowSidebar && "hidden sm:flex")}>
             {selectedConversation ? (
               <>
+                {/* Multi-select action bar (WhatsApp-style selection mode) */}
+                {selectionMode && (
+                  <div className="px-3 sm:px-4 py-2.5 border-b border-border/70 flex items-center justify-between gap-2 bg-blue-600 text-white shrink-0 animate-in fade-in duration-150">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-8 w-8 text-white hover:bg-white/15 shrink-0"
+                        onClick={exitSelectionMode}
+                        aria-label="Cancel selection"
+                      >
+                        <X className="h-5 w-5" />
+                      </Button>
+                      <span className="text-sm font-semibold truncate">
+                        {selectedMessageIds.size} selected
+                      </span>
+                      <button
+                        type="button"
+                        onClick={selectAllVisible}
+                        className="text-xs font-medium text-white/80 hover:text-white underline underline-offset-2 ml-1 shrink-0"
+                      >
+                        Select all
+                      </button>
+                    </div>
+                    <div className="flex items-center gap-0.5 shrink-0">
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-white hover:bg-white/15"
+                        disabled={selectedMessageIds.size === 0 || forwardBusy}
+                        onClick={openForwardDialog}
+                        title="Forward selected"
+                        aria-label="Forward selected"
+                      >
+                        {forwardBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Forward className="h-4 w-4" />}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-white hover:bg-white/15"
+                        disabled={selectedMessageIds.size === 0}
+                        onClick={handleCopySelected}
+                        title="Copy selected"
+                        aria-label="Copy selected"
+                      >
+                        <Copy className="h-4 w-4" />
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="h-9 w-9 text-white hover:bg-white/15"
+                        disabled={selectedMessageIds.size === 0 || bulkBusy}
+                        onClick={handleDeleteSelected}
+                        title="Delete for me"
+                        aria-label="Delete selected for me"
+                      >
+                        {bulkBusy ? <Loader2 className="h-4 w-4 animate-spin" /> : <Trash2 className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                  </div>
+                )}
                 {/* Chat Header */}
-                <div className="px-3 sm:px-4 py-2.5 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0">
+                <div
+                  className={cn(
+                    "px-3 sm:px-4 py-2.5 border-b border-border/70 flex items-center justify-between gap-2 bg-card/80 backdrop-blur-md shrink-0",
+                    selectionMode && "hidden"
+                  )}
+                >
                   <div className="flex items-center gap-2.5 min-w-0">
                     <Button variant="ghost" size="icon" className="h-8 w-8 sm:hidden shrink-0" onClick={() => setMobileShowSidebar(true)}>
                       <ArrowLeft className="h-5 w-5" />
@@ -2610,6 +3129,11 @@ export default function Chat() {
                         <Users className="h-4 w-4 mr-2" />View Members
                       </DropdownMenuItem>
                       <DropdownMenuItem><Search className="h-4 w-4 mr-2" />Search in Chat</DropdownMenuItem>
+                      {aiAvailable && (
+                        <DropdownMenuItem onClick={handleSummarizeConversation}>
+                          <Sparkles className="h-4 w-4 mr-2 text-violet-500" />Summarize with MetricAi
+                        </DropdownMenuItem>
+                      )}
                       <DropdownMenuSeparator />
                       <DropdownMenuItem className="text-red-600">Mute Conversation</DropdownMenuItem>
                     </DropdownMenuContent>
@@ -2684,8 +3208,16 @@ export default function Chat() {
                             onRetry={msg.status === "failed" ? () => handleRetryMessage(msg) : undefined}
                             highlighted={highlightedId === msg.id}
                             onQuoteClick={handleQuoteJump}
-                            onOpenMenu={(m, x, y) => setActionMenu({ message: m, x, y })}
-                            onReplySwipe={handleMessageReply}
+                            onOpenMenu={
+                              selectionMode
+                                ? undefined
+                                : (m, x, y) => setActionMenu({ message: m, x, y })
+                            }
+                            onReplySwipe={selectionMode ? undefined : handleMessageReply}
+                            translatedText={translations[msg.id]}
+                            selectionActive={selectionMode}
+                            selected={selectedMessageIds.has(msg.id)}
+                            onToggleSelect={toggleMessageSelection}
                           />
                         </div>
                       );
@@ -2731,6 +3263,32 @@ export default function Chat() {
                         onStickerSelect={handleSendSticker}
                         onGifSelect={handleSendGif}
                       />
+                    </div>
+                  )}
+
+                  {/* MetricAi smart replies — WhatsApp-surpassing suggestion chips */}
+                  {aiAvailable && !selectionMode && !editing && !isRecording && !composerDisabled && (smartRepliesLoading || smartReplies.length > 0) && (
+                    <div className="mb-2 flex flex-wrap items-center gap-1.5">
+                      {smartRepliesLoading ? (
+                        <span className="flex items-center gap-1.5 rounded-full border border-violet-500/30 bg-violet-500/5 px-3 py-1 text-[11px] font-medium text-violet-500 dark:text-violet-400">
+                          <Sparkles className="h-3 w-3" /> MetricAi is thinking…
+                        </span>
+                      ) : (
+                        <>
+                          <Sparkles className="h-3.5 w-3.5 shrink-0 text-violet-500" aria-hidden />
+                          {smartReplies.map((suggestion, i) => (
+                            <button
+                              key={`sr-${i}`}
+                              type="button"
+                              onClick={() => handleSendSmartReply(suggestion)}
+                              className="max-w-[240px] truncate rounded-full border border-violet-500/40 bg-violet-500/5 px-3 py-1 text-xs font-medium text-violet-600 transition-colors hover:bg-violet-500/15 dark:text-violet-400"
+                              title={suggestion}
+                            >
+                              {suggestion}
+                            </button>
+                          ))}
+                        </>
+                      )}
                     </div>
                   )}
 
@@ -2813,12 +3371,42 @@ export default function Chat() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="flex-1 flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
+                      <div className="flex-1">
+                        {/* Text styling toolbar (WhatsApp-style *bold* _italic_ ~strike~ `code`) */}
+                        {(composerFocused || newMessage) && (
+                          <div className="mb-1 flex items-center gap-0.5">
+                            {[
+                              { icon: Bold, marker: "*", label: "Bold" },
+                              { icon: Italic, marker: "_", label: "Italic" },
+                              { icon: Strikethrough, marker: "~", label: "Strikethrough" },
+                              { icon: Code2, marker: "`", label: "Monospace" },
+                            ].map(({ icon: Icon, marker, label }) => (
+                              <button
+                                key={label}
+                                type="button"
+                                onMouseDown={(e) => e.preventDefault()}
+                                onClick={() => applyComposerFormat(marker)}
+                                className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+                                title={`${label} (wraps selection)`}
+                                aria-label={label}
+                              >
+                                <Icon className="h-3.5 w-3.5" />
+                              </button>
+                            ))}
+                            <span className="ml-1 hidden text-[10px] text-muted-foreground sm:inline">
+                              or type *bold* _italic_ ~strike~ \`code\`
+                            </span>
+                          </div>
+                        )}
+                        <div className="flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                         <Textarea
                           ref={composerRef}
                           placeholder={editing ? "Edit message…" : "Type a message..."}
                           value={newMessage}
                           onChange={(e) => handleInputChange(e.target.value)}
+                          onFocus={() => setComposerFocused(true)}
+                          onBlur={() => setComposerFocused(false)}
+                          onPaste={handleComposerPaste}
                           onKeyDown={(e) => {
                             if (e.key === "Enter" && !e.shiftKey) {
                               e.preventDefault();
@@ -2874,6 +3462,7 @@ export default function Chat() {
                           >
                             {editing ? <Check className="h-4 w-4" /> : <Send className="h-4 w-4" />}
                           </Button>
+                        </div>
                         </div>
                       </div>
                     </div>
@@ -3007,6 +3596,23 @@ export default function Chat() {
               !isDeletedForEveryone(actionMenu.message)
             : false
         }
+        canForward={
+          actionMenu
+            ? !isCallLogMessage(actionMenu.message) &&
+              !isDeletedForMe(actionMenu.message) &&
+              !isDeletedForEveryone(actionMenu.message)
+            : false
+        }
+        hasImageAttachment={actionMenu ? isImageAttachment(actionMenu.message) && !!getAttachmentUrl(actionMenu.message) : false}
+        hasDownloadableAttachment={
+          actionMenu
+            ? !!getAttachmentUrl(actionMenu.message) &&
+              !isCallLogMessage(actionMenu.message) &&
+              !isDeletedForMe(actionMenu.message) &&
+              !isDeletedForEveryone(actionMenu.message)
+            : false
+        }
+        canTranslate={aiAvailable && !!actionMenu?.message.content && !isCallLogMessage(actionMenu.message)}
         onReply={handleMessageReply}
         onCopy={handleMessageCopy}
         onEdit={handleMessageEdit}
@@ -3018,6 +3624,11 @@ export default function Chat() {
           setActionMenu(null);
           setDeleteConfirm({ message: m, scope: "everyone" });
         }}
+        onForward={handleForwardFromMenu}
+        onSelect={enterSelectionMode}
+        onCopyImage={handleCopyImage}
+        onDownloadAttachment={handleDownloadAttachment}
+        onTranslate={handleTranslateMessage}
         onClose={() => setActionMenu(null)}
       />
 
@@ -3048,6 +3659,83 @@ export default function Chat() {
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
+      {/* Forward dialog: pick a destination conversation for the selection */}
+      <Dialog open={forwardOpen} onOpenChange={(open) => { if (!open) setForwardOpen(false); }}>
+        <DialogContent className="sm:max-w-md">
+          <DialogHeader>
+            <DialogTitle>Forward {selectedMessageIds.size} message{selectedMessageIds.size === 1 ? "" : "s"}</DialogTitle>
+            <DialogDescription>Choose a conversation to forward the selected messages to.</DialogDescription>
+          </DialogHeader>
+          <div className="relative">
+            <Search className="absolute left-2.5 top-2.5 h-4 w-4 text-muted-foreground" />
+            <Input
+              value={forwardSearch}
+              onChange={(e) => setForwardSearch(e.target.value)}
+              placeholder="Search chats…"
+              className="pl-8"
+            />
+          </div>
+          <ScrollArea className="max-h-[320px] -mx-2 px-2">
+            <div className="space-y-0.5 py-1">
+              {(conversations || [])
+                .filter((c) => c.id !== selectedConversation?.id)
+                .filter((c) => {
+                  if (!forwardSearch.trim()) return true;
+                  const name = getConversationName(teamMembers, c as ConversationView) || "";
+                  return name.toLowerCase().includes(forwardSearch.trim().toLowerCase());
+                })
+                .map((c) => {
+                  const name = getConversationName(teamMembers, c as ConversationView) || "Chat";
+                  const avatarUrl = getConversationAvatarUrl(c as ConversationView);
+                  return (
+                    <button
+                      key={c.id}
+                      type="button"
+                      disabled={forwardBusy}
+                      onClick={() => performForward(c.id)}
+                      className="flex w-full items-center gap-2.5 rounded-xl px-2 py-2 text-left transition-colors hover:bg-muted disabled:opacity-50"
+                    >
+                      <Avatar className="h-9 w-9">
+                        {avatarUrl && <AvatarImage src={avatarUrl} alt={name} />}
+                        <AvatarFallback className={cn("bg-gradient-to-br text-white font-semibold text-[11px]", getAvatarGradient(name))}>
+                          {getInitials(name)}
+                        </AvatarFallback>
+                      </Avatar>
+                      <span className="min-w-0 flex-1 truncate text-sm font-medium">{name}</span>
+                      {forwardBusy ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <Forward className="h-4 w-4 text-muted-foreground" />}
+                    </button>
+                  );
+                })}
+              {(conversations || []).filter((c) => c.id !== selectedConversation?.id).length === 0 && (
+                <p className="px-2 py-6 text-center text-sm text-muted-foreground">No other conversations yet.</p>
+              )}
+            </div>
+          </ScrollArea>
+        </DialogContent>
+      </Dialog>
+
+      {/* MetricAi conversation summary modal */}
+      <Dialog open={summarizeOpen} onOpenChange={(open) => { if (!open) setSummarizeOpen(false); }}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle className="flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-violet-500" /> MetricAi summary
+            </DialogTitle>
+            <DialogDescription>
+              AI-generated digest of this conversation — summary, key points and action items.
+            </DialogDescription>
+          </DialogHeader>
+          {summarizeLoading ? (
+            <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
+              <Loader2 className="h-4 w-4 animate-spin" /> Reading the thread…
+            </div>
+          ) : (
+            <ScrollArea className="max-h-[400px] -mx-2 px-2">
+              <MarkdownRenderer content={summarizeText || "No summary available."} />
+            </ScrollArea>
+          )}
+        </DialogContent>
+      </Dialog>
     </Layout>
   );
 }
