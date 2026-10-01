@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
-import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info, Clock, UserCheck, CheckCheck, Volume2, Bluetooth, Headphones, Phone } from "lucide-react";
+import { X, Users, MessageSquare, Mic, MicOff, VideoOff, Shield, UserMinus, Copy, Check, Info, Clock, UserCheck, CheckCheck, Volume2, Bluetooth, Headphones, Phone, UserPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CAPTION_AUTOHIDE_MS, latestCaptionKey, visibleCaptions, type AudioOutputDevice, type CaptionItem } from "@/lib/calling";
@@ -92,6 +92,10 @@ export function ParticipantsPanel({
   onClose,
   onRemoveParticipant,
   onMuteParticipant,
+  /** Real deep link to this room (/meetings/:code or /calls/:code). */
+  inviteUrl,
+  /** Host-only "Add people" — opens the team/guest invite modal. */
+  onAddPeople,
 }: {
   appParticipants: RoomAppParticipant[];
   mediaParticipants: RemoteParticipant[];
@@ -107,13 +111,17 @@ export function ParticipantsPanel({
   onClose: () => void;
   onRemoveParticipant?: (identity: string) => void;
   onMuteParticipant?: (identity: string) => void;
+  inviteUrl?: string;
+  onAddPeople?: () => void;
 }) {
   const [copied, setCopied] = useState(false);
   const count = Math.max(appParticipants.length, mediaParticipants.length + 1);
 
   const copyInvite = async () => {
     try {
-      await navigator.clipboard.writeText(window.location.href);
+      // inviteUrl is the REAL room deep link — window.location.href points at
+      // whatever page happens to sit behind the overlay room and loses the IDs.
+      await navigator.clipboard.writeText(inviteUrl || window.location.href);
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
@@ -240,7 +248,17 @@ export function ParticipantsPanel({
           );
         })}
       </ul>
-      <div className="border-t border-white/10 p-3">
+      <div className="border-t border-white/10 p-3 space-y-2">
+        {onAddPeople && (
+          <Button
+            size="sm"
+            className="w-full gap-2 bg-[#2563EB] text-white hover:bg-[#1D4ED8]"
+            onClick={onAddPeople}
+          >
+            <UserPlus className="h-4 w-4" />
+            Add people
+          </Button>
+        )}
         <Button variant="outline" size="sm" className="w-full gap-2 border-white/15 bg-transparent text-white hover:bg-white/10" onClick={copyInvite}>
           {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
           {copied ? "Link copied" : "Copy invite link"}

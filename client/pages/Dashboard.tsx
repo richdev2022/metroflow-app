@@ -677,6 +677,7 @@ export default function Dashboard() {
                 icon={Target}
                 delta={`${kpiSummary.current.total} this month`}
                 deltaTone="neutral"
+                tooltip="Every task created across the selected period — for the whole team or the member you picked above."
               />
               <StatCard
                 label="Completed"
@@ -686,6 +687,7 @@ export default function Dashboard() {
                 delta={`${kpiSummary.monthly.percentageCompletion.toFixed(1)}% completion`}
                 deltaTone="up"
                 footer={`${kpiSummary.current.completed} completed this month`}
+                tooltip="Tasks marked done this month. Keep this climbing — it's the heartbeat of your team's delivery."
               />
               <StatCard
                 label="Completion Rate"
@@ -709,6 +711,7 @@ export default function Dashboard() {
                 iconClassName="bg-red-500/10 text-red-600"
                 delta={kpiSummary.overdueTasks.length > 0 ? "needs attention" : "all on track"}
                 deltaTone={kpiSummary.overdueTasks.length > 0 ? "down" : "up"}
+                tooltip="Tasks past their due date. Hover a task on the list below to reassign, reschedule or close it out."
               />
             </div>
           </section>

@@ -4,6 +4,13 @@
  * Shared "Call Report" / "Meeting Report" builder used by the call & meeting
  * detail pages. Renders a clean document with the MetriCorex brand header
  * (/Assets/logo-mark.png), a meta table, participants and the transcript.
+ *
+ * Layout rules (fix for the earlier overlapping-text bug):
+ *  - Every text line advances by its REAL line height (~1.3 × font size).
+ *  - Multi-line values wrap inside their own column; the row advances by the
+ *    tallest column, so columns can never overlap.
+ *  - Page breaks are checked with the true height of the upcoming block, and
+ *    section titles always keep at least their first content row with them.
  */
 import { jsPDF } from "jspdf";
 import { resolveMediaUrl } from "@/lib/media-url";
@@ -12,6 +19,14 @@ const BRAND_BLUE: [number, number, number] = [67, 83, 255]; // #4353FF
 const INK: [number, number, number] = [17, 24, 39];
 const MUTED: [number, number, number] = [107, 114, 128];
 const LINE: [number, number, number] = [229, 231, 235];
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+/** Never print a raw user id where a human name belongs. */
+function humanName(name?: string | null, fallback = "Participant"): string {
+  const value = String(name || "").trim();
+  if (!value || UUID_RE.test(value)) return fallback;
+  return value;
+}
 
 /** Fetch a same-origin/absolute image and convert to a data URL (null on fail). */
 async function loadImageDataUrl(url: string): Promise<string | null> {
@@ -59,18 +74,17 @@ interface DocCursor {
   pageWidth: number;
   pageHeight: number;
   margin: number;
+  pageNo: number;
 }
 
-function ensureSpace(ctx: DocCursor, needed: number) {
-  if (ctx.y + needed > ctx.pageHeight - ctx.margin - 20) {
-    addFooter(ctx);
-    ctx.doc.addPage();
-    ctx.y = ctx.margin + 10;
-  }
-}
+/** Line height helper — 10pt text → 13pt leading. */
+const leading = (fontSize: number) => fontSize * 1.3;
+
+const CONTENT_BOTTOM = (ctx: DocCursor) => ctx.pageHeight - ctx.margin - 24;
 
 function addFooter(ctx: DocCursor) {
   const { doc } = ctx;
+  doc.setFont("helvetica", "normal");
   doc.setFontSize(8);
   doc.setTextColor(...MUTED);
   doc.text(
@@ -78,44 +92,88 @@ function addFooter(ctx: DocCursor) {
     ctx.margin,
     ctx.pageHeight - ctx.margin + 4,
   );
+  doc.text(
+    `Page ${ctx.pageNo}`,
+    ctx.pageWidth - ctx.margin,
+    ctx.pageHeight - ctx.margin + 4,
+    { align: "right" },
+  );
+}
+
+/** Start a new page (footer first), or stay put when `needed` still fits. */
+function ensureSpace(ctx: DocCursor, needed: number) {
+  if (ctx.y + needed > CONTENT_BOTTOM(ctx)) {
+    addFooter(ctx);
+    ctx.doc.addPage();
+    ctx.pageNo += 1;
+    ctx.y = ctx.margin + 10;
+  }
 }
 
 function sectionTitle(ctx: DocCursor, title: string) {
-  ensureSpace(ctx, 34);
-  ctx.y += 8;
+  // Title + its underline + the first content row must stay together.
+  ensureSpace(ctx, 44);
+  ctx.y += 10;
   ctx.doc.setFont("helvetica", "bold");
   ctx.doc.setFontSize(12);
   ctx.doc.setTextColor(...INK);
   ctx.doc.text(title, ctx.margin, ctx.y);
-  ctx.y += 4;
+  ctx.y += 5;
   ctx.doc.setDrawColor(...BRAND_BLUE);
   ctx.doc.setLineWidth(1);
   ctx.doc.line(ctx.margin, ctx.y, ctx.margin + 42, ctx.y);
-  ctx.y += 10;
+  ctx.y += 12;
 }
 
+/** Key/value row — the value column wraps and the row grows to fit it. */
 function kvRow(ctx: DocCursor, key: string, value: string) {
-  ensureSpace(ctx, 16);
+  const fontSize = 10;
   ctx.doc.setFont("helvetica", "normal");
-  ctx.doc.setFontSize(10);
+  ctx.doc.setFontSize(fontSize);
+  const valueX = ctx.margin + 120;
+  const valueWidth = ctx.pageWidth - ctx.margin - valueX;
+  const lines = ctx.doc.splitTextToSize(value || "—", valueWidth) as string[];
+  const rowHeight = Math.max(1, lines.length) * leading(fontSize) + 4;
+  ensureSpace(ctx, rowHeight);
   ctx.doc.setTextColor(...MUTED);
   ctx.doc.text(key, ctx.margin, ctx.y);
   ctx.doc.setTextColor(...INK);
-  const lines = ctx.doc.splitTextToSize(value || "—", ctx.pageWidth - ctx.margin * 2 - 110) as string[];
-  ctx.doc.text(lines, ctx.margin + 110, ctx.y);
-  ctx.y += Math.max(8, lines.length * 5) + 4;
+  ctx.doc.text(lines, valueX, ctx.y);
+  ctx.y += rowHeight;
 }
 
-function wrapParagraph(ctx: DocCursor, text: string, indent = 0) {
-  const lines = ctx.doc.splitTextToSize(text || "", ctx.pageWidth - ctx.margin * 2 - indent) as string[];
+/** Wrapped paragraph at `indent`, advancing by real line heights. */
+function wrapParagraph(ctx: DocCursor, text: string, indent = 0, fontSize = 10) {
+  ctx.doc.setFontSize(fontSize);
+  const lines = ctx.doc.splitTextToSize(
+    text || "",
+    ctx.pageWidth - ctx.margin * 2 - indent,
+  ) as string[];
   for (const line of lines) {
-    ensureSpace(ctx, 14);
-    ctx.doc.setFontSize(10);
+    ensureSpace(ctx, leading(fontSize));
+    ctx.doc.setFontSize(fontSize);
     ctx.doc.setTextColor(...INK);
     ctx.doc.text(line, ctx.margin + indent, ctx.y);
-    ctx.y += 5.5;
+    ctx.y += leading(fontSize);
   }
-  ctx.y += 3;
+}
+
+/** Bulleted item with a hanging indent — bullet and text never overlap. */
+function bulletItem(ctx: DocCursor, text: string, fontSize = 10) {
+  ctx.doc.setFontSize(fontSize);
+  const lines = ctx.doc.splitTextToSize(
+    text || "",
+    ctx.pageWidth - ctx.margin * 2 - 14,
+  ) as string[];
+  const blockHeight = lines.length * leading(fontSize);
+  ensureSpace(ctx, Math.min(blockHeight, leading(fontSize) * 2));
+  ctx.doc.setFontSize(fontSize);
+  ctx.doc.setTextColor(...INK);
+  ctx.doc.text("•", ctx.margin + 2, ctx.y);
+  for (const line of lines) {
+    ctx.doc.text(line, ctx.margin + 14, ctx.y);
+    ctx.y += leading(fontSize);
+  }
 }
 
 async function brandHeader(doc: jsPDF, title: string, subtitle: string): Promise<DocCursor> {
@@ -149,20 +207,28 @@ async function brandHeader(doc: jsPDF, title: string, subtitle: string): Promise
   doc.setDrawColor(...LINE);
   doc.setLineWidth(0.8);
   doc.line(margin, y, pageWidth - margin, y);
-  y += 14;
+  y += 16;
 
+  // Title — wrap long meeting titles instead of letting them run off-page.
   doc.setFont("helvetica", "bold");
   doc.setFontSize(14);
   doc.setTextColor(...INK);
-  doc.text(title, margin, y);
-  y += 7;
+  const titleLines = doc.splitTextToSize(title, pageWidth - margin * 2) as string[];
+  for (const line of titleLines) {
+    doc.text(line, margin, y);
+    y += leading(14);
+  }
   doc.setFont("helvetica", "normal");
   doc.setFontSize(9.5);
   doc.setTextColor(...MUTED);
-  doc.text(subtitle, margin, y);
-  y += 10;
+  const subtitleLines = doc.splitTextToSize(subtitle, pageWidth - margin * 2) as string[];
+  for (const line of subtitleLines) {
+    doc.text(line, margin, y);
+    y += leading(9.5);
+  }
+  y += 6;
 
-  return { doc, y, pageWidth, pageHeight, margin };
+  return { doc, y, pageWidth, pageHeight, margin, pageNo: 1 };
 }
 
 // ==========================================
@@ -218,18 +284,26 @@ export async function buildCallReportPdf(data: CallReportData): Promise<jsPDF> {
 
   sectionTitle(ctx, `Participants (${data.participants.length})`);
   for (const p of data.participants) {
-    ensureSpace(ctx, 18);
-    docSetFont(ctx, "bold");
-    ctx.doc.text(p.name || "Unknown", ctx.margin, ctx.y);
-    docSetFont(ctx, "normal");
-    ctx.doc.setTextColor(...MUTED);
     const bits: string[] = [];
     if (p.joinedAt) bits.push(`joined ${fmtDateTime(p.joinedAt)}`);
     if (p.leftAt) bits.push(`left ${fmtDateTime(p.leftAt)}`);
     if (p.durationSeconds) bits.push(formatDuration(p.durationSeconds));
-    ctx.doc.text(bits.length ? bits.join(" · ") : "invited", ctx.margin + 170, ctx.y);
+    const detail = bits.length ? bits.join(" · ") : "invited";
+    const fontSize = 10;
+    docSetFont(ctx, "bold");
+    ctx.doc.setFontSize(fontSize);
+    const nameX = ctx.margin;
+    const detailX = ctx.margin + 170;
+    const detailLines = ctx.doc.splitTextToSize(detail, ctx.pageWidth - ctx.margin - detailX) as string[];
+    const rowHeight = Math.max(1, detailLines.length) * leading(fontSize) + 5;
+    ensureSpace(ctx, rowHeight);
+    ctx.doc.setFontSize(fontSize);
+    ctx.doc.text(humanName(p.name, "Unknown"), nameX, ctx.y);
+    docSetFont(ctx, "normal");
+    ctx.doc.setTextColor(...MUTED);
+    ctx.doc.text(detailLines, detailX, ctx.y);
     ctx.doc.setTextColor(...INK);
-    ctx.y += 16;
+    ctx.y += rowHeight;
   }
 
   const notes = data.notes;
@@ -238,36 +312,44 @@ export async function buildCallReportPdf(data: CallReportData): Promise<jsPDF> {
     if (notes.summary) {
       docSetFont(ctx, "normal");
       wrapParagraph(ctx, notes.summary, 12);
+      ctx.y += 4;
     }
     const keyPoints = (notes.keyPoints || []).filter(Boolean);
     if (keyPoints.length > 0) {
       docSetFont(ctx, "bold");
-      ensureSpace(ctx, 18);
+      ensureSpace(ctx, 20);
+      ctx.doc.setFontSize(10);
       ctx.doc.text("Key points", ctx.margin, ctx.y);
-      ctx.y += 14;
+      ctx.y += 15;
       docSetFont(ctx, "normal");
-      for (const kp of keyPoints) wrapParagraph(ctx, `• ${kp}`, 4);
+      for (const kp of keyPoints) bulletItem(ctx, kp);
+      ctx.y += 4;
     }
     const decisions = (notes.decisions || []).filter(Boolean);
     if (decisions.length > 0) {
       docSetFont(ctx, "bold");
-      ensureSpace(ctx, 18);
+      ensureSpace(ctx, 20);
+      ctx.doc.setFontSize(10);
       ctx.doc.text("Decisions", ctx.margin, ctx.y);
-      ctx.y += 14;
+      ctx.y += 15;
       docSetFont(ctx, "normal");
-      for (const d of decisions) wrapParagraph(ctx, `• ${d}`, 4);
+      for (const d of decisions) bulletItem(ctx, d);
+      ctx.y += 4;
     }
     const actionItems = (notes.actionItems || []).filter(Boolean);
     if (actionItems.length > 0) {
       docSetFont(ctx, "bold");
-      ensureSpace(ctx, 18);
+      ensureSpace(ctx, 20);
+      ctx.doc.setFontSize(10);
       ctx.doc.text("Action points", ctx.margin, ctx.y);
-      ctx.y += 14;
+      ctx.y += 15;
       docSetFont(ctx, "normal");
       for (const ai of actionItems) {
-        const owner = ai.ownerName || ai.assignedTo || null;
-        const label = `• ${ai.title || ai.task || "Action item"}${owner ? ` — by ${owner}` : ""}${ai.dueDate ? ` (due ${ai.dueDate})` : ""}`;
-        wrapParagraph(ctx, label, 4);
+        // Never print a raw user id — an unresolved UUID owner is dropped.
+        const ownerRaw = ai.ownerName || ai.assignedTo || "";
+        const owner = UUID_RE.test(String(ownerRaw).trim()) ? "" : String(ownerRaw).trim();
+        const label = `${ai.title || ai.task || "Action item"}${owner ? ` — by ${owner}` : ""}${ai.dueDate ? ` (due ${ai.dueDate})` : ""}`;
+        bulletItem(ctx, label);
       }
     }
   }
@@ -280,12 +362,13 @@ export async function buildCallReportPdf(data: CallReportData): Promise<jsPDF> {
         ? new Date(t.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
         : "";
       docSetFont(ctx, "bold");
-      ensureSpace(ctx, 20);
+      ensureSpace(ctx, 34); // speaker label + first body line stay together
       ctx.doc.setFontSize(9.5);
-      ctx.doc.text(`${t.speakerName || "Speaker"}${time ? ` · ${time}` : ""}`, ctx.margin, ctx.y);
-      ctx.y += 12;
+      ctx.doc.text(`${humanName(t.speakerName, "Speaker")}${time ? ` · ${time}` : ""}`, ctx.margin, ctx.y);
+      ctx.y += leading(9.5) + 2;
       docSetFont(ctx, "normal");
       wrapParagraph(ctx, t.text, 12);
+      ctx.y += 5;
     }
   } else {
     sectionTitle(ctx, "Transcript");
@@ -329,7 +412,7 @@ export interface MeetingReportData {
     summary?: string | null;
     keyPoints?: string[] | string | null;
     decisions?: string[] | string | null;
-    actionItems?: Array<{ task: string; ownerName?: string | null }> | null;
+    actionItems?: Array<{ task: string; ownerName?: string | null; assignedTo?: string | null }> | null;
     importantTimestamps?: Array<{ label?: string; timestamp?: string }> | string[] | null;
   } | null;
   transcripts?: Array<{ id?: string; speakerName?: string | null; text: string; createdAt?: string | null }> | null;
@@ -374,10 +457,15 @@ export async function buildMeetingReportPdf(data: MeetingReportData): Promise<js
     ctx.y += 16;
   }
   for (const a of attendees) {
-    ensureSpace(ctx, 16);
-    docSetFont(ctx, "normal");
-    ctx.doc.text(`${a.name || "Attendee"}${a.email ? ` (${a.email})` : ""}`, ctx.margin, ctx.y);
-    ctx.y += 15;
+    const fontSize = 10;
+    const label = `${humanName(a.name, "Attendee")}${a.email ? ` (${a.email})` : ""}`;
+    ctx.doc.setFont("helvetica", "normal");
+    ctx.doc.setFontSize(fontSize);
+    const lines = ctx.doc.splitTextToSize(label, ctx.pageWidth - ctx.margin * 2) as string[];
+    ensureSpace(ctx, lines.length * leading(fontSize));
+    ctx.doc.setTextColor(...INK);
+    ctx.doc.text(lines, ctx.margin, ctx.y);
+    ctx.y += lines.length * leading(fontSize) + 2;
   }
 
   const notes = data.notes || {};
@@ -386,65 +474,68 @@ export async function buildMeetingReportPdf(data: MeetingReportData): Promise<js
     sectionTitle(ctx, "AI Summary");
     docSetFont(ctx, "normal");
     wrapParagraph(ctx, summary);
+    ctx.y += 4;
   }
 
   const keyPoints = toStringList(notes.keyPoints);
   if (keyPoints.length > 0) {
     sectionTitle(ctx, "Key Points");
-    for (const kp of keyPoints) {
-      ensureSpace(ctx, 16);
-      docSetFont(ctx, "normal");
-      ctx.doc.text("•", ctx.margin + 2, ctx.y);
-      wrapParagraph(ctx, kp, 14);
-    }
+    docSetFont(ctx, "normal");
+    for (const kp of keyPoints) bulletItem(ctx, kp);
+    ctx.y += 4;
   }
 
   const decisions = toStringList(notes.decisions);
   if (decisions.length > 0) {
     sectionTitle(ctx, "Decisions");
-    for (const d of decisions) {
-      ensureSpace(ctx, 16);
-      docSetFont(ctx, "normal");
-      ctx.doc.text("•", ctx.margin + 2, ctx.y);
-      wrapParagraph(ctx, d, 14);
-    }
+    docSetFont(ctx, "normal");
+    for (const d of decisions) bulletItem(ctx, d);
+    ctx.y += 4;
   }
 
   const actionItems = notes.actionItems || [];
   if (actionItems.length > 0) {
     sectionTitle(ctx, "Action Items");
-    // Simple table header
+    // Two-column table: Task (wraps) | Owner (wraps) — row height = tallest cell.
+    const taskX = ctx.margin;
+    const taskWidth = 290;
+    const ownerX = ctx.margin + 310;
+    const ownerWidth = ctx.pageWidth - ctx.margin - ownerX;
     docSetFont(ctx, "bold");
     ctx.doc.setFontSize(9.5);
-    ctx.doc.text("Task", ctx.margin, ctx.y);
-    ctx.doc.text("Owner", ctx.margin + 300, ctx.y);
-    ctx.y += 4;
+    ctx.doc.text("Task", taskX, ctx.y);
+    ctx.doc.text("Owner", ownerX, ctx.y);
+    ctx.y += 5;
     ctx.doc.setDrawColor(...LINE);
     ctx.doc.line(ctx.margin, ctx.y, ctx.pageWidth - ctx.margin, ctx.y);
-    ctx.y += 10;
+    ctx.y += 11;
     for (const ai of actionItems) {
-      ensureSpace(ctx, 18);
+      const ownerRaw = ai.ownerName || ai.assignedTo || "";
+      const owner = UUID_RE.test(String(ownerRaw).trim()) ? "Unassigned" : String(ownerRaw).trim() || "Unassigned";
+      ctx.doc.setFont("helvetica", "normal");
+      ctx.doc.setFontSize(9.5);
+      const taskLines = ctx.doc.splitTextToSize(ai.task || "", taskWidth) as string[];
+      const ownerLines = ctx.doc.splitTextToSize(owner, ownerWidth) as string[];
+      const rowHeight = Math.max(taskLines.length, ownerLines.length) * leading(9.5) + 5;
+      ensureSpace(ctx, rowHeight);
       docSetFont(ctx, "normal");
       ctx.doc.setFontSize(9.5);
-      const taskLines = ctx.doc.splitTextToSize(ai.task || "", 280) as string[];
-      ctx.doc.text(taskLines, ctx.margin, ctx.y);
+      ctx.doc.text(taskLines, taskX, ctx.y);
       ctx.doc.setTextColor(...MUTED);
-      ctx.doc.text(ai.ownerName || "Unassigned", ctx.margin + 300, ctx.y);
+      ctx.doc.text(ownerLines, ownerX, ctx.y);
       ctx.doc.setTextColor(...INK);
-      ctx.y += Math.max(14, taskLines.length * 12);
+      ctx.y += rowHeight;
     }
   }
 
   const stamps = notes.importantTimestamps;
   if (Array.isArray(stamps) && stamps.length > 0) {
     sectionTitle(ctx, "Important Timestamps");
+    docSetFont(ctx, "normal");
     for (const s of stamps as any[]) {
       const label = typeof s === "string" ? s : s?.label || "";
       const ts = typeof s === "string" ? "" : s?.timestamp || "";
-      ensureSpace(ctx, 16);
-      docSetFont(ctx, "normal");
-      ctx.doc.text(`${ts ? `[${ts}] ` : ""}${label}`, ctx.margin, ctx.y);
-      ctx.y += 15;
+      bulletItem(ctx, `${ts ? `[${ts}] ` : ""}${label}`, 9.5);
     }
   }
 
@@ -456,18 +547,20 @@ export async function buildMeetingReportPdf(data: MeetingReportData): Promise<js
         ? new Date(t.createdAt).toLocaleTimeString(undefined, { hour: "numeric", minute: "2-digit" })
         : "";
       docSetFont(ctx, "bold");
-      ensureSpace(ctx, 20);
+      ensureSpace(ctx, 34); // speaker label + first body line stay together
       ctx.doc.setFontSize(9.5);
-      ctx.doc.text(`${t.speakerName || "Speaker"}${time ? ` · ${time}` : ""}`, ctx.margin, ctx.y);
-      ctx.y += 12;
+      ctx.doc.text(`${humanName(t.speakerName, "Speaker")}${time ? ` · ${time}` : ""}`, ctx.margin, ctx.y);
+      ctx.y += leading(9.5) + 2;
       docSetFont(ctx, "normal");
       wrapParagraph(ctx, t.text, 12);
+      ctx.y += 5;
     }
   }
 
   const recordings = data.recordings || [];
   if (recordings.length > 0) {
     sectionTitle(ctx, "Recordings");
+    docSetFont(ctx, "normal");
     for (const r of recordings) {
       if (r?.storageUrl) wrapParagraph(ctx, `Recording: ${r.storageUrl}`);
     }

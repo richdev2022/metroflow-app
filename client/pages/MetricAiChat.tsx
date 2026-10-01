@@ -512,8 +512,8 @@ export default function MetricAiChat() {
         toast({ variant: "destructive", title: "MetricAi", description: "Please pick an image file." });
         return;
       }
-      if (file.size > 12 * 1024 * 1024) {
-        toast({ variant: "destructive", title: "Image too large", description: "Images are limited to 12 MB." });
+      if (file.size > 100 * 1024 * 1024) {
+        toast({ variant: "destructive", title: "Image too large", description: "Images are limited to 100 MB." });
         return;
       }
       setUploadingImage(true);
@@ -545,8 +545,8 @@ export default function MetricAiChat() {
         toast({ variant: "destructive", title: "MetricAi", description: "Please pick a video file (mp4, webm, mov...)." });
         return;
       }
-      if (file.size > 60 * 1024 * 1024) {
-        toast({ variant: "destructive", title: "Video too large", description: "Videos are limited to 60 MB in MetricAi." });
+      if (file.size > 100 * 1024 * 1024) {
+        toast({ variant: "destructive", title: "Video too large", description: "Videos are limited to 100 MB in MetricAi." });
         return;
       }
       setUploadingVideo(true);

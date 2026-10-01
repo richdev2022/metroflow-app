@@ -41,6 +41,8 @@ import { unwrapApiData } from "@/lib/api-response";
 import { Conversation } from "@shared/api";
 import { toast as sonnerToast } from "sonner";
 import { cn } from "@/lib/utils";
+import AppTour, { restartAppTour } from "./AppTour";
+import { Compass } from "lucide-react";
 
 const APP_TITLE = (typeof document !== "undefined" && document.title) || "Metricorex — Business OS";
 
@@ -503,7 +505,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <SidebarContent>
           <SidebarMenu>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/dashboard")} tooltip="Dashboard">
+              <SidebarMenuButton asChild isActive={isActive("/dashboard")} tooltip="Dashboard" data-tour="nav-dashboard">
                 <Link to="/dashboard">
                   <BarChart3 />
                   <span>Dashboard</span>
@@ -511,7 +513,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/tasks")} tooltip="Tasks">
+              <SidebarMenuButton asChild isActive={isActive("/tasks")} tooltip="Tasks" data-tour="nav-tasks">
                 <Link to="/tasks">
                   <ListTodo />
                   <span>Tasks</span>
@@ -519,7 +521,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/board")} tooltip="Board">
+              <SidebarMenuButton asChild isActive={isActive("/board")} tooltip="Board" data-tour="nav-board">
                 <Link to="/board">
                   <Kanban />
                   <span>Board</span>
@@ -527,7 +529,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/backlog")} tooltip="Backlog">
+              <SidebarMenuButton asChild isActive={isActive("/backlog")} tooltip="Backlog" data-tour="nav-backlog">
                 <Link to="/backlog">
                   <ListTodo className="opacity-70" /> 
                   <span>Backlog</span>
@@ -535,7 +537,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/ideas")} tooltip="Ideas">
+              <SidebarMenuButton asChild isActive={isActive("/ideas")} tooltip="Ideas" data-tour="nav-ideas">
                 <Link to="/ideas">
                   <Lightbulb />
                   <span>Ideas</span>
@@ -543,7 +545,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings" className="[&]:overflow-visible">
+              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings" data-tour="nav-meetings" className="[&]:overflow-visible">
                 <Link to="/meetings" className="relative flex items-center gap-2 w-full min-w-0">
                   <Calendar />
                   <span>Meetings</span>
@@ -559,7 +561,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/calendar")} tooltip="Calendar">
+              <SidebarMenuButton asChild isActive={isActive("/calendar")} tooltip="Calendar" data-tour="nav-calendar">
                 <Link to="/calendar">
                   <CalendarDays />
                   <span>Calendar</span>
@@ -567,7 +569,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat" className="[&]:overflow-visible">
+              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat" data-tour="nav-chat" className="[&]:overflow-visible">
                 <Link to="/chat" className="relative flex items-center gap-2 w-full min-w-0">
                   <MessageSquare />
                   <span>Chat</span>
@@ -592,7 +594,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/metric-ai")} tooltip="MetricAi">
+              <SidebarMenuButton asChild isActive={isActive("/metric-ai")} tooltip="MetricAi" data-tour="nav-metric-ai">
                 <Link to="/metric-ai">
                   <Sparkles className="text-indigo-500" />
                   <span>MetricAi</span>
@@ -600,7 +602,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/calls")} tooltip="Calls">
+              <SidebarMenuButton asChild isActive={isActive("/calls")} tooltip="Calls" data-tour="nav-calls">
                 <Link to="/calls">
                   <Video />
                   <span>Calls</span>
@@ -608,7 +610,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/recordings")} tooltip="Recordings">
+              <SidebarMenuButton asChild isActive={isActive("/recordings")} tooltip="Recordings" data-tour="nav-recordings">
                 <Link to="/recordings">
                   <Mic />
                   <span>Recordings</span>
@@ -616,7 +618,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/team")} tooltip="Team">
+              <SidebarMenuButton asChild isActive={isActive("/team")} tooltip="Team" data-tour="nav-team">
                 <Link to="/team">
                   <Users />
                   <span>Team</span>
@@ -624,7 +626,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/ranking")} tooltip="Ranking">
+              <SidebarMenuButton asChild isActive={isActive("/ranking")} tooltip="Ranking" data-tour="nav-ranking">
                 <Link to="/ranking">
                   <Target />
                   <span>Ranking</span>
@@ -632,7 +634,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/activity-logs")} tooltip="Activity Log">
+              <SidebarMenuButton asChild isActive={isActive("/activity-logs")} tooltip="Activity Log" data-tour="nav-activity-logs">
                 <Link to="/activity-logs">
                   <Activity />
                   <span>Activity Log</span>
@@ -640,7 +642,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/wallet")} tooltip="Wallet">
+              <SidebarMenuButton asChild isActive={isActive("/wallet")} tooltip="Wallet" data-tour="nav-wallet">
                 <Link to="/wallet" onClick={(e) => handleKycProtectedNavigation(e, "/wallet")}>
                   {kycCheckingPath === "/wallet" ? <Loader2 className="animate-spin" /> : <Wallet />}
                   <span>Wallet</span>
@@ -648,7 +650,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/payroll")} tooltip="Payroll">
+              <SidebarMenuButton asChild isActive={isActive("/payroll")} tooltip="Payroll" data-tour="nav-payroll">
                 <Link to="/payroll" onClick={(e) => handleKycProtectedNavigation(e, "/payroll")}>
                   {kycCheckingPath === "/payroll" ? <Loader2 className="animate-spin" /> : <Banknote />}
                   <span>Payroll</span>
@@ -656,7 +658,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/transfer-history")} tooltip="Transfer History">
+              <SidebarMenuButton asChild isActive={isActive("/transfer-history")} tooltip="Transfer History" data-tour="nav-transfer-history">
                 <Link to="/transfer-history">
                   <History />
                   <span>Transfer History</span>
@@ -664,7 +666,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/subscription")} tooltip="Subscription">
+              <SidebarMenuButton asChild isActive={isActive("/subscription")} tooltip="Subscription" data-tour="nav-subscription">
                 <Link to="/subscription">
                   <CreditCard />
                   <span>Subscription</span>
@@ -672,7 +674,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/profile")} tooltip="Profile">
+              <SidebarMenuButton asChild isActive={isActive("/profile")} tooltip="Profile" data-tour="nav-profile">
                 <Link to="/profile">
                   <UserCircle2 />
                   <span>Profile</span>
@@ -680,7 +682,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/settings")} tooltip="Settings">
+              <SidebarMenuButton asChild isActive={isActive("/settings")} tooltip="Settings" data-tour="nav-settings">
                 <Link to="/settings">
                   <Settings />
                   <span>Settings</span>
@@ -691,6 +693,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </SidebarContent>
         <SidebarFooter>
           <SidebarMenu>
+            <SidebarMenuItem>
+              {/* Guided product tour — replays the first-run walkthrough */}
+              <SidebarMenuButton
+                onClick={restartAppTour}
+                tooltip="Take the tour"
+                data-tour="restart-tour"
+              >
+                <Compass />
+                <span>Take the tour</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton onClick={() => setTheme(theme === "dark" ? "light" : "dark")} tooltip="Toggle Theme">
                 {theme === "dark" ? <Sun /> : <Moon />}
@@ -757,6 +770,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
           {children}
         </div>
       </SidebarInset>
+      {/* First-run guided tour (skip/next/back, restartable from the sidebar) */}
+      <AppTour />
     </SidebarProvider>
   );
 }

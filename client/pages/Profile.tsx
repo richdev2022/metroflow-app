@@ -151,8 +151,8 @@ export default function Profile() {
       toast({ title: "Invalid file", description: "Please choose an image file.", variant: "destructive" });
       return;
     }
-    if (file.size > 8 * 1024 * 1024) {
-      toast({ title: "File too large", description: "Please choose an image under 8MB.", variant: "destructive" });
+    if (file.size > 100 * 1024 * 1024) {
+      toast({ title: "File too large", description: "Please choose an image under 100 MB.", variant: "destructive" });
       return;
     }
     setUploadingAvatar(true);
