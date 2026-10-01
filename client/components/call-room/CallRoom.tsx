@@ -25,6 +25,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { BrandLogo } from "@/components/BrandLogo";
 import { AlertCircle, CheckCircle2, Loader2, Radio, Timer, Wifi, WifiOff, Users, Info, PictureInPicture2, Mic, MicOff, Video, VideoOff } from "lucide-react";
+import { Languages as LanguagesIcon, Sparkles as SparklesIcon, X as XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ParticipantTile } from "./ParticipantTile";
 import { ControlBar } from "./ControlBar";
@@ -180,6 +181,28 @@ export function CallRoom({
       return false;
     }
   });
+
+  // MetricAi Call Copilot — per-user caption translation + live AI insights.
+  const [captionLanguage, setCaptionLanguage] = useState(() => {
+    try {
+      return localStorage.getItem("metricorex:caption-language") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [translatedCaption, setTranslatedCaption] = useState<{
+    text: string;
+    speakerName: string;
+    lang: string;
+    ts: number;
+  } | null>(null);
+  const [liveInsights, setLiveInsights] = useState<{
+    summary: string;
+    keyPoints: string[];
+    actionItems: string[];
+    generatedAt: string;
+  } | null>(null);
+  const [insightsVisible, setInsightsVisible] = useState(false);
   const [captionSegments, setCaptionSegments] = useState<CaptionItem[]>([]);
   const [recordingActive, setRecordingActive] = useState(false);
   const [waitingUnadmitted, setWaitingUnadmitted] = useState(false);
@@ -673,6 +696,25 @@ export function CallRoom({
           }),
         );
       }],
+      [`caption:translated`, (c: any) => {
+        if (!c?.translation) return;
+        setTranslatedCaption({
+          text: String(c.translation),
+          speakerName: String(c.speakerName || "Speaker"),
+          lang: String(c.targetLanguage || ""),
+          ts: Date.now(),
+        });
+      }],
+      [`call:ai-insights`, (p: any) => {
+        if (!p?.summary) return;
+        setLiveInsights({
+          summary: String(p.summary),
+          keyPoints: Array.isArray(p.keyPoints) ? p.keyPoints.map(String) : [],
+          actionItems: Array.isArray(p.actionItems) ? p.actionItems.map(String) : [],
+          generatedAt: String(p.generatedAt || new Date().toISOString()),
+        });
+        setInsightsVisible(true);
+      }],
       [`recording:started`, (p: any) => {
         setRecordingActive(true);
         if (p?.recordingId && p?.mode === "server") serverRecordingIdRef.current = p.recordingId;
@@ -1141,6 +1183,22 @@ export function CallRoom({
     }
   }, [captionsEnabled, displayName, effectiveRoomId, emitRoom, isMeeting, localUserId, toast]);
 
+  // MetricAi Call Copilot — persist + register the caption translation
+  // language with the backend (unicast `caption:translated` streams back).
+  useEffect(() => {
+    try {
+      localStorage.setItem("metricorex:caption-language", captionLanguage);
+    } catch {}
+    emitRoom("caption:set-language", { language: captionLanguage || "" });
+  }, [captionLanguage, emitRoom]);
+
+  // Translated caption pill fades like native captions.
+  useEffect(() => {
+    if (!translatedCaption) return;
+    const t = window.setTimeout(() => setTranslatedCaption(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [translatedCaption]);
+
   // ------------------------------------------------------------------
   // Audio output routing — enumerate + apply via the calling client pool.
   // ------------------------------------------------------------------
@@ -1506,6 +1564,79 @@ export function CallRoom({
         )}
 
         <CaptionsOverlay segments={captionSegments} enabled={captionsEnabled} onHide={() => setCaptionSegments([])} />
+
+        {/* MetricAi Call Copilot — caption language picker (shown with captions) */}
+        {captionsEnabled && (
+          <div className="pointer-events-auto absolute left-1/2 top-3 z-30 -translate-x-1/2">
+            <label className="flex items-center gap-1.5 rounded-full border border-white/15 bg-black/45 px-3 py-1 text-[11px] text-white/90 backdrop-blur">
+              <LanguagesIcon className="h-3.5 w-3.5 text-violet-300" />
+              <span className="hidden sm:inline">Translate to</span>
+              <select
+                value={captionLanguage}
+                onChange={(e) => setCaptionLanguage(e.target.value)}
+                className="bg-transparent text-[11px] font-medium text-white outline-none [&>option]:text-black"
+                aria-label="Caption translation language"
+              >
+                <option value="">Off</option>
+                {["en", "fr", "es", "pt", "ar", "de", "ig", "ha", "yo", "zh", "hi", "it", "tr"].map((l) => (
+                  <option key={l} value={l}>
+                    {l.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+
+        {/* MetricAi Call Copilot — live translated caption (unicast to this user) */}
+        {translatedCaption && (
+          <div className="pointer-events-none absolute bottom-32 left-1/2 z-30 w-fit max-w-[86%] -translate-x-1/2 rounded-xl border border-violet-400/30 bg-black/55 px-3.5 py-2 backdrop-blur animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-300">
+              {translatedCaption.speakerName} · {translatedCaption.lang.toUpperCase()}
+            </p>
+            <p className="text-sm leading-snug text-white/95">{translatedCaption.text}</p>
+          </div>
+        )}
+
+        {/* MetricAi Call Copilot — live insights card (updates every ~45s) */}
+        {insightsVisible && liveInsights && (
+          <div className="absolute right-3 top-3 z-30 w-72 max-w-[80vw] rounded-2xl border border-violet-400/25 bg-black/60 p-3 text-white shadow-xl backdrop-blur animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-violet-300">
+                <SparklesIcon className="h-3.5 w-3.5" /> MetricAi Live Insights
+              </p>
+              <button
+                type="button"
+                onClick={() => setInsightsVisible(false)}
+                className="rounded-full p-0.5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                aria-label="Hide live insights"
+              >
+                <XIcon className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <p className="text-xs leading-relaxed text-white/90">{liveInsights.summary}</p>
+            {liveInsights.keyPoints.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {liveInsights.keyPoints.map((kp, i) => (
+                  <li key={`kp-${i}`} className="flex gap-1.5 text-[11px] leading-snug text-white/80">
+                    <span className="text-violet-300">•</span>
+                    <span>{kp}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {liveInsights.actionItems.length > 0 && (
+              <div className="mt-2 border-t border-white/15 pt-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-white/60">Action items</p>
+                <ul className="mt-1 space-y-1">
+                  {liveInsights.actionItems.map((ai, i) => (
+                    <li key={`ai-${i}`} className="text-[11px] leading-snug text-white/85">✓ {ai}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
 
         {participantsOpen && (
           <ParticipantsPanel
