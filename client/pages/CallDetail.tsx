@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { ArrowLeft, Download, FileText, Loader2, Mic, Phone, Sparkles, Users, Video, Volume2 } from "lucide-react";
 import Layout from "@/components/layout";
@@ -101,7 +101,7 @@ export default function CallDetail() {
   const [transcripts, setTranscripts] = useState<TranscriptEntry[] | null>(null);
   const [downloading, setDownloading] = useState(false);
 
-  useEffect(() => {
+  const loadCall = useCallback(() => {
     if (!callId) return;
     let cancelled = false;
     setLoading(true);
@@ -123,6 +123,11 @@ export default function CallDetail() {
       cancelled = true;
     };
   }, [callId]);
+
+  useEffect(() => {
+    const cleanup = loadCall();
+    return cleanup;
+  }, [loadCall]);
 
   useEffect(() => {
     if (!callId || !detail?.hasTranscript) return;
@@ -232,7 +237,12 @@ export default function CallDetail() {
 
         {!loading && error && (
           <Card>
-            <CardContent className="py-12 text-center text-sm text-muted-foreground">{error}</CardContent>
+            <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+              <p className="text-sm text-muted-foreground">{error}</p>
+              <Button size="sm" variant="outline" onClick={loadCall}>
+                Try again
+              </Button>
+            </CardContent>
           </Card>
         )}
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useParams } from "react-router-dom";
 import {
   ArrowLeft,
@@ -120,7 +120,7 @@ export default function MeetingDetail() {
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
 
-  useEffect(() => {
+  const loadReport = useCallback(() => {
     if (!meetingId) return;
     let cancelled = false;
     setLoading(true);
@@ -142,6 +142,11 @@ export default function MeetingDetail() {
       cancelled = true;
     };
   }, [meetingId]);
+
+  useEffect(() => {
+    const cleanup = loadReport();
+    return cleanup;
+  }, [loadReport]);
 
   const handleDownloadReport = async () => {
     if (!report) return;
@@ -207,7 +212,12 @@ export default function MeetingDetail() {
 
         {!loading && error && (
           <Card>
-            <CardContent className="py-12 text-center text-sm text-muted-foreground">{error}</CardContent>
+            <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
+              <p className="text-sm text-muted-foreground">{error}</p>
+              <Button size="sm" variant="outline" onClick={loadReport}>
+                Try again
+              </Button>
+            </CardContent>
           </Card>
         )}
 

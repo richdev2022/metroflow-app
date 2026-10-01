@@ -10,6 +10,8 @@ import {
   MessageSquare,
   Users,
   Captions,
+  Circle,
+  Square,
   MoreVertical,
   PhoneOff,
   PictureInPicture2,
@@ -67,6 +69,9 @@ interface ControlBarProps {
   selectedSinkId?: string;
   sinkSupported?: boolean;
   onSelectSpeaker?: (deviceId: string) => void;
+  /** Host-only room recording — button renders only when a handler is given. */
+  recordingActive?: boolean;
+  onToggleRecording?: () => void;
 }
 
 function CtrlButton({ spec, small }: { spec: ControlButtonSpec; small?: boolean }) {
@@ -266,11 +271,25 @@ export function ControlBar(props: ControlBarProps) {
     },
   ];
 
+  // Recording CTA — hosts only (backend also enforces host-only). Rendered
+  // right after the dock's main toggles so it is easy to find.
+  const recordSpec: ControlButtonSpec | null = props.onToggleRecording
+    ? {
+        key: "record",
+        icon: props.recordingActive ? <Square className="h-4.5 w-4.5" /> : <Circle className="h-4.5 w-4.5" />,
+        label: props.recordingActive ? "Stop recording" : "Start recording",
+        active: props.recordingActive,
+        danger: props.recordingActive,
+        onClick: props.onToggleRecording,
+      }
+    : null;
+
   return (
     <div className="pointer-events-auto flex w-full max-w-full flex-wrap items-center justify-center gap-2 rounded-2xl border border-white/10 bg-[#141B2E]/85 px-2.5 py-2 backdrop-blur-xl sm:gap-2">
       {buttons.filter((spec) => !spec.hidden).map((spec) => (
         <CtrlButton key={spec.key} spec={spec} />
       ))}
+      {recordSpec && <CtrlButton spec={recordSpec} />}
       {props.showSwitchCamera && (
         <CtrlButton
           spec={{
