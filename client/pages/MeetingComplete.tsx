@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { Button } from "@/components/ui/button";
@@ -49,10 +49,15 @@ function durationLabel(start?: string | null, end?: string | null) {
   return "Under a minute";
 }
 
+const SUMMARY_POLL_MS = 8000;
+const SUMMARY_POLL_MAX = 15; // ~2 minutes of patient polling
+
 /**
  * Post-meeting completion screen — shown the moment a user leaves or ends a
- * meeting. Surfaces meeting details, AI summary, transcript, recordings and
- * the downloadable PDF report in one place.
+ * meeting. The hero renders INSTANTLY (no waiting on the network); attendees,
+ * transcript and recordings appear as soon as the report arrives; and the AI
+ * summary auto-generates + refreshes on its own until MetricAi finishes, so
+ * the page never feels stuck while notes are being written.
  */
 export default function MeetingComplete() {
   const { meetingId } = useParams<{ meetingId?: string }>();
@@ -63,34 +68,81 @@ export default function MeetingComplete() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [downloading, setDownloading] = useState(false);
+  /** MetricAi is actively writing the summary (generate kicked off / polling). */
+  const [summaryWriting, setSummaryWriting] = useState(false);
+  const [summaryTries, setSummaryTries] = useState(0);
+  const generateStartedRef = useRef<string | null>(null);
 
-  const loadReport = useCallback(() => {
-    if (!id) return;
-    let cancelled = false;
-    setLoading(true);
-    setError(null);
-    api
-      .get(`/meetings/${id}/report`)
-      .then((res) => {
-        if (cancelled) return;
-        setReport(unwrapApiData<MeetingReportData>(res.data, "Failed to load meeting summary"));
-      })
-      .catch((err) => {
-        if (cancelled) return;
-        setError(getApiMessage(err, "Failed to load the meeting summary."));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [id]);
+  const loadReport = useCallback(
+    (silent = false) => {
+      if (!id) return;
+      let cancelled = false;
+      if (!silent) {
+        setLoading(true);
+        setError(null);
+      }
+      api
+        .get(`/meetings/${id}/report`)
+        .then((res) => {
+          if (cancelled) return;
+          setReport(unwrapApiData<MeetingReportData>(res.data, "Failed to load meeting summary"));
+        })
+        .catch((err) => {
+          if (cancelled || silent) return;
+          setError(getApiMessage(err, "Failed to load the meeting summary."));
+        })
+        .finally(() => {
+          if (!cancelled && !silent) setLoading(false);
+        });
+      return () => {
+        cancelled = true;
+      };
+    },
+    [id],
+  );
 
   useEffect(() => {
     const cleanup = loadReport();
     return cleanup;
   }, [loadReport]);
+
+  // ------------------------------------------------------------------
+  // AI summary pipeline — when the report has no notes yet, kick off
+  // generation once, then poll the report every 8s until MetricAi is
+  // done (or ~2 minutes elapse). Silent refreshes never flash loaders.
+  // ------------------------------------------------------------------
+  useEffect(() => {
+    if (!id) return;
+    if (report?.notes?.summary) {
+      setSummaryWriting(false);
+      return;
+    }
+    if (!report) return;
+
+    // One generation attempt per meeting per visit.
+    if (generateStartedRef.current !== id) {
+      generateStartedRef.current = id;
+      api
+        .post(`/meetings/${id}/notes/generate`)
+        .catch(() => {
+          /* 409/503/"too thin transcript" — polling below still picks up
+             notes if the end-of-meeting job lands first. */
+        });
+    }
+    setSummaryWriting(true);
+    let tries = 0;
+    const timer = setInterval(() => {
+      tries += 1;
+      setSummaryTries(tries);
+      if (tries > SUMMARY_POLL_MAX) {
+        setSummaryWriting(false);
+        clearInterval(timer);
+        return;
+      }
+      loadReport(true);
+    }, SUMMARY_POLL_MS);
+    return () => clearInterval(timer);
+  }, [report, id, loadReport]);
 
   const handleDownloadReport = async () => {
     if (!report) return;
@@ -130,7 +182,7 @@ export default function MeetingComplete() {
           <span className="text-sm text-muted-foreground">Back to meetings</span>
         </div>
 
-        {/* Hero */}
+        {/* Hero — renders instantly, upgrades when the report arrives */}
         <Card className="overflow-hidden border-0 bg-gradient-to-br from-blue-600 via-indigo-600 to-violet-600 text-white shadow-xl shadow-blue-500/20">
           <CardContent className="flex flex-col items-center gap-4 py-10 text-center">
             <span className="flex h-16 w-16 items-center justify-center rounded-full bg-white/15 backdrop-blur">
@@ -139,14 +191,16 @@ export default function MeetingComplete() {
             <div className="space-y-1">
               <h1 className="text-2xl font-bold sm:text-3xl">Meeting ended</h1>
               <p className="text-white/80">
-                {meeting?.title || "Your meeting"} has wrapped up — here's everything from it.
+                {loading ? "Wrapping things up…" : `${meeting?.title || "Your meeting"} has wrapped up — here's everything from it.`}
               </p>
             </div>
             <div className="flex flex-wrap items-center justify-center gap-x-5 gap-y-2 text-sm text-white/90">
-              <span className="flex items-center gap-1.5">
-                <Calendar className="h-4 w-4" />
-                {fmtDateTime(meeting?.startTime) || "—"}
-              </span>
+              {meeting?.startTime && (
+                <span className="flex items-center gap-1.5">
+                  <Calendar className="h-4 w-4" />
+                  {fmtDateTime(meeting.startTime)}
+                </span>
+              )}
               {duration && (
                 <span className="flex items-center gap-1.5">
                   <Clock className="h-4 w-4" />
@@ -198,8 +252,13 @@ export default function MeetingComplete() {
 
         {loading && (
           <Card>
-            <CardContent className="flex items-center justify-center py-12 text-muted-foreground">
-              <Loader2 className="mr-2 h-5 w-5 animate-spin" /> Preparing meeting notes…
+            <CardContent className="space-y-3 py-8">
+              {[0, 1, 2].map((i) => (
+                <div key={i} className="h-16 animate-pulse rounded-lg bg-muted" />
+              ))}
+              <p className="flex items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Preparing meeting notes…
+              </p>
             </CardContent>
           </Card>
         )}
@@ -208,7 +267,7 @@ export default function MeetingComplete() {
           <Card>
             <CardContent className="flex flex-col items-center gap-3 py-12 text-center">
               <p className="text-sm text-muted-foreground">{error}</p>
-              <Button size="sm" variant="outline" onClick={loadReport}>
+              <Button size="sm" variant="outline" onClick={() => loadReport()}>
                 Try again
               </Button>
             </CardContent>
@@ -244,7 +303,7 @@ export default function MeetingComplete() {
               </CardContent>
             </Card>
 
-            {/* AI Summary */}
+            {/* AI Summary — auto-generates and refreshes itself */}
             <Card>
               <CardHeader>
                 <CardTitle className="flex items-center gap-2 text-base">
@@ -254,11 +313,26 @@ export default function MeetingComplete() {
               <CardContent>
                 {summary ? (
                   <p className="text-sm leading-relaxed text-foreground/90">{summary}</p>
+                ) : summaryWriting ? (
+                  <div className="space-y-2.5">
+                    <div className="h-3.5 w-11/12 animate-pulse rounded bg-muted" />
+                    <div className="h-3.5 w-full animate-pulse rounded bg-muted" />
+                    <div className="h-3.5 w-3/4 animate-pulse rounded bg-muted" />
+                    <p className="flex items-center gap-2 pt-1 text-sm text-muted-foreground">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin text-indigo-500" />
+                      MetricAi is writing the summary — usually ready within a minute. This section updates by itself
+                      {summaryTries > 1 ? ` (checked ${summaryTries}×)` : ""}.
+                    </p>
+                  </div>
                 ) : (
-                  <p className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                    MetricAi is still writing the summary — check the full detail page in a moment.
-                  </p>
+                  <div className="space-y-2">
+                    <p className="text-sm text-muted-foreground">
+                      No AI summary yet — meetings need a few minutes of conversation for MetricAi to work with.
+                    </p>
+                    <Button size="sm" variant="outline" onClick={() => { generateStartedRef.current = null; setSummaryWriting(true); loadReport(true); }}>
+                      <Sparkles className="mr-2 h-3.5 w-3.5" /> Try generating again
+                    </Button>
+                  </div>
                 )}
               </CardContent>
             </Card>
