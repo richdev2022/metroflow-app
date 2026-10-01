@@ -129,6 +129,8 @@ export default function Wallet() {
   const [fundWalletOpen, setFundWalletOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
   const [selectedWalletType, setSelectedWalletType] = useState<"user" | "business">("user");
+  /** Owner/admin only — invited members must never see the business wallet. */
+  const canManageBusinessWallet = walletInfo?.canManageBusinessWallet ?? false;
   const [bankOpen, setBankOpen] = useState(false);
 
   // Transfer State
@@ -894,7 +896,9 @@ export default function Wallet() {
             </CardContent>
           </Card>
 
-          {/* Business Wallet Card */}
+          {/* Business Wallet Card — invited members (non owner/admin) never
+              see it at all; the backend already strips business_wallet. */}
+          {canManageBusinessWallet && (
           <Card>
             <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
               <CardTitle className="text-sm font-medium flex items-center gap-2">
@@ -1004,6 +1008,7 @@ export default function Wallet() {
               )}
             </CardContent>
           </Card>
+          )}
         </div>
           </TabsContent>
 
