@@ -9,9 +9,14 @@ import { Button } from "@/components/ui/button";
  *
  * - Spotlight overlay: the target element is highlighted while the rest of
  *   the page dims; a tooltip card explains the feature.
- * - Back / Next / Skip navigation with progress dots; the last step finishes.
+ * - Back / Next / Skip navigation with a progress bar; the last step finishes.
  * - Steps without a visible target (e.g. collapsed sidebar on mobile) render
  *   as a centred card, so the tour works on every breakpoint.
+ * - Mobile-safe: the card never exceeds the viewport (max-height with a
+ *   scrollable body), position is clamped to 12px margins on every side, the
+ *   18 progress dots collapse into a compact progress bar, tap-to-advance on
+ *   the dimmer is disabled on touch (prevents accidental skips), and the
+ *   Back/Next buttons grow to 36px touch targets on small screens.
  * - Auto-starts once per browser (localStorage), and can be restarted from
  *   the sidebar ("Take the tour") via the `metricorex:restart-tour` event.
  */
@@ -144,6 +149,15 @@ export default function AppTour() {
   const [rect, setRect] = useState<DOMRect | null>(null);
   const [targetMissing, setTargetMissing] = useState(false);
   const rafRef = useRef<number>(0);
+  const cardRef = useRef<HTMLDivElement | null>(null);
+  // The card's height is measured from the DOM (text wraps at narrow widths);
+  // its width is deterministic: min(340px, 100vw - 24px).
+  const [cardH, setCardH] = useState(240);
+  // Touch devices: tapping the dimmer advances the tour, which is far too easy
+  // to hit accidentally on a phone — tap-to-advance stays desktop-only.
+  const [coarsePointer] = useState(
+    () => typeof window !== "undefined" && window.matchMedia?.("(pointer: coarse)")?.matches === true,
+  );
 
   const step = STEPS[stepIndex];
   const last = stepIndex === STEPS.length - 1;
@@ -171,6 +185,13 @@ export default function AppTour() {
 
   const measure = useCallback(() => {
     if (!active) return;
+    // Track the rendered card height so the placement math below matches the
+    // real card (it grows taller as text wraps on narrow screens).
+    const cardEl = cardRef.current;
+    if (cardEl) {
+      const h = cardEl.getBoundingClientRect().height;
+      setCardH((prev) => (Math.abs(prev - h) > 1 ? h : prev));
+    }
     const current = STEPS[stepIndex];
     if (!current.selector) {
       setRect(null);
@@ -190,6 +211,12 @@ export default function AppTour() {
       setTargetMissing(true);
       return;
     }
+    const target = el.getBoundingClientRect();
+    if (target.width < 8 || target.height < 8) {
+      setRect(null);
+      setTargetMissing(true);
+      return;
+    }
     el.scrollIntoView({ block: "center", behavior: "smooth" });
     setRect(el.getBoundingClientRect());
     setTargetMissing(false);
@@ -205,7 +232,8 @@ export default function AppTour() {
     const tick = () => {
       frames += 1;
       measure();
-      if (frames < 20) rafRef.current = requestAnimationFrame(tick);
+      // 60 frames (~1s) so the loop outlives smooth scrollIntoView on phones.
+      if (frames < 60) rafRef.current = requestAnimationFrame(tick);
     };
     rafRef.current = requestAnimationFrame(tick);
     const onResize = () => measure();
@@ -238,20 +266,28 @@ export default function AppTour() {
 
   const centered = targetMissing || !rect;
 
-  // Tooltip position (clamped to viewport)
-  const CARD_W = 340;
-  const CARD_H_EST = 240;
+  // Tooltip position. The card's width is deterministic — min(340, vw - 24) —
+  // so the clamp math matches what is actually rendered; its height is the
+  // DOM-measured cardH. top/left are always clamped into the viewport with
+  // 12px margins, so the card can never be pushed off-screen, even when the
+  // spotlight target is partly outside the viewport (e.g. a drawer that is
+  // animating). Centering uses flex (not transform) so framer-motion's own
+  // transform animations can't displace the card.
   const vw = window.innerWidth;
   const vh = window.innerHeight;
-  let cardStyle: React.CSSProperties = {};
+  const cardW = Math.min(340, vw - 24);
+  const cardHUsed = Math.min(cardH, vh - 24);
+  let cardStyle: React.CSSProperties = { position: "relative" };
   if (!centered && rect) {
     const r = rect;
     const spaceBelow = vh - r.bottom;
-    const placeBelow = spaceBelow > CARD_H_EST + 24 || spaceBelow >= r.top;
-    const left = Math.min(Math.max(12, r.left + r.width / 2 - CARD_W / 2), vw - CARD_W - 12);
-    cardStyle = placeBelow
-      ? { top: r.bottom + 14, left }
-      : { top: Math.max(12, r.top - CARD_H_EST - 14), left };
+    const placeBelow = spaceBelow > cardHUsed + 24 || spaceBelow >= r.top;
+    const top = placeBelow ? r.bottom + 14 : r.top - cardHUsed - 14;
+    cardStyle = {
+      position: "absolute",
+      top: Math.min(Math.max(12, top), Math.max(12, vh - cardHUsed - 12)),
+      left: Math.min(Math.max(12, r.left + r.width / 2 - cardW / 2), Math.max(12, vw - cardW - 12)),
+    };
   }
 
   return createPortal(
@@ -282,77 +318,85 @@ export default function AppTour() {
         )}
         {centered && <div className="absolute inset-0 bg-[#080a18]/75" />}
 
-        {/* Click anywhere on the dimmer advances (but not on the card) */}
-        <div className="absolute inset-0" onClick={next} />
+        {/* Click anywhere on the dimmer advances (desktop only — on touch
+            devices accidental taps skip steps, so use the buttons) */}
+        {!coarsePointer && <div className="absolute inset-0" onClick={next} />}
 
-        {/* Tooltip card */}
-        <motion.div
-          key={stepIndex}
-          initial={{ opacity: 0, y: 10, scale: 0.97 }}
-          animate={{ opacity: 1, y: 0, scale: 1 }}
-          transition={{ duration: 0.25, ease: "easeOut" }}
-          className="fixed w-[340px] max-w-[calc(100vw-24px)] rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#101631]"
-          style={
-            centered
-              ? {
-                  top: "50%",
-                  left: "50%",
-                  transform: "translate(-50%, -50%)",
-                  position: "fixed",
-                }
-              : cardStyle
-          }
-          onClick={(e) => e.stopPropagation()}
+        {/* Card — a pointer-events-none wrapper handles flex centering in
+            "no target" mode (transform-free, so framer-motion's entrance
+            animation can't displace it); anchored mode positions the card
+            absolutely inside the same viewport-sized wrapper. */}
+        <div
+          className={`pointer-events-none absolute inset-0 ${
+            centered ? "flex items-center justify-center p-3" : ""
+          }`}
         >
-          <button
-            onClick={finish}
-            aria-label="Skip tour"
-            className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10"
+          <motion.div
+            ref={cardRef}
+            key={stepIndex}
+            initial={{ opacity: 0, y: 10, scale: 0.97 }}
+            animate={{ opacity: 1, y: 0, scale: 1 }}
+            transition={{ duration: 0.25, ease: "easeOut" }}
+            className="pointer-events-auto flex w-[340px] max-w-[calc(100vw-24px)] flex-col rounded-2xl border border-slate-200 bg-white p-5 shadow-2xl dark:border-white/10 dark:bg-[#101631]"
+            style={{ maxHeight: "calc(100dvh - 24px)", ...cardStyle }}
+            onClick={(e) => e.stopPropagation()}
           >
-            <X className="h-4 w-4" />
-          </button>
+            <button
+              onClick={finish}
+              aria-label="Skip tour"
+              className="absolute right-3 top-3 rounded-lg p-1.5 text-slate-400 transition-colors hover:bg-slate-100 hover:text-slate-600 dark:hover:bg-white/10"
+            >
+              <X className="h-4 w-4" />
+            </button>
 
-          <div className="flex items-start gap-3">
-            {step.icon && <div className="mt-0.5 shrink-0">{step.icon}</div>}
-            <div className="min-w-0 pr-4">
-              <h3 className="text-base font-bold text-slate-900 dark:text-white">{step.title}</h3>
-              <p className="mt-1.5 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
-                {step.body}
-              </p>
+            {/* Scrollable body — keeps the actions reachable on short screens */}
+            <div className="min-h-0 overflow-y-auto overscroll-contain">
+              <div className="flex items-start gap-3">
+                {step.icon && <div className="mt-0.5 shrink-0">{step.icon}</div>}
+                <div className="min-w-0 pr-4">
+                  <h3 className="text-base font-bold text-slate-900 dark:text-white">{step.title}</h3>
+                  <p className="mt-1.5 text-sm leading-relaxed text-slate-600 dark:text-slate-300">
+                    {step.body}
+                  </p>
+                </div>
+              </div>
             </div>
-          </div>
 
-          <div className="mt-4 flex items-center justify-between">
-            <div className="flex items-center gap-1.5">
-              {STEPS.map((_, i) => (
-                <span
-                  key={i}
-                  className={`h-1.5 rounded-full transition-all ${
-                    i === stepIndex
-                      ? "w-5 bg-violet-500"
-                      : i < stepIndex
-                        ? "w-1.5 bg-violet-300"
-                        : "w-1.5 bg-slate-300 dark:bg-white/20"
-                  }`}
-                />
-              ))}
-            </div>
-            <div className="flex items-center gap-2">
-              {stepIndex > 0 && (
-                <Button variant="ghost" size="sm" onClick={back} className="h-8 gap-1 text-slate-500">
-                  <ArrowLeft className="h-3.5 w-3.5" /> Back
-                </Button>
-              )}
-              <Button
-                size="sm"
-                onClick={next}
-                className="h-8 gap-1 border-0 bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-md"
+            {/* Compact progress bar + actions — fits 320px-wide screens */}
+            <div className="mt-4 flex shrink-0 items-center gap-2.5">
+              <div
+                className="h-1 min-w-0 flex-1 overflow-hidden rounded-full bg-slate-200 dark:bg-white/15"
+                role="progressbar"
+                aria-valuenow={stepIndex + 1}
+                aria-valuemin={1}
+                aria-valuemax={STEPS.length}
+                aria-label="Tour progress"
               >
-                {last ? "Finish" : "Next"} <ArrowRight className="h-3.5 w-3.5" />
-              </Button>
+                <div
+                  className="h-full rounded-full bg-gradient-to-r from-violet-500 to-fuchsia-500 transition-[width] duration-300"
+                  style={{ width: `${((stepIndex + 1) / STEPS.length) * 100}%` }}
+                />
+              </div>
+              <span className="shrink-0 text-[11px] font-semibold tabular-nums text-slate-400">
+                {stepIndex + 1}/{STEPS.length}
+              </span>
+              <div className="flex shrink-0 items-center gap-1.5">
+                {stepIndex > 0 && (
+                  <Button variant="ghost" size="sm" onClick={back} className="h-9 gap-1 text-slate-500 sm:h-8">
+                    <ArrowLeft className="h-3.5 w-3.5" /> Back
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  onClick={next}
+                  className="h-9 gap-1 border-0 bg-gradient-to-r from-violet-500 to-fuchsia-500 text-white shadow-md sm:h-8"
+                >
+                  {last ? "Finish" : "Next"} <ArrowRight className="h-3.5 w-3.5" />
+                </Button>
+              </div>
             </div>
-          </div>
-        </motion.div>
+          </motion.div>
+        </div>
       </motion.div>
     </AnimatePresence>,
     document.body,
