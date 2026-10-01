@@ -211,6 +211,9 @@ export function CallRoom({
   const [insightsVisible, setInsightsVisible] = useState(false);
   const [captionSegments, setCaptionSegments] = useState<CaptionItem[]>([]);
   const [recordingActive, setRecordingActive] = useState(false);
+  /** Live mirror of recordingActive — leave/unmount teardown must never read a stale closure. */
+  const recordingActiveRef = useRef(false);
+  recordingActiveRef.current = recordingActive;
   const [waitingUnadmitted, setWaitingUnadmitted] = useState(false);
   const [waitingQueue, setWaitingQueue] = useState<RoomWaitingEntry[]>([]);
 
@@ -374,11 +377,15 @@ export function CallRoom({
       client.on("active-speaker", ({ id }) => setActiveSpeakerId(id || null)),
       client.on("media:error", (e) => {
         const msg = String(e?.message || "");
-        // Screen-share failures are NOT a mic/cam permission problem — the
-        // "Enable" banner (mic/cam recovery) made no sense for them and
-        // stacked on top of the control dock on mobile. Toast instead.
+        // Screen-share and camera-switch failures are NOT a mic/cam
+        // permission problem — the "Enable" banner (mic/cam recovery) makes
+        // no sense for them. Toast instead.
         if (/screen|getDisplayMedia/i.test(msg)) {
           toast({ title: "Screen share unavailable", description: msg });
+          return;
+        }
+        if (/camera switch|other camera/i.test(msg)) {
+          toast({ title: "Camera", description: msg });
           return;
         }
         setMediaBlocked(e.message);
@@ -948,8 +955,13 @@ export function CallRoom({
   }, [mediaState.screenSharing, toast]);
 
   const switchCamera = useCallback(() => {
-    clientRef.current?.switchCamera().catch(() => {});
-  }, []);
+    clientRef.current?.switchCamera().catch(() => {
+      toast({
+        title: "Camera switch failed",
+        description: "Could not switch the camera. Try turning it off and on again.",
+      });
+    });
+  }, [toast]);
 
   const sendChat = useCallback((text: string) => {
     emitRoom(`meeting-chat:message`, {
@@ -1045,7 +1057,7 @@ export function CallRoom({
       recordingCleanupRef.current?.();
     } catch { /* already torn down */ }
     recordingCleanupRef.current = null;
-    if (broadcast && recordingActive) {
+    if (broadcast && recordingActiveRef.current) {
       emitRoom(`recording:stop`, {
         roomId: effectiveRoomId,
         ...(isMeeting ? { meetingId: effectiveRoomId } : { callId: effectiveRoomId }),
@@ -1245,18 +1257,27 @@ export function CallRoom({
       } catch (err: any) {
         if (err?.response?.data?.errorCode === "already_recording") {
           toast({ title: "Already recording", description: "This room is already being recorded." });
-        } else {
-          const status = err?.response?.status;
-          const serverMsg = String(err?.response?.data?.error || err?.message || "");
+          return;
+        }
+        const status = err?.response?.status;
+        if (status === 403) {
           toast({
             title: "Recording unavailable",
-            description:
-              status === 403
-                ? "Recording is not enabled for your plan or role. Ask the business owner to enable it."
-                : serverMsg || "Please try again in a moment.",
+            description: "Recording is not enabled for your plan or role. Ask the business owner to enable it.",
           });
+          return;
         }
-        return;
+        if (status === 410) {
+          toast({
+            title: "Recording unavailable",
+            description: String(err?.response?.data?.error || "This room has already ended."),
+          });
+          return;
+        }
+        // Server-side recording path is unhealthy (egress down, transient 5xx,
+        // network error…) — degrade to the in-call composite recorder instead
+        // of killing the feature entirely.
+        toast({ title: "Server recording unavailable", description: "Switching to the in-call recorder." });
       }
     }
     // Composite local recording — mixed participant audio + video grid.

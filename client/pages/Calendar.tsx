@@ -167,6 +167,13 @@ export default function CalendarPage() {
     setSelectedDay(toLocalDateKey(date));
     if (dayMeetings.length === 1) {
       const m = dayMeetings[0];
+      if (m.status === "cancelled") return; // dead appointment — just focus the day
+      if (m.status === "completed") {
+        // Finished meeting → open its details/report, never the live room.
+        if (m.id) navigate(`/meetings/detail/${m.id}`);
+        else if (m.meetingCode) navigate(`/meetings/${m.meetingCode}`);
+        return;
+      }
       if (m.meetingCode) navigate(`/meetings/${m.meetingCode}`);
       return;
     }
