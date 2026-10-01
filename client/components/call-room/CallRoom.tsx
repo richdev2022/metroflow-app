@@ -30,6 +30,7 @@ import { BrandLogo } from "@/components/BrandLogo";
 import { AlertCircle, CheckCircle2, Loader2, Radio, Timer, Wifi, WifiOff, Users, Info, PictureInPicture2, Mic, MicOff, Video, VideoOff } from "lucide-react";
 import { Languages as LanguagesIcon, Sparkles as SparklesIcon, X as XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ParticipantTile } from "./ParticipantTile";
 import { ControlBar } from "./ControlBar";
 import {
@@ -973,21 +974,36 @@ export function CallRoom({
     });
   }, [displayName, effectiveRoomId, emitRoom, localUserId]);
 
-  const leaveRoom = useCallback(() => {
+  const leaveRoom = useCallback((options?: { endForEveryone?: boolean }) => {
     // If this participant was recording, broadcast the stop first (previous
     // behaviour) — then run the shared authoritative teardown.
     stopRecording(true);
     // 1. Authoritative media teardown (tracks, room, elements, timers).
     cleanupCallMedia();
-    // 2. Existing socket leave event (plus host end).
+    // 2. Existing socket leave event (plus host end when chosen).
     emitRoom(`${prefix}:leave`, { roomId: effectiveRoomId, meetingId: isMeeting ? effectiveRoomId : undefined, userId: localUserId, userName: displayName });
-    if (isHost) {
+    // Host's explicit "End for everyone" — or a meeting host (unchanged flow)
+    // — finalizes the call. "Leave for me only" keeps the room alive for the
+    // remaining participants (the server completes the call once EVERYONE
+    // has left).
+    if (isHost && (isMeeting || options?.endForEveryone !== false)) {
       emitRoom(`${prefix}:end`, isMeeting ? { meetingId: effectiveRoomId } : { roomId: effectiveRoomId });
     }
     // 3. Return to where the user started from — the entry-point onLeave also
     //    clears the active-call store (timer, bubble, panels) via the host.
     onLeave();
   }, [cleanupCallMedia, displayName, effectiveRoomId, emitRoom, isHost, isMeeting, localUserId, onLeave, prefix]);
+
+  // "Leave this call?" — the HOST chooses between ending for everyone or
+  // leaving quietly (calls only; meetings keep their existing end flow).
+  const [leaveChoiceOpen, setLeaveChoiceOpen] = useState(false);
+  const requestLeave = useCallback(() => {
+    if (isHost && !isMeeting) {
+      setLeaveChoiceOpen(true);
+      return;
+    }
+    leaveRoom();
+  }, [isHost, isMeeting, leaveRoom]);
 
   // Host moderation (backend re-validates; provider media action + broadcast)
   const removeParticipant = useCallback(async (identityToRemove: string) => {
@@ -1966,7 +1982,7 @@ export function CallRoom({
           onMore={() => setInfoOpen(true)}
           onMinimize={minimizeCall}
           onSwitchCamera={switchCamera}
-          onLeave={leaveRoom}
+          onLeave={requestLeave}
           leaveLabel={isHost ? "End" : "Leave"}
         />
       </footer>
@@ -1994,6 +2010,45 @@ export function CallRoom({
           </button>
         </div>
       )}
+      {/* Host leave choice — end for everyone vs. leave quietly */}
+      <Dialog open={leaveChoiceOpen} onOpenChange={setLeaveChoiceOpen}>
+        <DialogContent overlayClassName="z-[96]" className="z-[96] sm:max-w-[420px]">
+          <DialogHeader>
+            <DialogTitle>Leave this call?</DialogTitle>
+            <DialogDescription>
+              You&apos;re the host — choose what happens for everyone else.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="mt-2 flex flex-col gap-2">
+            <Button
+              className="h-11 w-full border-0 bg-red-500 text-white hover:bg-red-600"
+              onClick={() => {
+                setLeaveChoiceOpen(false);
+                leaveRoom({ endForEveryone: true });
+              }}
+            >
+              End call for everyone
+            </Button>
+            <Button
+              variant="outline"
+              className="h-11 w-full"
+              onClick={() => {
+                setLeaveChoiceOpen(false);
+                leaveRoom({ endForEveryone: false });
+              }}
+            >
+              Leave for me only (call continues)
+            </Button>
+            <Button
+              variant="ghost"
+              className="h-9 w-full text-muted-foreground"
+              onClick={() => setLeaveChoiceOpen(false)}
+            >
+              Cancel
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
       {/* Add participants (host) — team lookup + guest email invites */}
       <AddParticipantsModal
         open={inviteOpen}
