@@ -137,6 +137,8 @@ export default function Meetings() {
   const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
   const [editForm, setEditForm] = useState<UpdateMeetingInput>({});
+  // Meetings list status filter (must live above any early returns — Rules of Hooks)
+  const [statusFilter, setStatusFilter] = useState<"all" | "upcoming" | "completed">("all");
 
   useEffect(() => {
     fetchTeamMembers();
@@ -788,6 +790,26 @@ export default function Meetings() {
     attendees: m.attendees ?? [],
   }));
 
+  // Redesigned list: status filter + live detection + stats
+  const isMeetingLive = (m: Meeting) => {
+    if (m.status === "ongoing") return true;
+    const start = new Date(m.startTime).getTime();
+    const end = m.endTime ? new Date(m.endTime).getTime() : start + 60 * 60000;
+    return start <= Date.now() && Date.now() <= end;
+  };
+  const upcomingCount = meetings.filter(
+    (m) => m.status !== "completed" && m.status !== "cancelled" && new Date(m.startTime).getTime() > Date.now(),
+  ).length;
+  const liveCount = meetings.filter(isMeetingLive).length;
+  const completedCount = meetings.filter((m) => m.status === "completed").length;
+  const filteredMeetings = meetings
+    .filter((m) => {
+      if (statusFilter === "upcoming") return m.status !== "completed" && m.status !== "cancelled";
+      if (statusFilter === "completed") return m.status === "completed";
+      return true;
+    })
+    .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
+
   return (
     <Layout>
       <div className="space-y-8">
@@ -1040,108 +1062,224 @@ export default function Meetings() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {meetings.length === 0 ? (
-            <Card className="col-span-full">
-              <CardContent className="pt-6 text-center">
-                <p className="text-muted-foreground">No meetings scheduled</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Create your first meeting to get started
-                </p>
+        {/* Stats strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            {
+              label: "Live now",
+              value: liveCount,
+              icon: <Video className="h-4 w-4" />,
+              cls: "from-emerald-500/15 to-emerald-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/25",
+            },
+            {
+              label: "Upcoming",
+              value: upcomingCount,
+              icon: <Clock className="h-4 w-4" />,
+              cls: "from-blue-500/15 to-blue-500/5 text-blue-600 dark:text-blue-400 border-blue-500/25",
+            },
+            {
+              label: "Completed",
+              value: completedCount,
+              icon: <Check className="h-4 w-4" />,
+              cls: "from-slate-500/15 to-slate-500/5 text-slate-600 dark:text-slate-300 border-slate-400/25",
+            },
+            {
+              label: "Total",
+              value: meetings.length,
+              icon: <Calendar className="h-4 w-4" />,
+              cls: "from-indigo-500/15 to-indigo-500/5 text-indigo-600 dark:text-indigo-400 border-indigo-500/25",
+            },
+          ].map((stat) => (
+            <button
+              key={stat.label}
+              type="button"
+              onClick={() => navigate("/calendar")}
+              className={`flex items-center gap-3 rounded-xl border bg-gradient-to-br ${stat.cls} px-4 py-3 text-left transition-transform hover:scale-[1.015]`}
+            >
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/60 shadow-sm dark:bg-white/10">
+                {stat.icon}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-lg font-bold leading-none">{stat.value}</span>
+                <span className="mt-0.5 block text-[11px] font-medium uppercase tracking-wide opacity-80 truncate">{stat.label}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Filter tabs */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="inline-flex rounded-full border bg-muted/40 p-1">
+            {(["all", "upcoming", "completed"] as const).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setStatusFilter(key)}
+                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-all ${
+                  statusFilter === key
+                    ? "bg-white text-foreground shadow-sm dark:bg-slate-800"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {key}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
+            onClick={() => navigate("/calendar")}
+          >
+            <Calendar className="h-4 w-4 mr-1.5" />
+            Calendar view
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredMeetings.length === 0 ? (
+            <Card className="col-span-full border-dashed">
+              <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
+                <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600/10 to-violet-600/10">
+                  <Video className="h-7 w-7 text-blue-500" />
+                </span>
+                <div>
+                  <p className="font-medium">No meetings here yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {statusFilter === "completed"
+                      ? "Completed meetings will appear here"
+                      : "Start an instant meeting or schedule one for later"}
+                  </p>
+                </div>
               </CardContent>
             </Card>
           ) : (
-            meetings.map((meeting) => (
-              <Card key={meeting.id}>
-                <CardHeader>
-                  <div className="flex justify-between items-start">
+            filteredMeetings.map((meeting) => {
+              const live = isMeetingLive(meeting);
+              const isOver = meeting.status === "completed" || meeting.status === "cancelled";
+              const accent = live
+                ? "from-emerald-500 to-teal-500"
+                : meeting.status === "completed"
+                  ? "from-slate-400 to-slate-500"
+                  : meeting.status === "cancelled"
+                    ? "from-red-400 to-red-500"
+                    : "from-blue-600 to-violet-600";
+              return (
+                <Card key={meeting.id} className="group relative overflow-hidden pt-0 transition-shadow hover:shadow-lg">
+                  {/* Gradient header band */}
+                  <div className={`relative h-20 bg-gradient-to-br ${accent}`}>
+                    <div className="absolute inset-0 opacity-20 [background-image:radial-gradient(circle_at_20%_30%,white_1px,transparent_1px)] [background-size:14px_14px]" />
+                    <div className="absolute -bottom-5 left-5">
+                      <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-lg dark:bg-slate-900">
+                        <Video className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                      </span>
+                    </div>
+                    {live && (
+                      <span className="absolute top-3 right-3 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-600 shadow">
+                        <span className="relative flex h-2 w-2">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                        </span>
+                        Live
+                      </span>
+                    )}
+                    {!live && !isOver && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700 shadow">
+                        Upcoming
+                      </span>
+                    )}
+                    {meeting.status === "completed" && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600 shadow">
+                        Completed
+                      </span>
+                    )}
+                    {meeting.status === "cancelled" && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-red-600 shadow">
+                        Cancelled
+                      </span>
+                    )}
+                  </div>
+
+                  <CardHeader className="pt-7">
                     <div className="flex items-start gap-2">
-                      <CardTitle className="text-xl">{meeting.title}</CardTitle>
+                      <CardTitle className="text-lg leading-snug line-clamp-1">{meeting.title}</CardTitle>
                       {(meeting.hasPassword || meeting.password) && (
-                        <Lock className="h-4 w-4 mt-1.5 text-muted-foreground shrink-0" aria-label="Password protected" />
+                        <Lock className="h-4 w-4 mt-1 text-muted-foreground shrink-0" aria-label="Password protected" />
                       )}
                     </div>
-                    <Badge variant="outline">
-                      {meeting.status}
-                    </Badge>
-                  </div>
-                  {meeting.description && (
-                    <CardDescription className="mt-2">
-                      {meeting.description}
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Calendar className="h-4 w-4" />
-                    {formatDateTime(meeting.startTime)} -{" "}
-                    {formatDateTime(meeting.endTime).split(", ")[1]}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="h-4 w-4" />
-                    {meeting.timezone}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    {meeting.attendees.length} attendees
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => navigate(`/meetings/${meeting.id}`)}
-                    >
-                      <Info className="h-4 w-4 mr-2" />
-                      View details
-                    </Button>
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => openMeetingRoom(meeting)}
-                    >
-                      <Video className="h-4 w-4 mr-2" />
-                      Join Meeting
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openDetailDialog(meeting)}
-                    >
-                      <Info className="h-4 w-4 mr-2" />
-                      Details
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openEditDialog(meeting)}
-                    >
-                      <Edit className="h-4 w-4 mr-2" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => {
-                        setSelectedMeeting(meeting);
-                        setIsDeleteDialogOpen(true);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))
+                    {meeting.description && (
+                      <CardDescription className="mt-1 line-clamp-2">{meeting.description}</CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3.5">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5" />
+                        {formatDateTime(meeting.startTime).split(", ")[0]}
+                      </span>
+                      <span className="flex items-center gap-1.5 font-medium text-foreground">
+                        <Clock className="h-3.5 w-3.5" />
+                        {formatDateTime(meeting.startTime).split(", ")[1]}
+                        {meeting.endTime ? ` – ${formatDateTime(meeting.endTime).split(", ")[1]}` : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Users className="h-3.5 w-3.5" />
+                        {meeting.attendees.length + (meeting.guests?.length ?? 0)} participants
+                      </div>
+                      {meeting.recurrenceRule ? (
+                        <Badge variant="outline" className="text-[10px] border-indigo-500/30 bg-indigo-500/5 text-indigo-600 dark:text-indigo-300">
+                          <Repeat className="h-3 w-3 mr-1" />
+                          Series
+                        </Badge>
+                      ) : null}
+                    </div>
+
+                    {!isOver && (
+                      <Button
+                        className={`w-full rounded-xl ${live ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/25" : "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700"} shadow-lg`}
+                        onClick={() => openMeetingRoom(meeting)}
+                      >
+                        <Video className="h-4 w-4 mr-2" />
+                        {live ? "Join now" : "Join Meeting"}
+                      </Button>
+                    )}
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 rounded-lg"
+                        onClick={() => navigate(`/meetings/${meeting.id}`)}
+                      >
+                        <Info className="h-4 w-4 mr-1.5" />
+                        Details
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 rounded-lg"
+                        onClick={() => openEditDialog(meeting)}
+                      >
+                        <Edit className="h-4 w-4 mr-1.5" />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg text-red-600 hover:bg-red-500/10 hover:text-red-600"
+                        onClick={() => {
+                          setSelectedMeeting(meeting);
+                          setIsDeleteDialogOpen(true);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })
           )}
         </div>
       </div>
