@@ -968,6 +968,27 @@ export interface ValidateMeetingResponse {
 }
 
 // Meeting Types
+export type MeetingFrequency = 'DAILY' | 'WEEKLY' | 'MONTHLY' | 'YEARLY' | 'CUSTOM';
+
+export interface MeetingRecurrenceInput {
+  frequency: MeetingFrequency;
+  /** Every N days/weeks/months/years (default 1). CUSTOM: every N weeks. */
+  interval?: number;
+  /** CUSTOM only — 0=Sun..6=Sat weekdays for "Weekly on Mon,Wed" style. */
+  customDays?: number[];
+  /** ISO date — series end bound. */
+  endDate?: string;
+  /** Max occurrences (backend caps at 90). */
+  count?: number;
+}
+
+export interface MeetingGuest {
+  id: string;
+  email: string;
+  name?: string | null;
+  status: string;
+}
+
 export interface Meeting {
   id: string;
   title: string;
@@ -992,6 +1013,12 @@ export interface Meeting {
   recordingEnabled: boolean;
   screenSharingEnabled: boolean;
   googleEventId?: string;
+  recurrenceRule?: string | null;
+  recurrenceParentId?: string | null;
+  occurrenceIndex?: number | null;
+  recurrence?: MeetingRecurrenceInput;
+  occurrencesCreated?: number;
+  guests?: MeetingGuest[] | null;
   createdAt: string;
   updatedAt: string;
   inWaitingRoom?: boolean;
@@ -1030,6 +1057,10 @@ export interface CreateMeetingInput {
   recordingEnabled: boolean;
   screenSharingEnabled: boolean;
   attendeeIds: string[];
+  /** External (non-team) participants by email — receive email invites. */
+  guestEmails?: string[];
+  /** Google-style repetition — backend materialises concrete occurrences. */
+  recurrence?: MeetingRecurrenceInput;
 }
 
 export interface UpdateMeetingInput {
