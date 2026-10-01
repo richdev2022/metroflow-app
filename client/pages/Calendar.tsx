@@ -18,6 +18,7 @@ import {
 } from "lucide-react";
 import { useMeetingsRange } from "@/lib/meetings-chat-calls";
 import type { Meeting } from "@shared/api";
+import ScheduleMeetingDialog from "@/components/ScheduleMeetingDialog";
 
 const WEEKDAY_HEADERS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 
@@ -63,6 +64,8 @@ export default function CalendarPage() {
   const [viewYear, setViewYear] = useState(today.getFullYear());
   const [viewMonth, setViewMonth] = useState(today.getMonth()); // 0-based
   const [selectedDay, setSelectedDay] = useState<string>(toLocalDateKey(today));
+  const [scheduleOpen, setScheduleOpen] = useState(false);
+  const [scheduleDate, setScheduleDate] = useState<Date | null>(null);
 
   const monthStart = new Date(viewYear, viewMonth, 1);
   const monthEnd = new Date(viewYear, viewMonth + 1, 0, 23, 59, 59, 999);
@@ -142,6 +145,43 @@ export default function CalendarPage() {
 
   const selectedDayMeetings = meetingsByDay.get(selectedDay) ?? [];
 
+  /** Default start for a newly scheduled day: 09:00 (next hour for today). */
+  const defaultScheduleStart = (date: Date): Date => {
+    const d = new Date(date);
+    const now = new Date();
+    if (d.toDateString() === now.toDateString()) {
+      d.setHours(Math.min(now.getHours() + 1, 23), 0, 0, 0);
+    } else {
+      d.setHours(9, 0, 0, 0);
+    }
+    return d;
+  };
+
+  /**
+   * Day-cell click behaviour:
+   *  - exactly one appointment → open that meeting straight away
+   *  - several appointments  → focus the day (the side panel lists them all)
+   *  - empty day             → prompt the schedule dialog pre-filled with it
+   */
+  const handleDayClick = (date: Date, dayMeetings: Meeting[]) => {
+    setSelectedDay(toLocalDateKey(date));
+    if (dayMeetings.length === 1) {
+      const m = dayMeetings[0];
+      if (m.meetingCode) navigate(`/meetings/${m.meetingCode}`);
+      return;
+    }
+    if (dayMeetings.length === 0) {
+      setScheduleDate(defaultScheduleStart(date));
+      setScheduleOpen(true);
+    }
+  };
+
+  const openScheduleFor = (date: Date) => {
+    setSelectedDay(toLocalDateKey(date));
+    setScheduleDate(defaultScheduleStart(date));
+    setScheduleOpen(true);
+  };
+
   const participantCount = (meeting: Meeting) =>
     (meeting.attendees?.length ?? 0) + (meeting.guests?.length ?? 0);
 
@@ -161,7 +201,7 @@ export default function CalendarPage() {
             </p>
           </div>
           <Button
-            onClick={() => navigate("/meetings")}
+            onClick={() => openScheduleFor(today)}
             className="bg-gradient-to-r from-blue-600 to-indigo-500 hover:from-blue-700 hover:to-indigo-600 shadow-lg shadow-blue-500/20"
           >
             <Video className="h-4 w-4 mr-2" />
@@ -205,7 +245,14 @@ export default function CalendarPage() {
                     <button
                       key={key}
                       type="button"
-                      onClick={() => setSelectedDay(key)}
+                      onClick={() => handleDayClick(date, dayMeetings)}
+                      title={
+                        dayMeetings.length === 1
+                          ? `Open "${dayMeetings[0].title}"`
+                          : dayMeetings.length > 1
+                            ? `${dayMeetings.length} meetings on this day`
+                            : `Schedule a meeting on ${date.toLocaleDateString()}`
+                      }
                       className={`min-h-[72px] sm:min-h-[96px] rounded-lg border p-1 sm:p-1.5 flex flex-col gap-1 text-left transition-all ${
                         inMonth ? "bg-background" : "bg-muted/30 opacity-60"
                       } ${selected ? "ring-2 ring-blue-500 border-blue-500/40" : "hover:bg-accent/50"} ${
@@ -266,7 +313,18 @@ export default function CalendarPage() {
                   <div className="py-10 text-center space-y-2">
                     <CalendarDays className="h-8 w-8 mx-auto text-muted-foreground/40" />
                     <p className="text-sm text-muted-foreground">No meetings on this day</p>
-                    <p className="text-xs text-muted-foreground/70">Pick another day or schedule a new meeting</p>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="mt-1"
+                      onClick={() => {
+                        const [y, m, d] = selectedDay.split("-").map(Number);
+                        if (y && m && d) openScheduleFor(new Date(y, m - 1, d));
+                      }}
+                    >
+                      <Video className="h-3.5 w-3.5 mr-1.5" />
+                      Schedule a meeting on this day
+                    </Button>
                   </div>
                 ) : (
                   selectedDayMeetings.map((meeting) => {
@@ -343,6 +401,13 @@ export default function CalendarPage() {
             </Card>
           </div>
         </div>
+
+        {/* Schedule dialog — opened from empty-day clicks, the day panel and the header button */}
+        <ScheduleMeetingDialog
+          open={scheduleOpen}
+          onOpenChange={setScheduleOpen}
+          initialDate={scheduleDate}
+        />
       </div>
     </Layout>
   );

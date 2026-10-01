@@ -67,6 +67,40 @@ export const AddParticipantsModal: React.FC<AddParticipantsModalProps> = ({
     (user) => !currentParticipantIds.includes(user.id)
   );
 
+  // Email→identity lookup while typing: a matching team member is invited as a
+  // real participant; anything else stays a guest email. Mirrors the picker
+  // used by the schedule dialog.
+  const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  const typedQuery = emailInput.trim().toLowerCase();
+  const typedMember = typedQuery
+    ? allTeamMembers.find((m) => (m.email || "").toLowerCase() === typedQuery)
+    : undefined;
+  const memberSuggestions =
+    typedQuery.length >= 2
+      ? availableUsers
+          .filter(
+            (m) =>
+              (m.name || "").toLowerCase().includes(typedQuery) ||
+              (m.email || "").toLowerCase().includes(typedQuery)
+          )
+          .slice(0, 5)
+      : [];
+
+  const commitTypedValue = () => {
+    const value = emailInput.trim().toLowerCase();
+    if (!value) return;
+    if (typedMember) {
+      // Team member — select as a real participant (roster + notification).
+      if (!selectedUserIds.includes(typedMember.id) && !currentParticipantIds.includes(typedMember.id)) {
+        setSelectedUserIds((prev) => [...prev, typedMember.id]);
+      }
+      setEmailInput("");
+      setEmailError(null);
+      return;
+    }
+    addEmail();
+  };
+
   const addEmail = () => {
     const value = emailInput.trim().toLowerCase();
     if (!value) return;
@@ -261,23 +295,64 @@ export const AddParticipantsModal: React.FC<AddParticipantsModalProps> = ({
           <div className="flex gap-2">
             <Input
               type="email"
-              placeholder="guest@example.com"
+              placeholder="Type a name or email — team members are detected automatically"
               value={emailInput}
               onChange={(e) => {
                 setEmailInput(e.target.value);
                 setEmailError(null);
               }}
               onKeyDown={(e) => {
-                if (e.key === 'Enter') {
+                if (e.key === 'Enter' || e.key === ',') {
                   e.preventDefault();
-                  addEmail();
+                  commitTypedValue();
                 }
               }}
             />
-            <Button type="button" variant="secondary" onClick={addEmail} className="shrink-0">
+            <Button type="button" variant="secondary" onClick={commitTypedValue} className="shrink-0">
               Add
             </Button>
           </div>
+          {/* Smart lookup: show live team-member suggestions while typing */}
+          {(memberSuggestions.length > 0 || (emailPattern.test(typedQuery) && !typedMember)) && (
+            <div className="rounded-md border bg-popover shadow-sm overflow-hidden">
+              {memberSuggestions.map((m) => (
+                <button
+                  key={m.id}
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent text-left"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    if (!selectedUserIds.includes(m.id)) {
+                      setSelectedUserIds((prev) => [...prev, m.id]);
+                    }
+                    setEmailInput("");
+                    setEmailError(null);
+                  }}
+                >
+                  <span className="h-6 w-6 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
+                    {(m.name || "?").slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="font-medium">{m.name}</span>
+                  <span className="text-muted-foreground text-xs">{m.email}</span>
+                  <span className="ml-auto text-[9px] font-bold uppercase tracking-wide text-blue-600">Team</span>
+                </button>
+              ))}
+              {emailPattern.test(typedQuery) && !typedMember && (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent text-left"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={commitTypedValue}
+                >
+                  <span className="h-6 w-6 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    <Mail className="h-3 w-3" />
+                  </span>
+                  <span className="font-medium">{typedQuery}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600">Add as guest</span>
+                </button>
+              )}
+            </div>
+          )}
           {emailError && <p className="text-xs text-destructive">{emailError}</p>}
           {emails.length > 0 && (
             <div className="flex flex-wrap gap-1.5">
