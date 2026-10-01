@@ -35,6 +35,21 @@ export const useMeetings = (page = 1, limit = 10) => {
   });
 };
 
+/** Meetings inside a date window (Calendar month view). */
+export const useMeetingsRange = (from: string, to: string) => {
+  return useQuery({
+    queryKey: ['meetings-range', from, to],
+    queryFn: async () => {
+      const response = await api.get('/meetings', {
+        params: { page: 1, limit: 200, from, to },
+      });
+      return unwrapApiData<{ meetings: Meeting[]; total: number }>(
+        response.data, 'Failed to get meetings');
+    },
+    enabled: !!from && !!to,
+  });
+};
+
 export const useMeeting = (meetingId: string) => {
   return useQuery({
     queryKey: ['meeting', meetingId],
