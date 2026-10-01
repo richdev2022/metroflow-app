@@ -869,6 +869,14 @@ export default function Payroll() {
       const values = epicTransferForm.getValues();
       const selectedEpic = epics.find((e) => e.id === values.epic_id);
 
+      // Resolve the funding wallet's currency — every item must be sent in
+      // that currency or the backend wallet-currency guard rejects the batch.
+      const selectedWallet =
+        wallets?.business_wallet && wallets.business_wallet.id === values.source_wallet_id
+          ? wallets.business_wallet
+          : wallets?.user_wallet;
+      const walletCurrency = (selectedWallet?.currency || "NGN").toUpperCase();
+
       // Single recipient -> route through /transfers/single
       if (epicTransferMode === "single" && epicTransferItems.length === 1) {
         const item = epicTransferItems[0];
@@ -877,6 +885,7 @@ export default function Payroll() {
           accountNumber: item.recipient_account,
           accountName: item.recipient_name,
           amount: item.amount,
+          currency: (item as any).currency || walletCurrency,
           remark: selectedEpic?.name || "",
           pin: pin,
           wallet_id: values.source_wallet_id,
@@ -907,6 +916,7 @@ export default function Payroll() {
         accountNumber: item.recipient_account,
         accountName: item.recipient_name,
         amount: item.amount,
+        currency: (item as any).currency || walletCurrency,
         remark: selectedEpic?.name || "",
       }));
 

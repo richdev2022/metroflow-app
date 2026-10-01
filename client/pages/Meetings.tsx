@@ -56,6 +56,9 @@ import {
   Check,
   X,
   Lock,
+  Repeat,
+  UserPlus,
+  Sparkles,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -66,7 +69,7 @@ import {
   useJoinMeeting,
   useLeaveMeeting,
 } from "@/lib/meetings-chat-calls";
-import { Meeting, CreateMeetingInput, UpdateMeetingInput } from "@shared/api";
+import { Meeting, CreateMeetingInput, UpdateMeetingInput, MeetingFrequency, MeetingRecurrenceInput } from "@shared/api";
 import { TeamMember } from "@shared/api";
 import { api } from "@/lib/api-client";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
@@ -125,7 +128,17 @@ export default function Meetings() {
     attendeeIds: [],
   });
 
+  // Google-style schedule fields (kept outside CreateMeetingInput until submit)
+  const [guestEmails, setGuestEmails] = useState<string[]>([]);
+  const [frequency, setFrequency] = useState<MeetingFrequency | "NONE">("NONE");
+  const [recurrenceInterval, setRecurrenceInterval] = useState(1);
+  const [customDays, setCustomDays] = useState<number[]>([]);
+  const [recurrenceEndDate, setRecurrenceEndDate] = useState("");
+  const WEEKDAY_LABELS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
   const [editForm, setEditForm] = useState<UpdateMeetingInput>({});
+  // Meetings list status filter (must live above any early returns — Rules of Hooks)
+  const [statusFilter, setStatusFilter] = useState<"all" | "upcoming" | "completed">("all");
 
   useEffect(() => {
     fetchTeamMembers();
@@ -185,39 +198,77 @@ export default function Meetings() {
     }
   };
 
+  const buildRecurrence = (): MeetingRecurrenceInput | undefined => {
+    if (frequency === "NONE") return undefined;
+    const rec: MeetingRecurrenceInput = {
+      frequency,
+      interval: Math.max(1, Math.min(365, recurrenceInterval || 1)),
+    };
+    if (frequency === "CUSTOM" && customDays.length > 0) {
+      rec.customDays = [...customDays].sort();
+    }
+    if (recurrenceEndDate) {
+      // end-of-day so the last occurrence inside the chosen day still counts
+      rec.endDate = new Date(`${recurrenceEndDate}T23:59:59`).toISOString();
+    }
+    return rec;
+  };
+
+  const resetCreateForm = () => {
+    setMeetingForm({
+      title: "",
+      description: "",
+      startTime: "",
+      endTime: "",
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      isInstant: false,
+      maxParticipants: 100,
+      waitingRoomEnabled: false,
+      recordingEnabled: false,
+      screenSharingEnabled: true,
+      attendeeIds: [],
+    });
+    setGuestEmails([]);
+    setFrequency("NONE");
+    setRecurrenceInterval(1);
+    setCustomDays([]);
+    setRecurrenceEndDate("");
+  };
+
   const handleCreateMeeting = async () => {
-    if (!meetingForm.title || !meetingForm.startTime || !meetingForm.endTime) {
+    if (!meetingForm.title || !meetingForm.startTime) {
       toast({
         variant: "destructive",
         title: "Error",
-        description: "Please fill in all required fields",
+        description: "Please add a title and a start time",
+      });
+      return;
+    }
+    if (frequency === "CUSTOM" && customDays.length === 0) {
+      toast({
+        variant: "destructive",
+        title: "Error",
+        description: "Pick at least one weekday for the custom repeat",
       });
       return;
     }
     setIsProcessing(true);
     try {
-      await createMeeting.mutateAsync({
+      const created = await createMeeting.mutateAsync({
         ...meetingForm,
         startTime: toApiDateTime(meetingForm.startTime),
-        endTime: toApiDateTime(meetingForm.endTime),
+        endTime: meetingForm.endTime ? toApiDateTime(meetingForm.endTime) : undefined,
+        guestEmails,
+        recurrence: buildRecurrence(),
       });
       setIsCreateDialogOpen(false);
-      setMeetingForm({
-        title: "",
-        description: "",
-        startTime: "",
-        endTime: "",
-        timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
-        isInstant: false,
-        maxParticipants: 100,
-        waitingRoomEnabled: false,
-        recordingEnabled: false,
-        screenSharingEnabled: true,
-        attendeeIds: [],
-      });
+      resetCreateForm();
       toast({
-        title: "Meeting created",
-        description: "Your meeting has been scheduled successfully",
+        title: "Meeting scheduled",
+        description:
+          created?.occurrencesCreated && created.occurrencesCreated > 1
+            ? `Created ${created.occurrencesCreated} occurrences of "${created.title}" — invitations + reminders are on the way`
+            : "Invitations and reminders have been sent to participants",
       });
     } catch (err) {
       toast({
@@ -415,13 +466,15 @@ export default function Meetings() {
     async (meeting: Meeting) => {
       setIsProcessing(true);
       try {
-        const updatedMeeting = await leaveMeeting.mutateAsync(meeting.id);
-        setSelectedMeeting(updatedMeeting);
+        await leaveMeeting.mutateAsync(meeting.id);
         setIsMeetingRoomOpen(false);
         toast({
           title: "Left Meeting",
           description: "You have left the meeting",
         });
+        // Post-meeting completion screen: details, AI summary, transcript,
+        // recordings and the downloadable report in one place.
+        navigate(`/meetings/complete/${meeting.id}`);
       } catch (err) {
         toast({
           variant: "destructive",
@@ -432,7 +485,7 @@ export default function Meetings() {
         setIsProcessing(false);
       }
     },
-    [leaveMeeting, toast]
+    [leaveMeeting, navigate, toast]
   );
 
   const transformAttendeesToInitialParticipants = (meeting: Meeting) =>
@@ -587,11 +640,175 @@ export default function Meetings() {
     );
   }
 
+  // Google-style unified participant picker: type an email — if it belongs to a
+  // team member the chip shows their NAME, otherwise it is marked as a GUEST.
+  const ParticipantPicker = ({
+    selectedAttendeeIds,
+    guests,
+    onAttendeesChange,
+    onGuestsChange,
+  }: {
+    selectedAttendeeIds: string[];
+    guests: string[];
+    onAttendeesChange: (ids: string[]) => void;
+    onGuestsChange: (emails: string[]) => void;
+  }) => {
+    const [query, setQuery] = useState("");
+    const [focused, setFocused] = useState(false);
+    const emailPattern = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+
+    const suggestions = query.trim().length >= 1
+      ? teamMembers
+          .filter((m) => {
+            const q = query.trim().toLowerCase();
+            const name = (m.name || "").toLowerCase();
+            const email = (m.email || "").toLowerCase();
+            return name.includes(q) || email.includes(q);
+          })
+          .filter((m) => !selectedAttendeeIds.includes(m.id))
+          .slice(0, 5)
+      : [];
+
+    const commitEmail = () => {
+      const value = query.trim().toLowerCase();
+      if (!value) return;
+      const member = teamMembers.find((m) => (m.email || "").toLowerCase() === value);
+      if (member) {
+        if (!selectedAttendeeIds.includes(member.id)) {
+          onAttendeesChange([...selectedAttendeeIds, member.id]);
+        }
+      } else if (emailPattern.test(value)) {
+        if (!guests.includes(value)) {
+          onGuestsChange([...guests, value]);
+        }
+      }
+      setQuery("");
+    };
+
+    const removeParticipant = (value: string, isTeam: boolean) => {
+      if (isTeam) {
+        onAttendeesChange(selectedAttendeeIds.filter((id) => id !== value));
+      } else {
+        onGuestsChange(guests.filter((email) => email !== value));
+      }
+    };
+
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap gap-1.5 min-h-[2.25rem] w-full rounded-md border border-input bg-background px-2.5 py-2 text-sm">
+          {selectedAttendeeIds.map((id) => {
+            const member = teamMembers.find((m) => m.id === id);
+            return (
+              <Badge key={`team-${id}`} className="pl-1 pr-1 py-0.5 gap-1 bg-blue-600/10 text-blue-700 dark:text-blue-300 border border-blue-500/30 hover:bg-blue-600/15">
+                <span className="h-4 w-4 rounded-full bg-blue-600 text-white text-[9px] font-bold flex items-center justify-center">
+                  {(member?.name || "?").slice(0, 1).toUpperCase()}
+                </span>
+                {member?.name || "Team member"}
+                <button type="button" aria-label="Remove" onClick={() => removeParticipant(id, true)} className="ml-0.5 rounded-full hover:bg-blue-600/20 p-0.5">
+                  <X className="h-3 w-3" />
+                </button>
+              </Badge>
+            );
+          })}
+          {guests.map((email) => (
+            <Badge key={`guest-${email}`} className="pl-1 pr-1 py-0.5 gap-1 bg-amber-500/10 text-amber-700 dark:text-amber-300 border border-amber-500/30 hover:bg-amber-500/15">
+              <UserPlus className="h-3 w-3" />
+              {email}
+              <span className="text-[9px] font-bold uppercase tracking-wide opacity-70">Guest</span>
+              <button type="button" aria-label="Remove" onClick={() => removeParticipant(email, false)} className="ml-0.5 rounded-full hover:bg-amber-600/20 p-0.5">
+                <X className="h-3 w-3" />
+              </button>
+            </Badge>
+          ))}
+          <input
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            onFocus={() => setFocused(true)}
+            onBlur={() => setTimeout(() => setFocused(false), 150)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === ",") {
+                e.preventDefault();
+                commitEmail();
+              } else if (e.key === "Backspace" && !query && (guests.length > 0 || selectedAttendeeIds.length > 0)) {
+                if (guests.length > 0) removeParticipant(guests[guests.length - 1], false);
+                else removeParticipant(selectedAttendeeIds[selectedAttendeeIds.length - 1], true);
+              }
+            }}
+            placeholder={selectedAttendeeIds.length + guests.length === 0 ? "Add people by name or email…" : "Add more people…"}
+            className="flex-1 min-w-[10rem] bg-transparent outline-none placeholder:text-muted-foreground text-sm"
+          />
+        </div>
+        {focused && (suggestions.length > 0 || emailPattern.test(query.trim().toLowerCase())) && (
+          <div className="rounded-md border bg-popover shadow-md overflow-hidden">
+            {suggestions.map((member) => (
+              <button
+                key={member.id}
+                type="button"
+                className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent text-left"
+                onMouseDown={(e) => e.preventDefault()}
+                onClick={() => {
+                  onAttendeesChange([...selectedAttendeeIds, member.id]);
+                  setQuery("");
+                }}
+              >
+                <span className="h-6 w-6 rounded-full bg-blue-600 text-white text-[10px] font-bold flex items-center justify-center">
+                  {(member.name || "?").slice(0, 1).toUpperCase()}
+                </span>
+                <span className="font-medium">{member.name}</span>
+                <span className="text-muted-foreground text-xs">{member.email}</span>
+              </button>
+            ))}
+            {emailPattern.test(query.trim().toLowerCase()) &&
+              !teamMembers.some((m) => (m.email || "").toLowerCase() === query.trim().toLowerCase()) && (
+                <button
+                  type="button"
+                  className="w-full flex items-center gap-2 px-3 py-2 text-sm hover:bg-accent text-left"
+                  onMouseDown={(e) => e.preventDefault()}
+                  onClick={() => {
+                    commitEmail();
+                  }}
+                >
+                  <span className="h-6 w-6 rounded-full bg-amber-500 text-white text-[10px] font-bold flex items-center justify-center">
+                    <UserPlus className="h-3 w-3" />
+                  </span>
+                  <span className="font-medium">{query.trim().toLowerCase()}</span>
+                  <span className="text-[9px] font-bold uppercase tracking-wide text-amber-600">Add as guest</span>
+                </button>
+              )}
+          </div>
+        )}
+        <p className="text-xs text-muted-foreground">
+          Team members show their name · anyone else joins by email as a guest
+        </p>
+      </div>
+    );
+  };
+
   // FIX: Normalize null attendees to [] so .length and .map() never throw
   const meetings = (meetingsData?.meetings || []).map((m: Meeting) => ({
     ...m,
     attendees: m.attendees ?? [],
   }));
+
+  // Redesigned list: status filter + live detection + stats
+  const isMeetingLive = (m: Meeting) => {
+    if (m.status === "ongoing") return true;
+    const start = new Date(m.startTime).getTime();
+    const end = m.endTime ? new Date(m.endTime).getTime() : start + 60 * 60000;
+    return start <= Date.now() && Date.now() <= end;
+  };
+  const upcomingCount = meetings.filter(
+    (m) => m.status !== "completed" && m.status !== "cancelled" && new Date(m.startTime).getTime() > Date.now(),
+  ).length;
+  const liveCount = meetings.filter(isMeetingLive).length;
+  const completedCount = meetings.filter((m) => m.status === "completed").length;
+  const filteredMeetings = meetings
+    .filter((m) => {
+      if (statusFilter === "upcoming") return m.status !== "completed" && m.status !== "cancelled";
+      if (statusFilter === "completed") return m.status === "completed";
+      return true;
+    })
+    .sort((a, b) => new Date(b.startTime).getTime() - new Date(a.startTime).getTime());
 
   return (
     <Layout>
@@ -621,152 +838,206 @@ export default function Meetings() {
             <DialogTrigger asChild>
               <Button>
                 <Plus className="h-4 w-4 mr-2" />
-                New Meeting
+                Schedule meeting
               </Button>
             </DialogTrigger>
-            <DialogContent className="max-w-lg max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
+            <DialogContent className="max-w-xl max-h-[calc(100dvh-1rem)] flex flex-col overflow-hidden">
               <DialogHeader className="shrink-0 pr-8">
-                <DialogTitle>Schedule New Meeting</DialogTitle>
+                <DialogTitle className="flex items-center gap-2">
+                  <Sparkles className="h-5 w-5 text-blue-500" />
+                  New scheduled meeting
+                </DialogTitle>
                 <DialogDescription>
-                  Create a new meeting and invite team members
+                  Add participants, pick a time, and choose how often it repeats — invitations and reminders go out automatically
                 </DialogDescription>
               </DialogHeader>
-              <div className="min-h-0 flex-1 space-y-4 overflow-y-auto py-4 pr-1">
+              <div className="min-h-0 flex-1 space-y-5 overflow-y-auto py-4 pr-1">
+                <Input
+                  value={meetingForm.title}
+                  onChange={(e) =>
+                    setMeetingForm({ ...meetingForm, title: e.target.value })
+                  }
+                  placeholder="Add title"
+                  className="h-auto border-none bg-transparent px-0 text-xl font-semibold shadow-none focus-visible:ring-0 placeholder:text-muted-foreground/50"
+                />
+                <Textarea
+                  value={meetingForm.description}
+                  onChange={(e) =>
+                    setMeetingForm({ ...meetingForm, description: e.target.value })
+                  }
+                  placeholder="Add description (optional)"
+                  rows={2}
+                  className="resize-none"
+                />
+
                 <div className="grid gap-2">
-                  <Label htmlFor="title">Title</Label>
-                  <Input
-                    id="title"
-                      value={meetingForm.title}
-                    onChange={(e) =>
-                      setMeetingForm({ ...meetingForm, title: e.target.value })
-                    }
-                    placeholder="Enter meeting title"
+                  <Label className="flex items-center gap-1.5"><Users className="h-3.5 w-3.5" /> Participants</Label>
+                  <ParticipantPicker
+                    selectedAttendeeIds={meetingForm.attendeeIds}
+                    guests={guestEmails}
+                    onAttendeesChange={(ids) => setMeetingForm({ ...meetingForm, attendeeIds: ids })}
+                    onGuestsChange={setGuestEmails}
                   />
                 </div>
-                <div className="grid gap-2">
-                  <Label htmlFor="description">Description</Label>
-                  <Textarea
-                    id="description"
-                    value={meetingForm.description}
-                    onChange={(e) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        description: e.target.value,
-                      })
-                    }
-                    placeholder="Enter meeting description"
-                  />
-                </div>
+
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
                   <div className="grid gap-2">
-                    <Label htmlFor="startTime">Start Time</Label>
+                    <Label htmlFor="startTime" className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> Start</Label>
                     <Input
                       id="startTime"
                       type="datetime-local"
                       value={meetingForm.startTime}
                       onChange={(e) =>
-                        setMeetingForm({
-                          ...meetingForm,
-                          startTime: e.target.value,
-                        })
+                        setMeetingForm({ ...meetingForm, startTime: e.target.value })
                       }
                     />
                   </div>
                   <div className="grid gap-2">
-                    <Label htmlFor="endTime">End Time</Label>
+                    <Label htmlFor="endTime" className="flex items-center gap-1.5"><Clock className="h-3.5 w-3.5" /> End <span className="text-muted-foreground font-normal">(optional)</span></Label>
                     <Input
                       id="endTime"
                       type="datetime-local"
                       value={meetingForm.endTime}
                       onChange={(e) =>
-                        setMeetingForm({
-                          ...meetingForm,
-                          endTime: e.target.value,
-                        })
+                        setMeetingForm({ ...meetingForm, endTime: e.target.value })
                       }
                     />
                   </div>
                 </div>
+
                 <div className="grid gap-2">
                   <Label htmlFor="timezone">Timezone</Label>
                   <TimezoneDropdown
                     value={meetingForm.timezone}
                     onChange={(timezone) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        timezone,
-                      })
+                      setMeetingForm({ ...meetingForm, timezone })
                     }
                   />
                 </div>
+
                 <div className="grid gap-2">
-                  <Label htmlFor="password">Password (Optional)</Label>
-                  <Input
-                    id="password"
-                    type="password"
-                    value={meetingForm.password || ""}
-                    onChange={(e) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        password: e.target.value,
-                      })
-                    }
-                    placeholder="Enter meeting password"
-                  />
+                  <Label className="flex items-center gap-1.5"><Repeat className="h-3.5 w-3.5" /> Repeat</Label>
+                  <Select
+                    value={frequency}
+                    onValueChange={(value) => setFrequency(value as MeetingFrequency | "NONE")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Does not repeat" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="NONE">Does not repeat</SelectItem>
+                      <SelectItem value="DAILY">Daily</SelectItem>
+                      <SelectItem value="WEEKLY">Weekly on {meetingForm.startTime ? WEEKDAY_LABELS[new Date(meetingForm.startTime).getDay()] : "same day"}</SelectItem>
+                      <SelectItem value="MONTHLY">Monthly</SelectItem>
+                      <SelectItem value="YEARLY">Yearly</SelectItem>
+                      <SelectItem value="CUSTOM">Custom…</SelectItem>
+                    </SelectContent>
+                  </Select>
+                  {frequency !== "NONE" && (
+                    <div className="rounded-lg border bg-muted/40 p-3 space-y-3">
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">Every</span>
+                        <Input
+                          type="number"
+                          min={1}
+                          max={365}
+                          value={recurrenceInterval}
+                          onChange={(e) => setRecurrenceInterval(parseInt(e.target.value) || 1)}
+                          className="w-20 h-8"
+                        />
+                        <span className="text-sm text-muted-foreground">
+                          {frequency === "DAILY" ? "days" : frequency === "WEEKLY" || frequency === "CUSTOM" ? "weeks" : frequency === "MONTHLY" ? "months" : "years"}
+                        </span>
+                      </div>
+                      {frequency === "CUSTOM" && (
+                        <div className="space-y-1.5">
+                          <span className="text-xs text-muted-foreground">Repeat on</span>
+                          <div className="flex flex-wrap gap-1">
+                            {WEEKDAY_LABELS.map((label, idx) => (
+                              <button
+                                key={label}
+                                type="button"
+                                onClick={() =>
+                                  setCustomDays((days) =>
+                                    days.includes(idx) ? days.filter((d) => d !== idx) : [...days, idx],
+                                  )
+                                }
+                                className={`h-8 w-11 rounded-full text-xs font-medium transition-colors ${
+                                  customDays.includes(idx)
+                                    ? "bg-blue-600 text-white"
+                                    : "bg-background border text-muted-foreground hover:bg-accent"
+                                }`}
+                              >
+                                {label}
+                              </button>
+                            ))}
+                          </div>
+                        </div>
+                      )}
+                      <div className="flex items-center gap-2">
+                        <span className="text-sm text-muted-foreground whitespace-nowrap">Until</span>
+                        <Input
+                          type="date"
+                          value={recurrenceEndDate}
+                          onChange={(e) => setRecurrenceEndDate(e.target.value)}
+                          className="w-44 h-8"
+                        />
+                        <span className="text-xs text-muted-foreground">(optional)</span>
+                      </div>
+                    </div>
+                  )}
                 </div>
-                <div className="grid gap-4">
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting Room</Label>
-                    <Switch
-                      id="waitingRoomEnabled"
-                      checked={meetingForm.waitingRoomEnabled}
-                      onCheckedChange={(checked) =>
-                        setMeetingForm({
-                          ...meetingForm,
-                          waitingRoomEnabled: checked,
-                        })
-                      }
-                    />
+
+                <details className="group rounded-lg border">
+                  <summary className="cursor-pointer select-none px-3 py-2.5 text-sm font-medium flex items-center gap-2">
+                    <Lock className="h-3.5 w-3.5" /> Meeting options
+                    <span className="ml-auto text-xs text-muted-foreground">password, waiting room, recording</span>
+                  </summary>
+                  <div className="px-3 pb-3 space-y-3">
+                    <div className="grid gap-1.5">
+                      <Label htmlFor="password">Password (optional)</Label>
+                      <Input
+                        id="password"
+                        type="password"
+                        value={meetingForm.password || ""}
+                        onChange={(e) =>
+                          setMeetingForm({ ...meetingForm, password: e.target.value })
+                        }
+                        placeholder="Enter meeting password"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="waitingRoomEnabled" className="cursor-pointer">Waiting room</Label>
+                      <Switch
+                        id="waitingRoomEnabled"
+                        checked={meetingForm.waitingRoomEnabled}
+                        onCheckedChange={(checked) =>
+                          setMeetingForm({ ...meetingForm, waitingRoomEnabled: checked })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
+                      <Switch
+                        id="recordingEnabled"
+                        checked={meetingForm.recordingEnabled}
+                        onCheckedChange={(checked) =>
+                          setMeetingForm({ ...meetingForm, recordingEnabled: checked })
+                        }
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <Label htmlFor="screenSharingEnabled" className="cursor-pointer">Screen sharing</Label>
+                      <Switch
+                        id="screenSharingEnabled"
+                        checked={meetingForm.screenSharingEnabled}
+                        onCheckedChange={(checked) =>
+                          setMeetingForm({ ...meetingForm, screenSharingEnabled: checked })
+                        }
+                      />
+                    </div>
                   </div>
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="recordingEnabled" className="cursor-pointer">Recording</Label>
-                    <Switch
-                      id="recordingEnabled"
-                      checked={meetingForm.recordingEnabled}
-                      onCheckedChange={(checked) =>
-                        setMeetingForm({
-                          ...meetingForm,
-                          recordingEnabled: checked,
-                        })
-                      }
-                    />
-                  </div>
-                  <div className="flex items-center justify-between">
-                    <Label htmlFor="screenSharingEnabled" className="cursor-pointer">Screen Sharing</Label>
-                    <Switch
-                      id="screenSharingEnabled"
-                      checked={meetingForm.screenSharingEnabled}
-                      onCheckedChange={(checked) =>
-                        setMeetingForm({
-                          ...meetingForm,
-                          screenSharingEnabled: checked,
-                        })
-                      }
-                    />
-                  </div>
-                </div>
-                <div className="grid gap-2">
-                  <Label>Attendees</Label>
-                  <TeamMemberMultiSelect
-                    selected={meetingForm.attendeeIds}
-                    onChange={(ids) =>
-                      setMeetingForm({
-                        ...meetingForm,
-                        attendeeIds: ids,
-                      })
-                    }
-                  />
-                </div>
+                </details>
               </div>
               <DialogFooter className="shrink-0">
                 <Button
@@ -778,12 +1049,12 @@ export default function Meetings() {
                 </Button>
                 <Button
                   onClick={handleCreateMeeting}
-                  disabled={isProcessing}
+                  disabled={isProcessing || !meetingForm.title.trim() || !meetingForm.startTime}
                 >
                   {isProcessing ? (
                     <Loader2 className="h-4 w-4 animate-spin mr-2" />
                   ) : null}
-                  Schedule Meeting
+                  Schedule meeting
                 </Button>
               </DialogFooter>
             </DialogContent>
@@ -791,108 +1062,224 @@ export default function Meetings() {
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {meetings.length === 0 ? (
-            <Card className="col-span-full">
-              <CardContent className="pt-6 text-center">
-                <p className="text-muted-foreground">No meetings scheduled</p>
-                <p className="text-sm text-muted-foreground mt-1">
-                  Create your first meeting to get started
-                </p>
+        {/* Stats strip */}
+        <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {[
+            {
+              label: "Live now",
+              value: liveCount,
+              icon: <Video className="h-4 w-4" />,
+              cls: "from-emerald-500/15 to-emerald-500/5 text-emerald-600 dark:text-emerald-400 border-emerald-500/25",
+            },
+            {
+              label: "Upcoming",
+              value: upcomingCount,
+              icon: <Clock className="h-4 w-4" />,
+              cls: "from-blue-500/15 to-blue-500/5 text-blue-600 dark:text-blue-400 border-blue-500/25",
+            },
+            {
+              label: "Completed",
+              value: completedCount,
+              icon: <Check className="h-4 w-4" />,
+              cls: "from-slate-500/15 to-slate-500/5 text-slate-600 dark:text-slate-300 border-slate-400/25",
+            },
+            {
+              label: "Total",
+              value: meetings.length,
+              icon: <Calendar className="h-4 w-4" />,
+              cls: "from-indigo-500/15 to-indigo-500/5 text-indigo-600 dark:text-indigo-400 border-indigo-500/25",
+            },
+          ].map((stat) => (
+            <button
+              key={stat.label}
+              type="button"
+              onClick={() => navigate("/calendar")}
+              className={`flex items-center gap-3 rounded-xl border bg-gradient-to-br ${stat.cls} px-4 py-3 text-left transition-transform hover:scale-[1.015]`}
+            >
+              <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/60 shadow-sm dark:bg-white/10">
+                {stat.icon}
+              </span>
+              <span className="min-w-0">
+                <span className="block text-lg font-bold leading-none">{stat.value}</span>
+                <span className="mt-0.5 block text-[11px] font-medium uppercase tracking-wide opacity-80 truncate">{stat.label}</span>
+              </span>
+            </button>
+          ))}
+        </div>
+
+        {/* Filter tabs */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="inline-flex rounded-full border bg-muted/40 p-1">
+            {(["all", "upcoming", "completed"] as const).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setStatusFilter(key)}
+                className={`rounded-full px-4 py-1.5 text-sm font-medium capitalize transition-all ${
+                  statusFilter === key
+                    ? "bg-white text-foreground shadow-sm dark:bg-slate-800"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {key}
+              </button>
+            ))}
+          </div>
+          <Button
+            variant="outline"
+            size="sm"
+            className="rounded-full border-blue-500/30 text-blue-600 dark:text-blue-400 hover:bg-blue-500/10"
+            onClick={() => navigate("/calendar")}
+          >
+            <Calendar className="h-4 w-4 mr-1.5" />
+            Calendar view
+          </Button>
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-6">
+          {filteredMeetings.length === 0 ? (
+            <Card className="col-span-full border-dashed">
+              <CardContent className="flex flex-col items-center gap-3 py-14 text-center">
+                <span className="flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-blue-600/10 to-violet-600/10">
+                  <Video className="h-7 w-7 text-blue-500" />
+                </span>
+                <div>
+                  <p className="font-medium">No meetings here yet</p>
+                  <p className="text-sm text-muted-foreground mt-1">
+                    {statusFilter === "completed"
+                      ? "Completed meetings will appear here"
+                      : "Start an instant meeting or schedule one for later"}
+                  </p>
+                </div>
               </CardContent>
             </Card>
           ) : (
-            meetings.map((meeting) => (
-              <Card key={meeting.id}>
-                <CardHeader>
-                  <div className="flex justify-between items-start">
+            filteredMeetings.map((meeting) => {
+              const live = isMeetingLive(meeting);
+              const isOver = meeting.status === "completed" || meeting.status === "cancelled";
+              const accent = live
+                ? "from-emerald-500 to-teal-500"
+                : meeting.status === "completed"
+                  ? "from-slate-400 to-slate-500"
+                  : meeting.status === "cancelled"
+                    ? "from-red-400 to-red-500"
+                    : "from-blue-600 to-violet-600";
+              return (
+                <Card key={meeting.id} className="group relative overflow-hidden pt-0 transition-shadow hover:shadow-lg">
+                  {/* Gradient header band */}
+                  <div className={`relative h-20 bg-gradient-to-br ${accent}`}>
+                    <div className="absolute inset-0 opacity-20 [background-image:radial-gradient(circle_at_20%_30%,white_1px,transparent_1px)] [background-size:14px_14px]" />
+                    <div className="absolute -bottom-5 left-5">
+                      <span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-white shadow-lg dark:bg-slate-900">
+                        <Video className="h-6 w-6 text-blue-600 dark:text-blue-400" />
+                      </span>
+                    </div>
+                    {live && (
+                      <span className="absolute top-3 right-3 inline-flex items-center gap-1.5 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-emerald-600 shadow">
+                        <span className="relative flex h-2 w-2">
+                          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-500 opacity-75" />
+                          <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                        </span>
+                        Live
+                      </span>
+                    )}
+                    {!live && !isOver && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-blue-700 shadow">
+                        Upcoming
+                      </span>
+                    )}
+                    {meeting.status === "completed" && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-slate-600 shadow">
+                        Completed
+                      </span>
+                    )}
+                    {meeting.status === "cancelled" && (
+                      <span className="absolute top-3 right-3 rounded-full bg-white/95 px-2.5 py-1 text-[10px] font-bold uppercase tracking-wide text-red-600 shadow">
+                        Cancelled
+                      </span>
+                    )}
+                  </div>
+
+                  <CardHeader className="pt-7">
                     <div className="flex items-start gap-2">
-                      <CardTitle className="text-xl">{meeting.title}</CardTitle>
+                      <CardTitle className="text-lg leading-snug line-clamp-1">{meeting.title}</CardTitle>
                       {(meeting.hasPassword || meeting.password) && (
-                        <Lock className="h-4 w-4 mt-1.5 text-muted-foreground shrink-0" aria-label="Password protected" />
+                        <Lock className="h-4 w-4 mt-1 text-muted-foreground shrink-0" aria-label="Password protected" />
                       )}
                     </div>
-                    <Badge variant="outline">
-                      {meeting.status}
-                    </Badge>
-                  </div>
-                  {meeting.description && (
-                    <CardDescription className="mt-2">
-                      {meeting.description}
-                    </CardDescription>
-                  )}
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Calendar className="h-4 w-4" />
-                    {formatDateTime(meeting.startTime)} -{" "}
-                    {formatDateTime(meeting.endTime).split(", ")[1]}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Clock className="h-4 w-4" />
-                    {meeting.timezone}
-                  </div>
-                  <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                    <Users className="h-4 w-4" />
-                    {meeting.attendees.length} attendees
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => navigate(`/meetings/${meeting.id}`)}
-                    >
-                      <Info className="h-4 w-4 mr-2" />
-                      View details
-                    </Button>
-                  </div>
-                  <div>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="w-full"
-                      onClick={() => openMeetingRoom(meeting)}
-                    >
-                      <Video className="h-4 w-4 mr-2" />
-                      Join Meeting
-                    </Button>
-                  </div>
-                  <div className="flex gap-2">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openDetailDialog(meeting)}
-                    >
-                      <Info className="h-4 w-4 mr-2" />
-                      Details
-                    </Button>
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => openEditDialog(meeting)}
-                    >
-                      <Edit className="h-4 w-4 mr-2" />
-                      Edit
-                    </Button>
-                    <Button
-                      variant="destructive"
-                      size="sm"
-                      className="flex-1"
-                      onClick={() => {
-                        setSelectedMeeting(meeting);
-                        setIsDeleteDialogOpen(true);
-                      }}
-                    >
-                      <Trash2 className="h-4 w-4 mr-2" />
-                      Delete
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            ))
+                    {meeting.description && (
+                      <CardDescription className="mt-1 line-clamp-2">{meeting.description}</CardDescription>
+                    )}
+                  </CardHeader>
+                  <CardContent className="space-y-3.5">
+                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 text-sm text-muted-foreground">
+                      <span className="flex items-center gap-1.5">
+                        <Calendar className="h-3.5 w-3.5" />
+                        {formatDateTime(meeting.startTime).split(", ")[0]}
+                      </span>
+                      <span className="flex items-center gap-1.5 font-medium text-foreground">
+                        <Clock className="h-3.5 w-3.5" />
+                        {formatDateTime(meeting.startTime).split(", ")[1]}
+                        {meeting.endTime ? ` – ${formatDateTime(meeting.endTime).split(", ")[1]}` : ""}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                        <Users className="h-3.5 w-3.5" />
+                        {meeting.attendees.length + (meeting.guests?.length ?? 0)} participants
+                      </div>
+                      {meeting.recurrenceRule ? (
+                        <Badge variant="outline" className="text-[10px] border-indigo-500/30 bg-indigo-500/5 text-indigo-600 dark:text-indigo-300">
+                          <Repeat className="h-3 w-3 mr-1" />
+                          Series
+                        </Badge>
+                      ) : null}
+                    </div>
+
+                    {!isOver && (
+                      <Button
+                        className={`w-full rounded-xl ${live ? "bg-emerald-600 hover:bg-emerald-700 shadow-emerald-500/25" : "bg-gradient-to-r from-blue-600 to-violet-600 hover:from-blue-700 hover:to-violet-700"} shadow-lg`}
+                        onClick={() => openMeetingRoom(meeting)}
+                      >
+                        <Video className="h-4 w-4 mr-2" />
+                        {live ? "Join now" : "Join Meeting"}
+                      </Button>
+                    )}
+                    <div className="flex gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 rounded-lg"
+                        onClick={() => navigate(`/meetings/${meeting.id}`)}
+                      >
+                        <Info className="h-4 w-4 mr-1.5" />
+                        Details
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="flex-1 rounded-lg"
+                        onClick={() => openEditDialog(meeting)}
+                      >
+                        <Edit className="h-4 w-4 mr-1.5" />
+                        Edit
+                      </Button>
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg text-red-600 hover:bg-red-500/10 hover:text-red-600"
+                        onClick={() => {
+                          setSelectedMeeting(meeting);
+                          setIsDeleteDialogOpen(true);
+                        }}
+                      >
+                        <Trash2 className="h-4 w-4" />
+                      </Button>
+                    </div>
+                  </CardContent>
+                </Card>
+              );
+            })
           )}
         </div>
       </div>

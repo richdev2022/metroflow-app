@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, MessageSquare, Video, Mic, Phone, Sparkles } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
@@ -555,6 +555,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                       <span className="absolute top-1 right-1 z-10 hidden h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block" />
                     </>
                   )}
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/calendar")} tooltip="Calendar">
+                <Link to="/calendar">
+                  <CalendarDays />
+                  <span>Calendar</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
