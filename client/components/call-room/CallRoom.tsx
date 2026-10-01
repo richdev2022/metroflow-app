@@ -23,8 +23,12 @@ import {
 } from "@/lib/calling";
 import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
+import { unwrapApiData } from "@/lib/api-response";
+import type { TeamMember } from "@shared/api";
+import { AddParticipantsModal } from "@/components/AddParticipantsModal";
 import { BrandLogo } from "@/components/BrandLogo";
 import { AlertCircle, CheckCircle2, Loader2, Radio, Timer, Wifi, WifiOff, Users, Info, PictureInPicture2, Mic, MicOff, Video, VideoOff } from "lucide-react";
+import { Languages as LanguagesIcon, Sparkles as SparklesIcon, X as XIcon } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ParticipantTile } from "./ParticipantTile";
 import { ControlBar } from "./ControlBar";
@@ -158,6 +162,9 @@ export function CallRoom({
     return initial;
   });
   const [mediaParticipants, setMediaParticipants] = useState<RemoteParticipant[]>([]);
+  /** Live mirror for non-reactive readers (recorder audio re-scan). */
+  const mediaParticipantsRef = useRef<RemoteParticipant[]>([]);
+  mediaParticipantsRef.current = mediaParticipants;
 
   const [mediaState, setMediaState] = useState<LocalMediaState>({ audioEnabled: true, videoEnabled: callType !== "audio", screenSharing: false });
   const [localStream, setLocalStream] = useState<MediaStream | null>(null);
@@ -180,6 +187,28 @@ export function CallRoom({
       return false;
     }
   });
+
+  // MetricAi Call Copilot — per-user caption translation + live AI insights.
+  const [captionLanguage, setCaptionLanguage] = useState(() => {
+    try {
+      return localStorage.getItem("metricorex:caption-language") || "";
+    } catch {
+      return "";
+    }
+  });
+  const [translatedCaption, setTranslatedCaption] = useState<{
+    text: string;
+    speakerName: string;
+    lang: string;
+    ts: number;
+  } | null>(null);
+  const [liveInsights, setLiveInsights] = useState<{
+    summary: string;
+    keyPoints: string[];
+    actionItems: string[];
+    generatedAt: string;
+  } | null>(null);
+  const [insightsVisible, setInsightsVisible] = useState(false);
   const [captionSegments, setCaptionSegments] = useState<CaptionItem[]>([]);
   const [recordingActive, setRecordingActive] = useState(false);
   const [waitingUnadmitted, setWaitingUnadmitted] = useState(false);
@@ -207,6 +236,8 @@ export function CallRoom({
   participantsOpenRef.current = participantsOpen;
   const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const recordedChunksRef = useRef<Blob[]>([]);
+  /** Teardown for the composite recorder (audio mixer, canvas loop, hidden videos). */
+  const recordingCleanupRef = useRef<(() => void) | null>(null);
   const recognitionRef = useRef<any>(null);
   const clientUnsubsRef = useRef<Array<() => void>>([]);
   /** Late-bound handle so a failed connect can re-invoke connectMedia. */
@@ -219,6 +250,29 @@ export function CallRoom({
 
   const remainingMs = endsAt ? Math.max(0, new Date(endsAt).getTime() - now) : null;
   const effectiveRoomId = identity;
+
+  // ------------------------------------------------------------------
+  // Inviting people — the room is a global overlay, so window.location
+  // is NOT the room URL. Build the real deep link (/meetings/:code or
+  // /calls/:code) from the room code so "Copy invite link" always
+  // carries the IDs and lands joiners in the room directly.
+  // ------------------------------------------------------------------
+  const inviteCode = inviteDetails?.code || roomId || callId || meetingId || identity || "";
+  const inviteUrl =
+    typeof window !== "undefined"
+      ? inviteCode
+        ? `${window.location.origin}/${isMeeting ? "meetings" : "calls"}/${inviteCode}`
+        : window.location.href
+      : "";
+  const [inviteOpen, setInviteOpen] = useState(false);
+  const [inviteTeam, setInviteTeam] = useState<TeamMember[]>([]);
+  const openInviteModal = useCallback(() => {
+    setInviteOpen(true);
+    api
+      .get("/team")
+      .then((res) => setInviteTeam(unwrapApiData<TeamMember[]>(res.data, "Failed to fetch team members") || []))
+      .catch(() => undefined); // the modal still supports email-only invites
+  }, []);
 
   const emitRoom = useCallback((event: string, payload: any, ack?: (resp: any) => void) => {
     const socket = getSingletonSocket();
@@ -673,6 +727,25 @@ export function CallRoom({
           }),
         );
       }],
+      [`caption:translated`, (c: any) => {
+        if (!c?.translation) return;
+        setTranslatedCaption({
+          text: String(c.translation),
+          speakerName: String(c.speakerName || "Speaker"),
+          lang: String(c.targetLanguage || ""),
+          ts: Date.now(),
+        });
+      }],
+      [`call:ai-insights`, (p: any) => {
+        if (!p?.summary) return;
+        setLiveInsights({
+          summary: String(p.summary),
+          keyPoints: Array.isArray(p.keyPoints) ? p.keyPoints.map(String) : [],
+          actionItems: Array.isArray(p.actionItems) ? p.actionItems.map(String) : [],
+          generatedAt: String(p.generatedAt || new Date().toISOString()),
+        });
+        setInsightsVisible(true);
+      }],
       [`recording:started`, (p: any) => {
         setRecordingActive(true);
         if (p?.recordingId && p?.mode === "server") serverRecordingIdRef.current = p.recordingId;
@@ -953,7 +1026,14 @@ export function CallRoom({
   }, [effectiveRoomId, emitRoom, isMeeting]);
 
   // ------------------------------------------------------------------
-  // Recording (client-side MediaRecorder — provider-agnostic local capture)
+  // Recording — provider-agnostic local capture.
+  //
+  // Server rooms (LiveKit) record via Egress; MediaSoup rooms use the local
+  // recorder below. The local recorder is a true COMPOSITE: every local +
+  // remote microphone is mixed through WebAudio, and camera tiles are drawn
+  // onto a canvas grid — so the file captures the whole conversation, not
+  // just the local mic (and it no longer hard-fails when the local mic is
+  // muted or unavailable).
   // ------------------------------------------------------------------
   function stopRecording(broadcast: boolean) {
     const rec = mediaRecorderRef.current;
@@ -961,12 +1041,169 @@ export function CallRoom({
       rec.stop();
     }
     mediaRecorderRef.current = null;
+    try {
+      recordingCleanupRef.current?.();
+    } catch { /* already torn down */ }
+    recordingCleanupRef.current = null;
     if (broadcast && recordingActive) {
       emitRoom(`recording:stop`, {
         roomId: effectiveRoomId,
         ...(isMeeting ? { meetingId: effectiveRoomId } : { callId: effectiveRoomId }),
       });
     }
+  }
+
+  /** Build the composite MediaStream (mixed audio + optional canvas video). */
+  async function buildCompositeStream(): Promise<{ stream: MediaStream; hasVideo: boolean; cleanup: () => void }> {
+    const cleanups: Array<() => void> = [];
+    const cleanup = () => {
+      for (const fn of cleanups) {
+        try {
+          fn();
+        } catch { /* best-effort */ }
+      }
+    };
+
+    // --- Audio: mix local mic + every remote mic into one track ---------
+    let mixedAudio: MediaStream | null = null;
+    let audioCtx: AudioContext | null = null;
+    try {
+      const AudioCtx = window.AudioContext || (window as any).webkitAudioContext;
+      if (AudioCtx) {
+        audioCtx = new AudioCtx();
+        await audioCtx.resume().catch(() => undefined);
+        const dest = audioCtx.createMediaStreamDestination();
+        const attach = (stream: MediaStream | null | undefined) => {
+          if (!stream) return;
+          for (const track of stream.getAudioTracks()) {
+            try {
+              const source = audioCtx!.createMediaStreamSource(new MediaStream([track]));
+              source.connect(dest);
+            } catch { /* track bound to another context — skip */ }
+          }
+        };
+        attach(localStream);
+        mediaParticipants.forEach((p) => attach(p.audioStream));
+        // Remote participants that join later still make it into the mix —
+        // re-scan the roster every few seconds until recording stops.
+        const rescan = setInterval(() => {
+          for (const p of mediaParticipantsRef.current) attach(p.audioStream);
+        }, 3000);
+        cleanups.push(() => clearInterval(rescan));
+        cleanups.push(() => {
+          try {
+            audioCtx?.close();
+          } catch { /* already closed */ }
+        });
+        if (dest.stream.getAudioTracks().length > 0) {
+          mixedAudio = dest.stream;
+        }
+      }
+    } catch { /* no WebAudio — fall back to raw local stream audio */ }
+
+    // --- Video: composite grid of camera tiles (video calls only) -------
+    let canvasStream: MediaStream | null = null;
+    if (callType !== "audio") {
+      try {
+        type VideoSource = { el: HTMLVideoElement; stream: MediaStream };
+        const sources: VideoSource[] = [];
+        const mountVideo = (stream: MediaStream): HTMLVideoElement | null => {
+          if (stream.getVideoTracks().length === 0) return null;
+          const el = document.createElement("video");
+          el.autoplay = true;
+          el.muted = true;
+          (el as any).playsInline = true;
+          el.srcObject = stream;
+          el.style.cssText = "position:fixed;left:-10000px;top:0;width:320px;height:180px;pointer-events:none;";
+          document.body.appendChild(el);
+          el.play().catch(() => undefined);
+          cleanups.push(() => {
+            try {
+              el.pause();
+              el.srcObject = null;
+              el.remove();
+            } catch { /* already removed */ }
+          });
+          return el;
+        };
+        if (localStream) {
+          const el = mountVideo(localStream);
+          if (el) sources.push({ el, stream: localStream });
+        }
+        for (const p of mediaParticipants) {
+          const vid = p.videoStream || (p.screenSharing ? p.screenStream : null);
+          if (!vid) continue;
+          const el = mountVideo(vid);
+          if (el) sources.push({ el, stream: vid });
+        }
+
+        if (sources.length > 0) {
+          const canvas = document.createElement("canvas");
+          canvas.width = 1280;
+          canvas.height = 720;
+          const g = canvas.getContext("2d");
+          if (g) {
+            const drawCover = (
+              source: HTMLVideoElement,
+              x: number,
+              y: number,
+              w: number,
+              h: number,
+            ) => {
+              const sw = source.videoWidth || 16;
+              const sh = source.videoHeight || 9;
+              const scale = Math.max(w / sw, h / sh);
+              const dw = sw * scale;
+              const dh = sh * scale;
+              g.drawImage(source, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+            };
+            const renderFrame = () => {
+              const live = sources.filter((s) => !s.el.ended && (s.el.videoWidth || 0) > 0);
+              if (live.length === 0) {
+                g.fillStyle = "#0B0F1A";
+                g.fillRect(0, 0, canvas.width, canvas.height);
+                return;
+              }
+              const cols = Math.ceil(Math.sqrt(live.length));
+              const rows = Math.ceil(live.length / cols);
+              const cellW = canvas.width / cols;
+              const cellH = canvas.height / rows;
+              g.fillStyle = "#0B0F1A";
+              g.fillRect(0, 0, canvas.width, canvas.height);
+              live.forEach((s, i) => {
+                const col = i % cols;
+                const row = Math.floor(i / cols);
+                g.save();
+                g.beginPath();
+                g.rect(col * cellW + 2, row * cellH + 2, cellW - 4, cellH - 4);
+                g.clip();
+                drawCover(s.el, col * cellW + 2, row * cellH + 2, cellW - 4, cellH - 4);
+                g.restore();
+              });
+            };
+            renderFrame();
+            const loop = setInterval(renderFrame, 100); // 10 fps keeps CPU low
+            canvasStream = canvas.captureStream(10);
+            cleanups.push(() => clearInterval(loop));
+            cleanups.push(() => canvasStream?.getTracks().forEach((t) => t.stop()));
+          }
+        }
+      } catch { /* canvas compositor unavailable — record audio only */ }
+    }
+
+    const parts: MediaStream[] = [];
+    if (mixedAudio) parts.push(mixedAudio);
+    else if (localStream) parts.push(localStream);
+    if (canvasStream) parts.push(canvasStream);
+
+    if (parts.length === 0) {
+      cleanup();
+      throw new Error("No audio or video is available to record in this room yet.");
+    }
+
+    const combined = new MediaStream();
+    parts.forEach((s) => s.getTracks().forEach((t) => combined.addTrack(t)));
+    return { stream: combined, hasVideo: combined.getVideoTracks().length > 0, cleanup };
   }
 
   const toggleRecording = useCallback(async () => {
@@ -1004,32 +1241,53 @@ export function CallRoom({
           return;
         }
         // mode === "client" (e.g. storage not configured) → fall through to
-        // the local recorder below.
+        // the composite local recorder below.
       } catch (err: any) {
         if (err?.response?.data?.errorCode === "already_recording") {
           toast({ title: "Already recording", description: "This room is already being recorded." });
         } else {
-          toast({ title: "Recording unavailable", description: String(err?.response?.data?.error || err?.message || "") });
+          const status = err?.response?.status;
+          const serverMsg = String(err?.response?.data?.error || err?.message || "");
+          toast({
+            title: "Recording unavailable",
+            description:
+              status === 403
+                ? "Recording is not enabled for your plan or role. Ask the business owner to enable it."
+                : serverMsg || "Please try again in a moment.",
+          });
         }
         return;
       }
     }
+    // Composite local recording — mixed participant audio + video grid.
+    let composite: { stream: MediaStream; hasVideo: boolean; cleanup: () => void };
     try {
-      const mixed = new MediaStream();
-      localStream?.getTracks().forEach((t) => mixed.addTrack(t));
-      const rec = new MediaRecorder(mixed, { mimeType: MediaRecorder.isTypeSupported("video/webm;codecs=vp8") ? "video/webm;codecs=vp8" : "video/webm" });
+      composite = await buildCompositeStream();
+    } catch (err: any) {
+      toast({ title: "Recording unavailable", description: String(err?.message || err || "Nothing to record yet.") });
+      return;
+    }
+    try {
+      const { stream, hasVideo, cleanup } = composite;
+      recordingCleanupRef.current = cleanup;
       recordedChunksRef.current = [];
+      const preferred = hasVideo
+        ? ["video/webm;codecs=vp8,opus", "video/webm;codecs=vp9,opus", "video/webm", "video/mp4"]
+        : ["audio/webm;codecs=opus", "audio/webm", "audio/mp4"];
+      const mimeType = preferred.find((t) => MediaRecorder.isTypeSupported(t)) || "";
+      const rec = new MediaRecorder(stream, mimeType ? { mimeType } : undefined);
       rec.ondataavailable = (e) => {
         if (e.data.size > 0) recordedChunksRef.current.push(e.data);
       };
       rec.onstop = async () => {
-        const blob = new Blob(recordedChunksRef.current, { type: "video/webm" });
+        const type = hasVideo ? "video/webm" : "audio/webm";
+        const blob = new Blob(recordedChunksRef.current, { type });
         try {
           const created = await api.post("/recordings", isMeeting ? { meetingId: effectiveRoomId } : { callId: effectiveRoomId });
           const recordingId = created?.data?.data?.id || created?.data?.id;
           if (recordingId) {
             const form = new FormData();
-            form.append("file", blob, `meeting-${Date.now()}.webm`);
+            form.append("file", blob, `${isMeeting ? "meeting" : "call"}-${Date.now()}.webm`);
             await api.post(`/recordings/${recordingId}/upload`, form, { headers: { "Content-Type": "multipart/form-data" } });
             toast({ title: "Recording saved", description: "Find it under Recordings." });
           }
@@ -1044,10 +1302,24 @@ export function CallRoom({
         roomId: effectiveRoomId,
         ...(isMeeting ? { meetingId: effectiveRoomId } : { callId: effectiveRoomId }),
       });
+      toast({
+        title: "Recording started",
+        description: hasVideo
+          ? "Recording everyone in the room (mixed audio + video grid)."
+          : "Recording everyone's audio.",
+      });
     } catch (err: any) {
-      toast({ title: "Recording unavailable", description: String(err?.message || "Your browser blocked recording.") });
+      composite.cleanup();
+      recordingCleanupRef.current = null;
+      const detail = String(err?.message || err || "");
+      toast({
+        title: "Recording unavailable",
+        description: /mediarecorder/i.test(detail)
+          ? "This browser doesn't support in-call recording. Try Chrome or Edge."
+          : detail || "Your browser blocked recording.",
+      });
     }
-  }, [callType, displayName, effectiveRoomId, emitRoom, isMeeting, localStream, recordingActive, toast]);
+  }, [callType, displayName, effectiveRoomId, emitRoom, isMeeting, localStream, mediaParticipants, recordingActive, toast]);
 
   // ------------------------------------------------------------------
   // Live captions (browser SpeechRecognition — provider-independent).
@@ -1140,6 +1412,22 @@ export function CallRoom({
       setCaptionsEnabled(false);
     }
   }, [captionsEnabled, displayName, effectiveRoomId, emitRoom, isMeeting, localUserId, toast]);
+
+  // MetricAi Call Copilot — persist + register the caption translation
+  // language with the backend (unicast `caption:translated` streams back).
+  useEffect(() => {
+    try {
+      localStorage.setItem("metricorex:caption-language", captionLanguage);
+    } catch {}
+    emitRoom("caption:set-language", { language: captionLanguage || "" });
+  }, [captionLanguage, emitRoom]);
+
+  // Translated caption pill fades like native captions.
+  useEffect(() => {
+    if (!translatedCaption) return;
+    const t = window.setTimeout(() => setTranslatedCaption(null), 6000);
+    return () => window.clearTimeout(t);
+  }, [translatedCaption]);
 
   // ------------------------------------------------------------------
   // Audio output routing — enumerate + apply via the calling client pool.
@@ -1507,6 +1795,79 @@ export function CallRoom({
 
         <CaptionsOverlay segments={captionSegments} enabled={captionsEnabled} onHide={() => setCaptionSegments([])} />
 
+        {/* MetricAi Call Copilot — caption language picker (shown with captions) */}
+        {captionsEnabled && (
+          <div className="pointer-events-auto absolute left-1/2 top-3 z-30 -translate-x-1/2">
+            <label className="flex items-center gap-1.5 rounded-full border border-white/15 bg-black/45 px-3 py-1 text-[11px] text-white/90 backdrop-blur">
+              <LanguagesIcon className="h-3.5 w-3.5 text-violet-300" />
+              <span className="hidden sm:inline">Translate to</span>
+              <select
+                value={captionLanguage}
+                onChange={(e) => setCaptionLanguage(e.target.value)}
+                className="bg-transparent text-[11px] font-medium text-white outline-none [&>option]:text-black"
+                aria-label="Caption translation language"
+              >
+                <option value="">Off</option>
+                {["en", "fr", "es", "pt", "ar", "de", "ig", "ha", "yo", "zh", "hi", "it", "tr"].map((l) => (
+                  <option key={l} value={l}>
+                    {l.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+
+        {/* MetricAi Call Copilot — live translated caption (unicast to this user) */}
+        {translatedCaption && (
+          <div className="pointer-events-none absolute bottom-32 left-1/2 z-30 w-fit max-w-[86%] -translate-x-1/2 rounded-xl border border-violet-400/30 bg-black/55 px-3.5 py-2 backdrop-blur animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <p className="text-[10px] font-semibold uppercase tracking-wide text-violet-300">
+              {translatedCaption.speakerName} · {translatedCaption.lang.toUpperCase()}
+            </p>
+            <p className="text-sm leading-snug text-white/95">{translatedCaption.text}</p>
+          </div>
+        )}
+
+        {/* MetricAi Call Copilot — live insights card (updates every ~45s) */}
+        {insightsVisible && liveInsights && (
+          <div className="absolute right-3 top-3 z-30 w-72 max-w-[80vw] rounded-2xl border border-violet-400/25 bg-black/60 p-3 text-white shadow-xl backdrop-blur animate-in fade-in slide-in-from-top-2 duration-200">
+            <div className="mb-1.5 flex items-center justify-between gap-2">
+              <p className="flex items-center gap-1.5 text-[11px] font-bold uppercase tracking-wide text-violet-300">
+                <SparklesIcon className="h-3.5 w-3.5" /> MetricAi Live Insights
+              </p>
+              <button
+                type="button"
+                onClick={() => setInsightsVisible(false)}
+                className="rounded-full p-0.5 text-white/60 transition-colors hover:bg-white/10 hover:text-white"
+                aria-label="Hide live insights"
+              >
+                <XIcon className="h-3.5 w-3.5" />
+              </button>
+            </div>
+            <p className="text-xs leading-relaxed text-white/90">{liveInsights.summary}</p>
+            {liveInsights.keyPoints.length > 0 && (
+              <ul className="mt-2 space-y-1">
+                {liveInsights.keyPoints.map((kp, i) => (
+                  <li key={`kp-${i}`} className="flex gap-1.5 text-[11px] leading-snug text-white/80">
+                    <span className="text-violet-300">•</span>
+                    <span>{kp}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+            {liveInsights.actionItems.length > 0 && (
+              <div className="mt-2 border-t border-white/15 pt-2">
+                <p className="text-[10px] font-semibold uppercase tracking-wide text-white/60">Action items</p>
+                <ul className="mt-1 space-y-1">
+                  {liveInsights.actionItems.map((ai, i) => (
+                    <li key={`ai-${i}`} className="text-[11px] leading-snug text-white/85">✓ {ai}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        )}
+
         {participantsOpen && (
           <ParticipantsPanel
             appParticipants={appParticipants}
@@ -1521,6 +1882,8 @@ export function CallRoom({
             onClose={() => setParticipantsOpen(false)}
             onRemoveParticipant={isHost ? removeParticipant : undefined}
             onMuteParticipant={isHost ? muteParticipant : undefined}
+            inviteUrl={inviteUrl}
+            onAddPeople={!isGuest && openInviteModal}
           />
         )}
         {chatOpen && (
@@ -1610,6 +1973,22 @@ export function CallRoom({
           </button>
         </div>
       )}
+      {/* Add participants (host) — team lookup + guest email invites */}
+      <AddParticipantsModal
+        open={inviteOpen}
+        onOpenChange={setInviteOpen}
+        roomId={inviteCode}
+        roomType={isMeeting ? "meeting" : "call"}
+        currentParticipantIds={appParticipants.map((p) => p.id)}
+        allTeamMembers={inviteTeam}
+        inviteDetails={{
+          title: title || inviteDetails?.title || undefined,
+          code: inviteCode || inviteDetails?.code || undefined,
+          password: inviteDetails?.password ?? null,
+          waitingRoomEnabled: inviteDetails?.waitingRoomEnabled,
+          startTime: inviteDetails?.startTime,
+        }}
+      />
     </div>
   );
 }

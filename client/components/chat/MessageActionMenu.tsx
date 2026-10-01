@@ -1,11 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Copy, CornerUpLeft, Pencil, Trash2 } from "lucide-react";
+import { Copy, CornerUpLeft, Download, Forward, ImageDown, Languages, ListChecks, Pencil, Trash2 } from "lucide-react";
 import type { ChatMessage } from "@/pages/Chat";
 
 /**
- * Floating context menu for a chat message (reply / copy / edit / delete).
- * Rendered in a fixed position near the triggering pointer — works for both
- * the desktop hover "⋯" button and the mobile long-press gesture.
+ * Floating context menu for a chat message (reply / copy / edit / delete /
+ * forward / select / image actions / MetricAi translate). Rendered in a fixed
+ * position near the triggering pointer — works for both the desktop hover "⋯"
+ * button and the mobile long-press gesture.
  */
 export function MessageActionMenu({
   target,
@@ -13,11 +14,20 @@ export function MessageActionMenu({
   canCopy,
   canEdit,
   canDeleteEveryone,
+  canForward = true,
+  hasImageAttachment = false,
+  hasDownloadableAttachment = false,
+  canTranslate = false,
   onReply,
   onCopy,
   onEdit,
   onDeleteForMe,
   onDeleteForEveryone,
+  onForward,
+  onSelect,
+  onCopyImage,
+  onDownloadAttachment,
+  onTranslate,
   onClose,
 }: {
   /** The message the menu is open for + the anchor point (viewport coords). */
@@ -26,11 +36,24 @@ export function MessageActionMenu({
   canCopy: boolean;
   canEdit: boolean;
   canDeleteEveryone: boolean;
+  /** Forwarding is available for every non-tombstone message. */
+  canForward?: boolean;
+  /** Message carries an image — enables "Copy image". */
+  hasImageAttachment?: boolean;
+  /** Message carries any downloadable attachment (image/video/doc/audio). */
+  hasDownloadableAttachment?: boolean;
+  /** MetricAi available — enables "Translate". */
+  canTranslate?: boolean;
   onReply: (message: ChatMessage) => void;
   onCopy: (message: ChatMessage) => void;
   onEdit: (message: ChatMessage) => void;
   onDeleteForMe: (message: ChatMessage) => void;
   onDeleteForEveryone: (message: ChatMessage) => void;
+  onForward?: (message: ChatMessage) => void;
+  onSelect?: (message: ChatMessage) => void;
+  onCopyImage?: (message: ChatMessage) => void;
+  onDownloadAttachment?: (message: ChatMessage) => void;
+  onTranslate?: (message: ChatMessage) => void;
   onClose: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -41,7 +64,7 @@ export function MessageActionMenu({
     if (!target) return;
     const el = ref.current;
     const w = el?.offsetWidth || 200;
-    const h = el?.offsetHeight || 220;
+    const h = el?.offsetHeight || 260;
     let x = target.x + 4;
     let y = target.y + 4;
     if (x + w > window.innerWidth - 8) x = Math.max(8, target.x - w - 4);
@@ -80,6 +103,7 @@ export function MessageActionMenu({
 
   const item =
     "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none";
+  const divider = "my-1 h-px bg-border/70";
 
   return (
     <div
@@ -93,9 +117,24 @@ export function MessageActionMenu({
       <button type="button" role="menuitem" className={item} onClick={() => onReply(message)}>
         <CornerUpLeft className="h-4 w-4 text-muted-foreground" /> Reply
       </button>
+      {canForward && onForward && (
+        <button type="button" role="menuitem" className={item} onClick={() => onForward(message)}>
+          <Forward className="h-4 w-4 text-muted-foreground" /> Forward
+        </button>
+      )}
       {canCopy && (
         <button type="button" role="menuitem" className={item} onClick={() => onCopy(message)}>
           <Copy className="h-4 w-4 text-muted-foreground" /> Copy
+        </button>
+      )}
+      {hasImageAttachment && onCopyImage && (
+        <button type="button" role="menuitem" className={item} onClick={() => onCopyImage(message)}>
+          <ImageDown className="h-4 w-4 text-muted-foreground" /> Copy image
+        </button>
+      )}
+      {hasDownloadableAttachment && onDownloadAttachment && (
+        <button type="button" role="menuitem" className={item} onClick={() => onDownloadAttachment(message)}>
+          <Download className="h-4 w-4 text-muted-foreground" /> Download
         </button>
       )}
       {isOwn && canEdit && (
@@ -103,6 +142,20 @@ export function MessageActionMenu({
           <Pencil className="h-4 w-4 text-muted-foreground" /> Edit
         </button>
       )}
+      {onSelect && (
+        <button type="button" role="menuitem" className={item} onClick={() => onSelect(message)}>
+          <ListChecks className="h-4 w-4 text-muted-foreground" /> Select messages
+        </button>
+      )}
+      {canTranslate && onTranslate && (
+        <>
+          <div className={divider} />
+          <button type="button" role="menuitem" className={item} onClick={() => onTranslate(message)}>
+            <Languages className="h-4 w-4 text-violet-500" /> Translate
+          </button>
+        </>
+      )}
+      <div className={divider} />
       <button
         type="button"
         role="menuitem"
