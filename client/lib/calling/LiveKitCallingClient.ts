@@ -394,7 +394,9 @@ export class LiveKitCallingClient implements CallingClient {
         // Always surface a fresh MediaStream wrapper — a re-publish after
         // unpublish must never be masked by a stale stream object.
         const track = pub.videoTrack?.mediaStreamTrack;
-        this.localVideoStream = track ? new MediaStream([track]) : pub.videoTrack?.mediaStream ?? null;
+        this.localVideoStream = track
+          ? this.buildLocalPreviewStream(track)
+          : pub.videoTrack?.mediaStream ?? null;
         this.localState.videoEnabled = !pub.isMuted;
         this.camAvailable = true;
         this.emitter.emit("local:stream", this.localVideoStream);
@@ -405,6 +407,13 @@ export class LiveKitCallingClient implements CallingClient {
       } else if (pub.source === Track.Source.Microphone) {
         this.localState.audioEnabled = !pub.isMuted;
         this.micAvailable = true;
+        // Mic published AFTER the camera — fold it into the local stream so
+        // composite recordings capture the host's voice from the start.
+        const camTrack = room.localParticipant.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
+        if (this.localVideoStream && camTrack && camTrack.readyState === "live") {
+          this.localVideoStream = this.buildLocalPreviewStream(camTrack);
+          this.emitter.emit("local:stream", this.localVideoStream);
+        }
       }
       this.emitter.emit("local:state", { ...this.localState });
     });
@@ -530,6 +539,23 @@ export class LiveKitCallingClient implements CallingClient {
     return this.localScreenStream;
   }
 
+  /**
+   * Local preview stream = camera video + local microphone (when published).
+   * LiveKit publishes audio and video as separate tracks; without folding the
+   * mic in, client-side composite recordings (the recorder consumes the
+   * emitted `local:stream`) captured everyone EXCEPT the host's own voice.
+   * The local preview <video> is muted, so the extra audio track cannot echo.
+   */
+  private buildLocalPreviewStream(videoTrack: MediaStreamTrack): MediaStream {
+    const stream = new MediaStream([videoTrack]);
+    const micPub = this.room.localParticipant?.getTrackPublication(Track.Source.Microphone);
+    const micTrack = (micPub?.audioTrack as any)?.mediaStreamTrack as MediaStreamTrack | undefined;
+    if (micTrack && micTrack.readyState === "live") {
+      stream.addTrack(micTrack);
+    }
+    return stream;
+  }
+
   async setAudioEnabled(enabled: boolean): Promise<void> {
     const lp = this.room.localParticipant;
     try {
@@ -574,31 +600,57 @@ export class LiveKitCallingClient implements CallingClient {
       if (videoTrack?.mediaStreamTrack) {
         // FRESH MediaStream (same underlying track) → tiles re-attach the
         // <video> element and call play() → deterministic resume on iOS.
-        this.localVideoStream = new MediaStream([videoTrack.mediaStreamTrack]);
+        this.localVideoStream = this.buildLocalPreviewStream(videoTrack.mediaStreamTrack);
         this.emitter.emit("local:stream", this.localVideoStream);
       }
     }
   }
 
+  /**
+   * Camera flip — takes effect INSTANTLY (no camera OFF/ON needed).
+   *
+   * Production bug: `restartTrack()` / `switchActiveDevice()` swap the
+   * underlying MediaStreamTrack inside the SAME LiveKit track, but
+   * `this.localVideoStream` kept wrapping the OLD (now stopped) track — the
+   * local tile froze on the last frame until the user toggled the camera
+   * OFF/ON, which rebuilds the preview stream. Fix: after every successful
+   * swap, rebuild `localVideoStream` from the CURRENT mediaStreamTrack and
+   * re-emit `local:stream` so tiles re-attach immediately.
+   */
   async switchCamera(): Promise<void> {
     const lp = this.room.localParticipant;
     try {
-      const track = lp.getTrackPublication(Track.Source.Camera)?.videoTrack as any;
+      const pub = lp.getTrackPublication(Track.Source.Camera) as any;
+      const lkTrack = pub?.videoTrack as any;
+      const settings: MediaTrackSettings = lkTrack?.mediaStreamTrack?.getSettings?.() || {};
       const devices = await navigator.mediaDevices.enumerateDevices();
       const cams = devices.filter((d) => d.kind === "videoinput");
-      if (cams.length < 2) {
-        if (track && typeof track.restartTrack === "function") {
-          const currentFacing = (track.mediaStreamTrack as any)?.getSettings?.().facingMode;
-          await track.restartTrack({ facingMode: currentFacing === "user" ? "environment" : "user" });
-          return;
-        }
+
+      if (cams.length >= 2 && settings.deviceId) {
+        // Multiple cameras — hard-switch to the other device.
+        const next = cams.find((d) => d.deviceId && d.deviceId !== settings.deviceId) || cams[0];
+        await this.room.switchActiveDevice("videoinput", next.deviceId);
+      } else if (lkTrack && typeof lkTrack.restartTrack === "function") {
+        // Single camera entry (phones expose one per side) — flip facingMode.
+        // ideal (not exact) so constrained browsers still resolve a camera.
+        const nextFacing = settings.facingMode === "environment" ? "user" : "environment";
+        await lkTrack.restartTrack({ facingMode: nextFacing });
+      } else {
+        this.emitter.emit("media:error", { message: "No other camera was found on this device." });
         return;
       }
-      const current = (track?.mediaStreamTrack as any)?.getSettings?.().deviceId;
-      const next = cams.find((d) => d.deviceId !== current) || cams[0];
-      await this.room.switchActiveDevice("videoinput", next.deviceId);
+
+      // The swap replaced the underlying MediaStreamTrack — rebuild the local
+      // preview stream from the LIVE track so the flip is visible right away.
+      const freshTrack = lp.getTrackPublication(Track.Source.Camera)?.videoTrack?.mediaStreamTrack;
+      if (freshTrack) {
+        this.localVideoStream = this.buildLocalPreviewStream(freshTrack);
+        this.emitter.emit("local:stream", this.localVideoStream);
+      }
     } catch (err) {
       console.warn("[livekit] switchCamera failed:", err);
+      this.emitter.emit("media:error", { message: "Camera switch failed — try turning the camera off and on." });
+      throw err;
     }
   }
 

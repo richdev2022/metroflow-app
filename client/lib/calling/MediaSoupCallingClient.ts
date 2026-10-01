@@ -65,6 +65,9 @@ export class MediaSoupCallingClient implements CallingClient {
   private localScreenProducer: types.Producer | null = null;
   private localStream: MediaStream | null = null;
   private localScreenStream: MediaStream | null = null;
+  /** Last-known camera facing ("user" | "environment") so flips survive
+   *  camera OFF/ON cycles and re-acquisitions. */
+  private currentFacing: "user" | "environment" = "user";
 
   private peers = new Map<string, PeerRecord>();
   private playbackCtx: AudioContext | null = null;
@@ -363,7 +366,7 @@ export class MediaSoupCallingClient implements CallingClient {
             : {
                 width: { ideal: 1280 },
                 height: { ideal: 720 },
-                facingMode: "user",
+                facingMode: this.currentFacing,
               },
       };
 
@@ -372,6 +375,7 @@ export class MediaSoupCallingClient implements CallingClient {
 
       const audioTrack = stream.getAudioTracks()[0] || null;
       const videoTrack = stream.getVideoTracks()[0] || null;
+      this.rememberFacing(videoTrack);
 
       if (audioTrack) {
         this.localAudioProducer = await this.sendTransport!.produce({
@@ -837,10 +841,11 @@ export class MediaSoupCallingClient implements CallingClient {
         // Producer missing (video was off at join / track was lost) — acquire
         // the camera now, merge with the existing audio track and publish.
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: "user" },
+          video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: this.currentFacing },
         });
         const videoTrack = stream.getVideoTracks()[0];
         if (!videoTrack) return;
+        this.rememberFacing(videoTrack);
         this.localVideoProducer = await this.sendTransport.produce({
           track: videoTrack,
           appData: { userName: this.opts.userName, userId: this.opts.userId, source: "webcam" },
@@ -857,52 +862,100 @@ export class MediaSoupCallingClient implements CallingClient {
     }
   }
 
+  /** Best-effort: remember which way the camera faces from track settings. */
+  private rememberFacing(track: MediaStreamTrack | null | undefined): void {
+    const facing = (track as any)?.getSettings?.().facingMode;
+    if (facing === "user" || facing === "environment") this.currentFacing = facing;
+  }
+
+  /**
+   * Camera flip — takes effect INSTANTLY.
+   *
+   * Production bug: the old implementation mutated `this.localStream` in place
+   * (removeTrack/addTrack) and re-emitted the SAME MediaStream object. Tiles
+   * only re-attach their <video> element when the stream identity changes, so
+   * the preview stayed frozen on the old (stopped) track — the flip only
+   * "appeared" after the user toggled the camera OFF/ON, which rebuilds a
+   * fresh stream. Fix (three parts):
+   *   1. swap the published track with `producer.replaceTrack()` — no producer
+   *      close/re-open churn, remote consumers switch seamlessly;
+   *   2. ALWAYS emit a FRESH MediaStream (new video track + existing audio
+   *      tracks) so every tile re-attaches immediately;
+   *   3. remember the facing mode so the flip survives camera OFF/ON cycles.
+   */
   async switchCamera(): Promise<void> {
     try {
-      const track = this.localStream?.getVideoTracks()[0] as any;
-      if (!track) return;
-      const settings = track.getSettings?.() || {};
-      if (settings.facingMode) {
-        const next = settings.facingMode === "user" ? "environment" : "user";
-        if (this.localVideoProducer) this.localVideoProducer.close();
-        this.localVideoProducer = null;
-        track.stop();
+      const oldTrack = this.localStream?.getVideoTracks()[0] || null;
+      const oldSettings: MediaTrackSettings = oldTrack?.getSettings?.() || {};
+
+      let nextTrack: MediaStreamTrack | null = null;
+      let nextFacing: "user" | "environment" = this.currentFacing;
+
+      if (!oldTrack || oldTrack.readyState !== "live") {
+        // No live camera track — re-acquire with the opposite of the last
+        // known facing (acts as a flip-and-recover in one tap).
+        nextFacing = this.currentFacing === "user" ? "environment" : "user";
         const stream = await navigator.mediaDevices.getUserMedia({
-          video: { facingMode: next, width: { ideal: 1280 }, height: { ideal: 720 } },
+          video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
         });
-        const newTrack = stream.getVideoTracks()[0];
-        this.localStream?.removeTrack(track);
-        this.localStream?.addTrack(newTrack);
-        if (this.sendTransport) {
-          this.localVideoProducer = await this.sendTransport.produce({
-            track: newTrack,
-            appData: { userName: this.opts.userName, userId: this.opts.userId, source: "webcam" },
-          });
-        }
-        this.emitter.emit("local:stream", this.localStream);
+        nextTrack = stream.getVideoTracks()[0] || null;
+      } else if (oldSettings.facingMode) {
+        // Mobile-style: the browser reports facingMode — flip it.
+        nextFacing = oldSettings.facingMode === "environment" ? "user" : "environment";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: { ideal: nextFacing }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+        nextTrack = stream.getVideoTracks()[0] || null;
       } else {
+        // Desktop-style: pick the OTHER physical camera by deviceId.
         const devices = await navigator.mediaDevices.enumerateDevices();
         const cams = devices.filter((d) => d.kind === "videoinput");
-        if (cams.length < 2) return;
-        const current = settings.deviceId;
-        const next = cams.find((d) => d.deviceId !== current) || cams[0];
-        if (this.localVideoProducer) this.localVideoProducer.close();
-        this.localVideoProducer = null;
-        track.stop();
-        const stream = await navigator.mediaDevices.getUserMedia({ video: { deviceId: { exact: next.deviceId } } });
-        const newTrack = stream.getVideoTracks()[0];
-        this.localStream?.removeTrack(track);
-        this.localStream?.addTrack(newTrack);
-        if (this.sendTransport) {
-          this.localVideoProducer = await this.sendTransport.produce({
-            track: newTrack,
-            appData: { userName: this.opts.userName, userId: this.opts.userId, source: "webcam" },
-          });
+        const current = oldSettings.deviceId;
+        const next = cams.find((d) => d.deviceId && d.deviceId !== current) || null;
+        if (!next) {
+          this.emitter.emit("media:error", { message: "No other camera was found on this device." });
+          return;
         }
-        this.emitter.emit("local:stream", this.localStream);
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { deviceId: { exact: next.deviceId }, width: { ideal: 1280 }, height: { ideal: 720 } },
+        });
+        nextTrack = stream.getVideoTracks()[0] || null;
       }
+
+      if (!nextTrack) {
+        this.emitter.emit("media:error", { message: "Camera switch failed — the other camera is unavailable." });
+        return;
+      }
+
+      // 1) Swap the published track without tearing the producer down.
+      if (this.localVideoProducer && !this.localVideoProducer.closed) {
+        await this.localVideoProducer.replaceTrack({ track: nextTrack });
+      } else if (this.sendTransport) {
+        // Producer missing (camera was off at join / lost) — publish anew.
+        this.localVideoProducer = await this.sendTransport.produce({
+          track: nextTrack,
+          appData: { userName: this.opts.userName, userId: this.opts.userId, source: "webcam" },
+        });
+      }
+
+      // 2) FRESH MediaStream → tiles re-attach instantly (this is what makes
+      //    the flip visible without touching the camera ON/OFF toggle).
+      const fresh = new MediaStream([nextTrack]);
+      this.localStream?.getAudioTracks().forEach((at) => fresh.addTrack(at));
+      this.localStream?.removeTrack(oldTrack!);
+      this.localStream = fresh;
+
+      // 3) Release the old camera only after the swap fully succeeded.
+      try { oldTrack?.stop(); } catch { /* ignore */ }
+
+      this.rememberFacing(nextTrack);
+      this.currentFacing = nextFacing;
+      this.emitter.emit("local:stream", fresh);
+      this.emitter.emit("local:state", { ...this.localState });
     } catch (err) {
       console.warn("[mediasoup] switchCamera failed:", err);
+      this.emitter.emit("media:error", { message: "Camera switch failed — try turning the camera off and on." });
+      throw err;
     }
   }
 
