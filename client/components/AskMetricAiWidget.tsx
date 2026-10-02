@@ -652,7 +652,8 @@ export default function AskMetricAiWidget() {
                           autoGrow();
                         }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
+                          // Enter inserts a new paragraph; Ctrl/Cmd+Enter sends.
+                          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                             e.preventDefault();
                             handleSend();
                           }
@@ -751,7 +752,8 @@ export default function AskMetricAiWidget() {
                           autoGrow();
                         }}
                         onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
+                          // Enter inserts a new paragraph; Ctrl/Cmd+Enter sends.
+                          if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                             e.preventDefault();
                             handleSend();
                           }
