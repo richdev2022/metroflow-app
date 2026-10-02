@@ -89,14 +89,14 @@ function PlanFeatures({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan
       `Invoices: ${plan.max_invoices_per_month == null || plan.max_invoices_per_month > 9999 ? "Unlimited" : `${plan.max_invoices_per_month}/month`} (fee${plan.invoice_fee_discount_percent ? `, ${Number(plan.invoice_fee_discount_percent)}% discount` : " at standard rate"})`,
     );
   }
-  if (plan.bills_enabled !== false) {
+  if (plan.store_enabled !== false) {
     items.push(
-      `Bill payments: ${plan.max_bills_per_day == null || plan.max_bills_per_day > 9999 ? "Unlimited" : `up to ${plan.max_bills_per_day}/day`} (airtime, data, TV, electricity — fee${plan.bill_fee_discount_percent ? `, ${Number(plan.bill_fee_discount_percent)}% discount` : " at standard rate"})`,
+      `Storefront: ${plan.max_store_products == null || plan.max_store_products > 9999 ? "Unlimited" : `up to ${plan.max_store_products} products`} with hosted checkout (fee${plan.store_fee_discount_percent ? `, ${Number(plan.store_fee_discount_percent)}% discount` : " at standard rate"})`,
     );
   }
-  if (plan.savings_enabled !== false) {
+  if (plan.recurring_enabled !== false) {
     items.push(
-      `Savings vaults: ${plan.max_savings_vaults == null || plan.max_savings_vaults > 9999 ? "Unlimited" : `up to ${plan.max_savings_vaults}`} with auto-save${plan.savings_break_fee_discount_percent ? ` (${Number(plan.savings_break_fee_discount_percent)}% off early-withdrawal fees)` : ""}`,
+      `Recurring billing: ${plan.max_subscription_plans == null || plan.max_subscription_plans > 9999 ? "Unlimited" : `up to ${plan.max_subscription_plans} subscription plans`} on any interval (fee${plan.subscription_fee_discount_percent ? `, ${Number(plan.subscription_fee_discount_percent)}% discount` : " at standard rate"})`,
     );
   }
   if (plan.ai_credit_discount_percent != null && Number(plan.ai_credit_discount_percent) > 0) {

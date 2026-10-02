@@ -6,13 +6,13 @@ export default function Privacy() {
   return (
     <StaticPage
       title="Privacy Policy"
-      description={`How Metricorex collects, uses, stores and protects your data across Personal and Business use. Last updated: ${LAST_UPDATED}.`}
+      description={`How Metricorex collects, uses, stores and protects your data across the all-in-one business suite. Last updated: ${LAST_UPDATED}.`}
     >
       <p>
         Metricorex ("we", "us") respects your privacy. This Privacy Policy explains what personal
         data we collect when you use our web, iOS and Android applications, why we collect it, how
-        long we keep it, and the choices you have. It applies to both Personal and Business usage
-        of the Service.
+        long we keep it, and the choices you have. It applies to every part of the all-in-one
+        business suite — workspace, team tools, finance and payments.
       </p>
 
       <Section title="1. Data we collect">
