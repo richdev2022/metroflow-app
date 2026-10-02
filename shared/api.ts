@@ -719,7 +719,7 @@ export interface Plan {
   metric_ai_image_monthly?: number | null;
   metric_ai_video_daily?: number | null;
   metric_ai_video_monthly?: number | null;
-  // Revenue features (Payment Links + AI Credit Packs + Smart Invoices)
+  // Revenue features (Payment Links + AI Credit Packs + Smart Invoices + Bills Hub + Savings Vaults)
   payment_links_enabled?: boolean;
   max_payment_links?: number | null;
   payment_link_fee_discount_percent?: number | string | null;
@@ -727,6 +727,12 @@ export interface Plan {
   invoices_enabled?: boolean;
   max_invoices_per_month?: number | null;
   invoice_fee_discount_percent?: number | string | null;
+  bills_enabled?: boolean;
+  max_bills_per_day?: number | null;
+  bill_fee_discount_percent?: number | string | null;
+  savings_enabled?: boolean;
+  max_savings_vaults?: number | null;
+  savings_break_fee_discount_percent?: number | string | null;
 }
 
 export interface Subscription {

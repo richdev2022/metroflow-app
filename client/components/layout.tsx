@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Zap, PiggyBank } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
@@ -670,6 +670,22 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link to="/invoices" onClick={(e) => handleKycProtectedNavigation(e, "/invoices")}>
                   {kycCheckingPath === "/invoices" ? <Loader2 className="animate-spin" /> : <FileText />}
                   <span>Invoices</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/bills")} tooltip="Bills" data-tour="nav-bills">
+                <Link to="/bills" onClick={(e) => handleKycProtectedNavigation(e, "/bills")}>
+                  {kycCheckingPath === "/bills" ? <Loader2 className="animate-spin" /> : <Zap />}
+                  <span>Bills</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/savings")} tooltip="Savings" data-tour="nav-savings">
+                <Link to="/savings" onClick={(e) => handleKycProtectedNavigation(e, "/savings")}>
+                  {kycCheckingPath === "/savings" ? <Loader2 className="animate-spin" /> : <PiggyBank />}
+                  <span>Savings</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
