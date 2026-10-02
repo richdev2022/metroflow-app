@@ -674,10 +674,27 @@ export default function Wallet() {
     fetchWalletInfo();
   }, []);
 
+  // Re-fetch the OTP-for-transactions setting without reloading the whole
+  // wallet payload. Used whenever the transfer dialog opens so the confirm
+  // OTP flow always matches the current configuration.
+  const refreshOtpSetting = async () => {
+    try {
+      const otpRes = await api.get<OtpEnabledResponse>("/settings/otp-enabled");
+      if (otpRes.data.success) {
+        setOtpEnabled(otpRes.data.otpEnabled);
+        setPinCreated(otpRes.data.pinCreated);
+      }
+    } catch {
+      // Keep the previously cached value on failure — the backend still
+      // enforces the authoritative setting at submit time.
+    }
+  };
+
   // Deep link from TransferHistory's "Make New Transfer" chooser — open the
   // transfer dialog immediately and clean the URL so refresh doesn't replay it.
   useEffect(() => {
     if (searchParams.get("transfer") === "new") {
+      refreshOtpSetting();
       setTransferOpen(true);
       searchParams.delete("transfer");
       setSearchParams(searchParams, { replace: true });
@@ -694,6 +711,11 @@ export default function Wallet() {
     if (walletType === "business" && walletInfo?.business_wallet?.id) {
       transferForm.setValue("wallet_id", walletInfo.business_wallet.id);
     }
+    // Always re-check the live OTP configuration when the dialog opens so
+    // the "Request OTP" step reflects the CURRENT server-side setting —
+    // the flag cached at page load goes stale if the user toggled the
+    // setting (here or on another device) after mount.
+    refreshOtpSetting();
     if (!loading && !pinCreated) {
       toast({
         title: "Set up your Transaction PIN",
