@@ -1,6 +1,6 @@
 # Metricorex (Fusion Starter)
 
-A comprehensive web application for tracking Key Performance Indicators (KPIs), managing developer tasks, and monitoring business performance. Built with a modern tech stack featuring React, Node.js, and PostgreSQL.
+Metricorex web app (project: Metroflow) — the all-in-one business suite: workspace (tasks, boards, backlog, ideas), team tools (meetings, calls, chat), finance (wallets, transfers, payroll) and the Get Paid revenue suite (payment links, smart invoices, storefront, recurring billing, MetricAi credits). Built with React (Vite), Node.js and PostgreSQL.
 
 ## 🚀 Features
 
@@ -14,6 +14,15 @@ A comprehensive web application for tracking Key Performance Indicators (KPIs), 
 - **Dashboard**: Visual analytics using Recharts to monitor progress and KPIs.
 - **Activity Logs**: Audit trail of user actions and system events.
 - **Developer Management**: Manage team members, invites, and profiles.
+- **Wallet & Fintech**: Personal + business wallets, virtual accounts, card funding, single/bulk/international transfers, payroll.
+- **Payment Links**: create shareable checkout links (fixed or custom amount) and track every payment.
+- **Smart Invoices**: itemised invoices with tax & due dates and a public checkout page clients pay on.
+- **Storefront**: list products/services, share your store link and get paid through hosted checkout (public page at `/store/public/:businessId`, order tracking at `/store/order/:reference`).
+- **Recurring Billing (Subscriptions)**: create customer subscription plans on any interval with auto-charging wallet subscribers and emailed checkout links (public subscribe at `/subscribe/:publicId`).
+- **Restructured Home**: business-pillar home — wallet balance strip (business wallet preferred, one-tap Fund), quick actions (work + money mix), a "Get paid, every way" hub with live counts for Payment Links / Invoices / Storefront / Subscriptions, a Money row (Transfers / Payroll / Fund Wallet, KYC-gated) and the work analytics below.
+- **Collapsible sidebar**: nav restructured into expandable groups (Workspace / Team / Finance / Get Paid / Account) so the suite stays easy to scan.
+- **MetricAi**: AI copilot (chat, images, meeting notes, product documentation) with purchasable credit packs.
+- **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, store, recurring, links, invoices) with full feature lists (see more/see less).
 
 ## 🛠️ Tech Stack
 

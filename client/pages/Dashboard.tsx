@@ -1,10 +1,12 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
-import { Task, KPISummary, ApiResponse, TeamMember, Comment, CreateCommentInput, Epic } from "@shared/api";
+import { Task, KPISummary, ApiResponse, TeamMember, Comment, CreateCommentInput, Epic, WalletInfo } from "@shared/api";
+import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, Users, Plus } from "lucide-react";
+import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, ArrowUpRight, Users, Plus, Wallet, Banknote, Link2, FileText, Store, Repeat, History, ShoppingBag, Video, ListTodo, ChevronRight } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
 import {
@@ -40,6 +42,12 @@ import { LeaderboardCard } from "@/components/dashboard/LeaderboardCard";
 import type { LeaderboardEntry } from "@/components/dashboard/LeaderboardCard";
 import { RecentTaskTable } from "@/components/dashboard/RecentTaskTable";
 import { formatDateLong } from "@/lib/datetime";
+
+const fmtMoney = (v: unknown, currency = "NGN") => {
+  const n = Number(v) || 0;
+  const symbol = currency === "USD" ? "$" : currency === "EUR" ? "€" : currency === "GBP" ? "£" : "₦";
+  return `${symbol}${n.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+};
 
 export default function Dashboard() {
   const [tasks, setTasks] = useState<Task[]>([]);
@@ -78,7 +86,16 @@ export default function Dashboard() {
   // Epics State (for dropdown)
   const [epicsList, setEpicsList] = useState<Epic[]>([]);
 
+  // Money signals — wallet strip + Get Paid hub (independent silent-fail fetchers,
+  // so one broken surface never blanks the whole home page).
+  const [walletInfo, setWalletInfo] = useState<WalletInfo | null>(null);
+  const [payLinkStats, setPayLinkStats] = useState<{ active: number; collected: number } | null>(null);
+  const [invoiceStats, setInvoiceStats] = useState<{ open: number; outstanding: number } | null>(null);
+  const [storeCounts, setStoreCounts] = useState<{ products: number; pendingOrders: number } | null>(null);
+  const [recurringCounts, setRecurringCounts] = useState<{ plans: number; activeSubscribers: number } | null>(null);
+
   const { toast } = useToast();
+  const navigate = useNavigate();
 
   const TeamMemberMultiSelect = ({
     selected,
@@ -166,6 +183,57 @@ export default function Dashboard() {
     fetchTasksAndCalculateKPI();
     fetchEpics();
   }, []);
+
+  // Get Paid hub + wallet strip — every fetcher fails silently on its own.
+  useEffect(() => {
+    api.get("/wallet").then((res) => setWalletInfo(res.data as WalletInfo)).catch(() => {});
+    api.get("/payment-links").then((res) => {
+      const links: any[] = res.data?.links || [];
+      setPayLinkStats({
+        active: links.filter((l) => l.is_active).length,
+        collected: links.reduce((s, l) => s + (Number(l.total_collected) || 0), 0),
+      });
+    }).catch(() => {});
+    api.get("/invoices").then((res) => {
+      const invoices: any[] = res.data?.invoices || [];
+      const open = invoices.filter((i) => i.status === "pending");
+      setInvoiceStats({
+        open: open.length,
+        outstanding: open.reduce((s, i) => s + ((Number(i.total) || 0) - (Number(i.amount_paid) || 0)), 0),
+      });
+    }).catch(() => {});
+    Promise.all([api.get("/store/products"), api.get("/store/orders")]).then(([p, o]) => {
+      setStoreCounts({
+        products: (p.data?.products || []).filter((x: any) => x.status === "active").length,
+        pendingOrders:
+          o.data?.stats?.pending_orders ??
+          (o.data?.orders || []).filter((x: any) => x.status === "pending").length,
+      });
+    }).catch(() => {});
+    Promise.all([api.get("/recurring/plans"), api.get("/recurring/subscribers")]).then(([p, s]) => {
+      setRecurringCounts({
+        plans: (p.data?.plans || []).length,
+        activeSubscribers: (s.data?.subscribers || []).filter((x: any) => x.status === "active").length,
+      });
+    }).catch(() => {});
+  }, []);
+
+  // Money surfaces are KYC-protected — mirror the sidebar gate before navigating.
+  const navigateWithKyc = async (path: string) => {
+    try {
+      const res = await api.get("/kyc/status");
+      const status = normalizeKycStatus(res.data);
+      navigate(status.user_kyc_status === "verified" ? path : "/kyc");
+    } catch {
+      navigate(path);
+    }
+  };
+  const kycLinkProps = (path: string) => ({
+    onClick: (e: React.MouseEvent) => {
+      e.preventDefault();
+      navigateWithKyc(path);
+    },
+  });
 
   useEffect(() => {
     fetchTasksAndCalculateKPI();
@@ -560,7 +628,7 @@ export default function Dashboard() {
         <div className="flex items-center justify-center h-96">
           <div className="text-center">
             <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-primary mx-auto mb-4"></div>
-            <p className="text-muted-foreground">Loading KPI data...</p>
+            <p className="text-muted-foreground">Loading your dashboard...</p>
           </div>
         </div>
       </Layout>
@@ -594,6 +662,20 @@ export default function Dashboard() {
     toast({ title: "Copied", description: "Task ID copied to clipboard" });
   };
 
+  const primaryWallet =
+    walletInfo?.canManageBusinessWallet && walletInfo.business_wallet
+      ? walletInfo.business_wallet
+      : walletInfo?.user_wallet;
+
+  const quickActions: { to: string; label: string; icon: LucideIcon; chip: string; kyc?: boolean }[] = [
+    { to: "/tasks", label: "New Task", icon: ListTodo, chip: "bg-primary/10 text-primary" },
+    { to: "/meetings", label: "Start Meeting", icon: Video, chip: "bg-violet-500/10 text-violet-600" },
+    { to: "/chat", label: "New Chat", icon: MessageSquare, chip: "bg-blue-500/10 text-blue-600" },
+    { to: "/invoices", label: "New Invoice", icon: FileText, chip: "bg-sky-500/10 text-sky-600", kyc: true },
+    { to: "/payment-links", label: "Payment Link", icon: Link2, chip: "bg-indigo-500/10 text-indigo-600", kyc: true },
+    { to: "/store", label: "Add Product", icon: ShoppingBag, chip: "bg-amber-500/10 text-amber-600", kyc: true },
+  ];
+
   return (
     <Layout>
       <div className="space-y-8">
@@ -601,15 +683,51 @@ export default function Dashboard() {
         <section className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-sm md:p-8">
           <div aria-hidden="true" className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
           <div aria-hidden="true" className="pointer-events-none absolute -bottom-24 -left-16 h-48 w-48 rounded-full bg-primary/5 blur-3xl" />
-          <div className="relative flex flex-col gap-5 lg:flex-row lg:items-end lg:justify-between">
-            <div className="space-y-2">
-              <p className="text-sm font-medium text-muted-foreground">{formatDateLong(new Date())}</p>
-              <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-3xl">
-                {greeting}, <span className="text-primary">{firstName}</span>
-              </h1>
-              <p className="max-w-xl text-sm text-muted-foreground">
-                Here is the pulse of your team today - KPIs, epic progress and everything in between.
-              </p>
+          <div className="relative flex flex-col gap-5 lg:flex-row lg:items-center lg:justify-between">
+            <div className="space-y-3">
+              <div className="space-y-2">
+                <p className="text-sm font-medium text-muted-foreground">{formatDateLong(new Date())}</p>
+                <h1 className="text-2xl font-bold tracking-tight text-foreground md:text-3xl">
+                  {greeting}, <span className="text-primary">{firstName}</span>
+                </h1>
+                <p className="max-w-xl text-sm text-muted-foreground">
+                  The pulse of your business — work, money and everything you're owed, in one place.
+                </p>
+              </div>
+              {/* Wallet balance strip — business wallet preferred, personal fallback */}
+              <button
+                type="button"
+                onClick={() => navigateWithKyc("/wallet")}
+                className="group/wallet flex w-full max-w-md items-center gap-3 rounded-xl border border-border/70 bg-background/70 px-4 py-3 text-left shadow-sm transition-colors hover:border-primary/40 hover:bg-accent/50"
+              >
+                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                  <Wallet className="h-4 w-4" />
+                </span>
+                <span className="min-w-0 flex-1">
+                  <span className="block text-xs font-medium text-muted-foreground">
+                    {walletInfo?.canManageBusinessWallet && walletInfo.business_wallet
+                      ? "Business balance"
+                      : "Personal balance"}
+                  </span>
+                  <span className="block truncate text-lg font-semibold tracking-tight text-foreground">
+                    {primaryWallet ? fmtMoney(primaryWallet.balance, primaryWallet.currency) : "—"}
+                  </span>
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5">
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      navigateWithKyc("/wallet");
+                    }}
+                    className="rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-sm transition-transform group-hover/wallet:scale-[1.04]"
+                  >
+                    + Fund
+                  </span>
+                  <ChevronRight className="h-4 w-4 text-muted-foreground transition-transform group-hover/wallet:translate-x-0.5" />
+                </span>
+              </button>
             </div>
             <div className="flex flex-wrap items-center gap-2">
               <label htmlFor="member-filter" className="sr-only">Filter by member</label>
@@ -658,6 +776,111 @@ export default function Dashboard() {
             </AlertDescription>
           </Alert>
         )}
+
+        {/* Quick actions — the daily work + money mix */}
+        <section className="space-y-3">
+          <SectionHeader title="Quick actions" />
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 xl:grid-cols-6">
+            {quickActions.map((qa) => (
+              <Link
+                key={qa.label}
+                to={qa.to}
+                onClick={qa.kyc ? (e) => { e.preventDefault(); navigateWithKyc(qa.to); } : undefined}
+                className="group flex flex-col items-start gap-2.5 rounded-2xl border border-border bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+              >
+                <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${qa.chip}`}>
+                  <qa.icon className="h-4 w-4" />
+                </span>
+                <span className="text-sm font-medium text-foreground">{qa.label}</span>
+              </Link>
+            ))}
+          </div>
+        </section>
+
+        {/* Get Paid hub — every way the business collects money */}
+        <section className="space-y-4">
+          <SectionHeader
+            title="Get paid, every way"
+            subtitle="Links, invoices, your storefront and customer subscriptions — all settling into your wallets."
+            action={
+              <Link to="/subscription" className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline">
+                Plans & pricing <ArrowRight className="h-3 w-3" />
+              </Link>
+            }
+          />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-4">
+            <GetPaidTile
+              to="/payment-links"
+              icon={Link2}
+              chip="bg-indigo-500/10 text-indigo-600"
+              label="Payment Links"
+              onClick={kycLinkProps("/payment-links").onClick}
+              lines={payLinkStats
+                ? [`${payLinkStats.active} active link${payLinkStats.active === 1 ? "" : "s"}`, `${fmtMoney(payLinkStats.collected)} collected`]
+                : null}
+            />
+            <GetPaidTile
+              to="/invoices"
+              icon={FileText}
+              chip="bg-sky-500/10 text-sky-600"
+              label="Invoices"
+              onClick={kycLinkProps("/invoices").onClick}
+              lines={invoiceStats
+                ? [`${invoiceStats.open} awaiting payment`, `${fmtMoney(invoiceStats.outstanding)} outstanding`]
+                : null}
+            />
+            <GetPaidTile
+              to="/store"
+              icon={Store}
+              chip="bg-amber-500/10 text-amber-600"
+              label="Storefront"
+              onClick={kycLinkProps("/store").onClick}
+              lines={storeCounts
+                ? [`${storeCounts.products} product${storeCounts.products === 1 ? "" : "s"} live`, `${storeCounts.pendingOrders} order${storeCounts.pendingOrders === 1 ? "" : "s"} to fulfil`]
+                : null}
+            />
+            <GetPaidTile
+              to="/subscriptions"
+              icon={Repeat}
+              chip="bg-emerald-500/10 text-emerald-600"
+              label="Subscriptions"
+              onClick={kycLinkProps("/subscriptions").onClick}
+              lines={recurringCounts
+                ? [`${recurringCounts.plans} plan${recurringCounts.plans === 1 ? "" : "s"}`, `${recurringCounts.activeSubscribers} active subscriber${recurringCounts.activeSubscribers === 1 ? "" : "s"}`]
+                : null}
+            />
+          </div>
+        </section>
+
+        {/* Money row — wallets, payroll, transfers */}
+        <section className="space-y-4">
+          <SectionHeader title="Money" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+            <MoneyTile
+              to="/transfer-history"
+              icon={History}
+              chip="bg-cyan-500/10 text-cyan-600"
+              label="Transfers"
+              description="Send money & track every movement"
+            />
+            <MoneyTile
+              to="/payroll"
+              icon={Banknote}
+              chip="bg-emerald-500/10 text-emerald-600"
+              label="Payroll"
+              description="Pay your team in a few clicks"
+              onClick={kycLinkProps("/payroll").onClick}
+            />
+            <MoneyTile
+              to="/wallet"
+              icon={Wallet}
+              chip="bg-primary/10 text-primary"
+              label="Fund Wallet"
+              description="Card or bank transfer top-ups"
+              onClick={kycLinkProps("/wallet").onClick}
+            />
+          </div>
+        </section>
 
         {/* KPI stat cards */}
         {kpiSummary && (
@@ -1309,5 +1532,70 @@ export default function Dashboard() {
         </Dialog>
       </div>
     </Layout>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Home building blocks — Get Paid hub + Money row tiles
+// ---------------------------------------------------------------------------
+
+interface HubTileProps {
+  to: string;
+  icon: LucideIcon;
+  chip: string;
+  label: string;
+  description?: string;
+  /** Two live-count lines; null renders a loading pulse. */
+  lines?: [string, string] | null;
+  onClick?: (e: React.MouseEvent) => void;
+}
+
+/** Get Paid hub card: icon chip, label and two live-count lines. */
+function GetPaidTile({ to, icon: Icon, chip, label, lines, onClick }: HubTileProps) {
+  return (
+    <Link
+      to={to}
+      onClick={onClick}
+      className="group relative block overflow-hidden rounded-2xl bg-card p-5 shadow-sm ring-1 ring-border transition-all duration-200 hover:-translate-y-0.5 hover:shadow-md"
+    >
+      <div className="flex items-start justify-between">
+        <span className={`flex h-9 w-9 items-center justify-center rounded-xl ${chip}`}>
+          <Icon className="h-4 w-4" />
+        </span>
+        <ArrowUpRight className="h-4 w-4 text-muted-foreground/40 transition-all duration-200 group-hover:-translate-y-0.5 group-hover:translate-x-0.5 group-hover:text-primary" />
+      </div>
+      <p className="mt-3 text-sm font-semibold text-foreground">{label}</p>
+      {lines ? (
+        <div className="mt-1 space-y-0.5">
+          <p className="text-xs text-muted-foreground">{lines[0]}</p>
+          <p className="text-xs font-medium text-foreground/80">{lines[1]}</p>
+        </div>
+      ) : (
+        <div className="mt-2 space-y-1.5">
+          <div className="h-3 w-24 animate-pulse rounded bg-muted" />
+          <div className="h-3 w-32 animate-pulse rounded bg-muted" />
+        </div>
+      )}
+    </Link>
+  );
+}
+
+/** Money row tile: horizontal icon + label + one-liner. */
+function MoneyTile({ to, icon: Icon, chip, label, description, onClick }: HubTileProps) {
+  return (
+    <Link
+      to={to}
+      onClick={onClick}
+      className="group flex items-center gap-3 rounded-2xl border border-border bg-card p-4 shadow-sm transition-all duration-200 hover:-translate-y-0.5 hover:border-primary/40 hover:shadow-md"
+    >
+      <span className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-xl ${chip}`}>
+        <Icon className="h-5 w-5" />
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block text-sm font-semibold text-foreground">{label}</span>
+        <span className="block truncate text-xs text-muted-foreground">{description}</span>
+      </span>
+      <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground/50 transition-transform duration-200 group-hover:translate-x-0.5" />
+    </Link>
   );
 }

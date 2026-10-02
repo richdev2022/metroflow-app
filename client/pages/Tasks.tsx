@@ -14,7 +14,7 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { Plus, Upload, Trash2, Check, AlertCircle, Download, X, Loader2, Edit, Users, MessageSquare, Send, Copy, Search, Smile, Link, Heart, ThumbsUp, ClipboardList } from "lucide-react";
+import { Plus, Upload, Trash2, Check, AlertCircle, Download, X, Loader2, Edit, Users, MessageSquare, Send, Copy, Search, Smile, Link, Heart, ThumbsUp, ClipboardList, Paperclip } from "lucide-react";
 import EmojiPicker from 'emoji-picker-react';
 import { Checkbox } from "@/components/ui/checkbox";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
@@ -336,7 +336,9 @@ export default function Tasks() {
         epic: epicForm.epic || task.epic,
         sprint: epicForm.sprint || task.sprint,
         assignedTo: task.assignedTo && task.assignedTo.length > 0 ? task.assignedTo : epicForm.assignedTo,
-        images: imageUrls, // Include uploaded images
+        // NOTE: attachments go through POST /tasks/:id/attachments after the
+        // task is created (below). Local blob: preview URLs must NEVER be
+        // stored in the task payload — they die with the page.
       };
 
       const generated = generateTasksFromRange(fullTask);
@@ -357,6 +359,29 @@ export default function Tasks() {
 
       if (data.success && data.data) {
         setTasks((prev) => [...data.data, ...prev]);
+
+        // Upload picked images as REAL attachments on the first created task.
+        // (The picker previews are local blob: URLs — uploading the actual
+        // File objects is what makes them visible to everyone.)
+        if (images.length > 0 && data.data.length > 0) {
+          const firstTaskId = data.data[0]?.id;
+          if (firstTaskId) {
+            try {
+              const formData = new FormData();
+              images.forEach((file) => formData.append("files", file));
+              await api.post(`/tasks/${firstTaskId}/attachments`, formData, {
+                headers: { "Content-Type": "multipart/form-data" },
+              });
+            } catch (uploadErr) {
+              console.error("Attachment upload failed:", uploadErr);
+              toast({
+                title: "Tasks created, but attachments failed to upload",
+                description: "Try adding the files again from the task details page.",
+                variant: "destructive",
+              });
+            }
+          }
+        }
 
         // Update epic counts
         const newEpicCounts = { ...epicCounts };
@@ -1317,11 +1342,11 @@ export default function Tasks() {
                           </div>
                         </div>
                         <div>
-                          <Label>Images (Optional)</Label>
+                          <Label>Attachments — Images, Videos &amp; Files (Optional)</Label>
                           <div className="mt-2">
                             <Input
                               type="file"
-                              accept="image/*"
+                              accept="image/*,video/*,.pdf,.doc,.docx,.xls,.xlsx,.csv,.txt,.zip"
                               multiple
                               onChange={(e) => {
                                 const files = Array.from(e.target.files || []);
@@ -1621,13 +1646,35 @@ export default function Tasks() {
                         </div>
                       </Card>
 
-                      {/* Images Card */}
-                      {selectedTask.images && selectedTask.images.length > 0 && (
+                      {/* Attachments Card — real uploaded attachments (images,
+                          videos and documents) plus any legacy image URLs */}
+                      {(((selectedTask.attachments?.length ?? 0) > 0) ||
+                        ((selectedTask.images?.length ?? 0) > 0)) && (
                         <Card className="p-4 shadow-sm">
                           <Label className="text-base font-semibold mb-4 block">Attachments</Label>
                           <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-                            {selectedTask.images.map((img, i) => (
-                              <a key={i} href={img} target="_blank" rel="noopener noreferrer" className="block relative aspect-video rounded-lg overflow-hidden border hover:opacity-90 transition-opacity">
+                            {(selectedTask.attachments || []).map((att) => {
+                              const url = att.fileUrl || (att as { url?: string }).url || "";
+                              const isImage = att.isImage || /\.(png|jpe?g|gif|webp|bmp|heic)$/i.test(att.fileName || "");
+                              const isVideo = att.fileType?.startsWith("video/") || /\.(mp4|mov|webm|avi|mkv)$/i.test(att.fileName || "");
+                              if (isImage) {
+                                return (
+                                  <a key={att.id} href={url} target="_blank" rel="noopener noreferrer" className="block relative aspect-video rounded-lg overflow-hidden border hover:opacity-90 transition-opacity">
+                                    <img src={url} alt={att.fileName} className="w-full h-full object-cover" />
+                                  </a>
+                                );
+                              }
+                              return (
+                                <a key={att.id} href={url} target="_blank" rel="noopener noreferrer" className="flex items-center gap-2 rounded-lg border p-3 text-sm hover:bg-accent transition-colors">
+                                  <Paperclip className="h-4 w-4 shrink-0 text-muted-foreground" />
+                                  <span className="truncate" title={att.fileName}>
+                                    {isVideo ? "🎬 " : "📄 "}{att.fileName || "Attachment"}
+                                  </span>
+                                </a>
+                              );
+                            })}
+                            {(selectedTask.images || []).map((img, i) => (
+                              <a key={`legacy-${i}`} href={img} target="_blank" rel="noopener noreferrer" className="block relative aspect-video rounded-lg overflow-hidden border hover:opacity-90 transition-opacity">
                                 <img src={img} alt={`Attachment ${i+1}`} className="w-full h-full object-cover" />
                               </a>
                             ))}
