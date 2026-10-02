@@ -49,6 +49,8 @@ import PaymentLinkPay from "./pages/PaymentLinkPay";
 import PaymentLinks from "./pages/PaymentLinks";
 import InvoicePay from "./pages/InvoicePay";
 import Invoices from "./pages/Invoices";
+import Bills from "./pages/Bills";
+import Savings from "./pages/Savings";
 import CookieConsentBanner from "./components/CookieConsentBanner";
 import PushManager from "./components/push/PushManager";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
@@ -277,6 +279,16 @@ const App = () => (
             <Route
               path="/invoices"
               element={<KycProtectedRoute element={<Invoices />} />}
+            />
+            {/* Authed: Bills Hub (daily-use revenue feature) */}
+            <Route
+              path="/bills"
+              element={<KycProtectedRoute element={<Bills />} />}
+            />
+            {/* Authed: Savings Vaults (daily-use revenue feature) */}
+            <Route
+              path="/savings"
+              element={<KycProtectedRoute element={<Savings />} />}
             />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

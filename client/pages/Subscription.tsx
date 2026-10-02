@@ -89,6 +89,16 @@ function PlanFeatures({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan
       `Invoices: ${plan.max_invoices_per_month == null || plan.max_invoices_per_month > 9999 ? "Unlimited" : `${plan.max_invoices_per_month}/month`} (fee${plan.invoice_fee_discount_percent ? `, ${Number(plan.invoice_fee_discount_percent)}% discount` : " at standard rate"})`,
     );
   }
+  if (plan.bills_enabled !== false) {
+    items.push(
+      `Bill payments: ${plan.max_bills_per_day == null || plan.max_bills_per_day > 9999 ? "Unlimited" : `up to ${plan.max_bills_per_day}/day`} (airtime, data, TV, electricity — fee${plan.bill_fee_discount_percent ? `, ${Number(plan.bill_fee_discount_percent)}% discount` : " at standard rate"})`,
+    );
+  }
+  if (plan.savings_enabled !== false) {
+    items.push(
+      `Savings vaults: ${plan.max_savings_vaults == null || plan.max_savings_vaults > 9999 ? "Unlimited" : `up to ${plan.max_savings_vaults}`} with auto-save${plan.savings_break_fee_discount_percent ? ` (${Number(plan.savings_break_fee_discount_percent)}% off early-withdrawal fees)` : ""}`,
+    );
+  }
   if (plan.ai_credit_discount_percent != null && Number(plan.ai_credit_discount_percent) > 0) {
     items.push(`${Number(plan.ai_credit_discount_percent)}% off MetricAi credit packs`);
   }
