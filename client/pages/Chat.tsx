@@ -1651,6 +1651,20 @@ export default function Chat() {
     typingTimeoutRef.current = setTimeout(() => emitTypingStatus(false), 2000);
   };
 
+  // Auto-grow the composer as the user types multiple paragraphs
+  // (Enter inserts a newline now — sending is Ctrl/Cmd+Enter or the button).
+  const resizeComposer = useCallback(() => {
+    const el = composerRef.current;
+    if (!el) return;
+    el.style.height = "auto";
+    const next = Math.min(el.scrollHeight, 128);
+    el.style.height = `${Math.max(next, 36)}px`;
+  }, []);
+
+  useEffect(() => {
+    resizeComposer();
+  }, [newMessage, resizeComposer]);
+
   // ==========================================
   // Call Handlers
   // ==========================================
@@ -3396,6 +3410,9 @@ export default function Chat() {
                             <span className="ml-1 hidden text-[10px] text-muted-foreground sm:inline">
                               or type *bold* _italic_ ~strike~ \`code\`
                             </span>
+                            <span className="ml-auto hidden text-[10px] text-muted-foreground/80 sm:inline">
+                              Enter = new line · Ctrl+Enter to send
+                            </span>
                           </div>
                         )}
                         <div className="flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
@@ -3408,9 +3425,23 @@ export default function Chat() {
                           onBlur={() => setComposerFocused(false)}
                           onPaste={handleComposerPaste}
                           onKeyDown={(e) => {
-                            if (e.key === "Enter" && !e.shiftKey) {
+                            // Enter = new paragraph (multi-line input);
+                            // Ctrl/Cmd+Enter or the send button sends.
+                            if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                               e.preventDefault();
                               handleSendMessage();
+                            }
+                            if (e.key === "Enter" && !e.ctrlKey && !e.metaKey && !e.shiftKey && !e.altKey) {
+                              e.preventDefault();
+                              // insert a newline at the caret
+                              const el = e.currentTarget;
+                              const start = el.selectionStart ?? newMessage.length;
+                              const end = el.selectionEnd ?? newMessage.length;
+                              const next = `${newMessage.slice(0, start)}\n${newMessage.slice(end)}`;
+                              handleInputChange(next);
+                              requestAnimationFrame(() => {
+                                el.selectionStart = el.selectionEnd = start + 1;
+                              });
                             }
                             if (e.key === "Escape" && editing) {
                               e.preventDefault();
