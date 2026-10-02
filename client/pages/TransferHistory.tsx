@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useNavigate } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
 import { Transfer, Wallet } from "@shared/api";
@@ -7,7 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
 import {
   Loader2,
@@ -20,6 +21,9 @@ import {
   ArrowDownLeft,
   ArrowUpRight,
   RotateCcw,
+  Plus,
+  User,
+  Users,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { format } from "date-fns";
@@ -49,6 +53,11 @@ export default function TransferHistory() {
   const [transferPage, setTransferPage] = useState(1);
   const [transferLimit, setTransferLimit] = useState(20);
   const [transferTotal, setTransferTotal] = useState(0);
+
+  // "Make New Transfer" chooser -> routes to the Individual (wallet) or Bulk
+  // (payroll payout) flow via deep links handled by those pages.
+  const navigate = useNavigate();
+  const [newTransferOpen, setNewTransferOpen] = useState(false);
 
   const fetchBanks = async () => {
     try {
@@ -238,11 +247,57 @@ export default function TransferHistory() {
             <h2 className="text-3xl font-bold tracking-tight">Transfer History</h2>
             <p className="text-muted-foreground">Every payout and wallet credit — searchable, filterable, exportable.</p>
           </div>
-          <Button variant="outline" onClick={handleExportCsv} disabled={exporting || loading}>
-            {exporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
-            Export CSV
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button variant="outline" onClick={handleExportCsv} disabled={exporting || loading}>
+              {exporting ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Download className="mr-2 h-4 w-4" />}
+              Export CSV
+            </Button>
+            <Button onClick={() => setNewTransferOpen(true)}>
+              <Plus className="mr-2 h-4 w-4" />
+              Make New Transfer
+            </Button>
+          </div>
         </div>
+
+        {/* New Transfer chooser: Individual vs Bulk */}
+        <Dialog open={newTransferOpen} onOpenChange={setNewTransferOpen}>
+          <DialogContent className="max-w-lg">
+            <DialogHeader>
+              <DialogTitle>Make New Transfer</DialogTitle>
+              <DialogDescription>Choose how you want to send money.</DialogDescription>
+            </DialogHeader>
+            <div className="grid gap-3 sm:grid-cols-2 py-1">
+              <button
+                type="button"
+                onClick={() => {
+                  setNewTransferOpen(false);
+                  navigate("/wallet?transfer=new");
+                }}
+                className="group flex flex-col items-start gap-2 rounded-xl border border-border bg-card p-4 text-left transition-all hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-blue-600/10 text-blue-600 dark:text-blue-400">
+                  <User className="h-5 w-5" />
+                </span>
+                <span className="font-semibold">Individual Transfer</span>
+                <span className="text-xs text-muted-foreground">Send to a single bank account — local or international.</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => {
+                  setNewTransferOpen(false);
+                  navigate("/payroll?transfer=new");
+                }}
+                className="group flex flex-col items-start gap-2 rounded-xl border border-border bg-card p-4 text-left transition-all hover:border-primary/50 hover:bg-primary/5 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <span className="flex h-10 w-10 items-center justify-center rounded-lg bg-violet-600/10 text-violet-600 dark:text-violet-400">
+                  <Users className="h-5 w-5" />
+                </span>
+                <span className="font-semibold">Bulk Transfer</span>
+                <span className="text-xs text-muted-foreground">Pay multiple recipients at once (salary payouts).</span>
+              </button>
+            </div>
+          </DialogContent>
+        </Dialog>
 
         <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end bg-card p-4 rounded-xl border shadow-sm">
             <div className="grid w-full gap-1.5 lg:w-44">

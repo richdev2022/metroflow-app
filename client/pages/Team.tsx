@@ -24,10 +24,18 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2, ShieldCheck, ChevronDown, ChevronUp, Settings2 } from "lucide-react";
+import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2, ShieldCheck, ChevronDown, ChevronUp, Settings2, Pencil } from "lucide-react";
 import { Link } from "react-router-dom";
 import Layout from "@/components/layout";
 import { toast } from "@/hooks/use-toast";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -68,6 +76,10 @@ export default function Team() {
   const [inviting, setInviting] = useState(false);
   const [memberToDelete, setMemberToDelete] = useState<TeamMember | null>(null);
   const [expandedPermissions, setExpandedPermissions] = useState<Record<string, boolean>>({});
+  // Change-member-role dialog (PATCH /team/:id/role — legacy role or roleId).
+  const [roleMember, setRoleMember] = useState<TeamMember | null>(null);
+  const [roleValue, setRoleValue] = useState<string>("");
+  const [roleSaving, setRoleSaving] = useState(false);
 
   const [formData, setFormData] = useState<{
     name: string;
@@ -251,7 +263,67 @@ export default function Team() {
 
   const memberRoleLabel = (member: TeamMember) => {
     if (member.roleId && member.roleName) return member.roleName;
+    if (member.is_owner || (member.role || "").toLowerCase() === "owner") return "Owner";
     return member.role || "Member";
+  };
+
+  const openChangeRole = (member: TeamMember) => {
+    // Preselect the member's current role (custom first, then legacy).
+    setRoleValue(
+      member.roleId
+        ? encodeRole("custom", member.roleId)
+        : encodeRole("legacy", (member.role || "member").toLowerCase()),
+    );
+    setRoleMember(member);
+  };
+
+  const handleChangeRoleConfirm = async () => {
+    if (!roleMember || !roleValue) return;
+    const decoded = decodeRole(roleValue);
+    const payload: Record<string, unknown> =
+      decoded.kind === "custom" ? { roleId: decoded.id } : { role: decoded.id };
+    try {
+      setRoleSaving(true);
+      const response = await api.patch(`/team/${roleMember.id}/role`, payload);
+      const data = response.data as ApiResponse<TeamMember>;
+      if (data.success) {
+        const customRole = decoded.kind === "custom" ? roles.find((r) => r.id === decoded.id) : null;
+        setTeamMembers((prev) =>
+          prev.map((d) =>
+            d.id === roleMember.id
+              ? {
+                  ...d,
+                  ...(decoded.kind === "custom"
+                    ? { roleId: decoded.id, roleName: customRole?.name || d.roleName, role: ("member" as const) }
+                    : { roleId: null, roleName: null, role: decoded.id as TeamMember["role"] }),
+                  permissions: data.data?.permissions || d.permissions,
+                }
+              : d,
+          ),
+        );
+        toast({
+          title: "Role updated",
+          description: `${roleMember.name} is now ${customRole?.name || decoded.id}.`,
+        });
+        setRoleMember(null);
+        // Refresh so the card's resolved permission badges reflect the new role.
+        fetchTeamMembers();
+      } else {
+        toast({
+          title: "Could not update role",
+          description: data.error || "Please try again",
+          variant: "destructive",
+        });
+      }
+    } catch (err: any) {
+      toast({
+        title: "Could not update role",
+        description: err.response?.data?.error || err.response?.data?.message || "Please try again",
+        variant: "destructive",
+      });
+    } finally {
+      setRoleSaving(false);
+    }
   };
 
   if (loading) {
@@ -429,10 +501,23 @@ export default function Team() {
                     <div className="flex items-start justify-between">
                       <div className="min-w-0">
                         <CardTitle className="text-lg truncate">{member.name}</CardTitle>
-                        <p className="text-sm font-medium text-primary mt-1 flex items-center gap-1.5">
-                          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
-                          {memberRoleLabel(member)}
-                        </p>
+                        {member.is_owner || (member.role || "").toLowerCase() === "owner" ? (
+                          <p className="text-sm font-medium text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1.5">
+                            <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                            Owner
+                          </p>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openChangeRole(member)}
+                            className="text-sm font-medium text-primary mt-1 flex items-center gap-1.5 hover:underline"
+                            title="Change role"
+                          >
+                            <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                            {memberRoleLabel(member)}
+                            <Pencil className="h-3 w-3 opacity-60" />
+                          </button>
+                        )}
                       </div>
                       <div className="flex items-center gap-2">
                         {member.status === "active" && (
@@ -445,6 +530,12 @@ export default function Team() {
                             </Button>
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
+                            {!member.is_owner && (member.role || "").toLowerCase() !== "owner" && (
+                              <DropdownMenuItem onClick={() => openChangeRole(member)}>
+                                <ShieldCheck className="h-4 w-4 mr-2" />
+                                Change role
+                              </DropdownMenuItem>
+                            )}
                             <DropdownMenuItem
                               onClick={() => handleActivateDeactivate(member.id, member.status)}
                             >
@@ -555,6 +646,63 @@ export default function Team() {
             })
           )}
         </div>
+
+        {/* Change Role Dialog */}
+        <Dialog open={!!roleMember} onOpenChange={(open) => !open && setRoleMember(null)}>
+          <DialogContent>
+            <DialogHeader>
+              <DialogTitle>Change Role</DialogTitle>
+              <DialogDescription>
+                Choose the role for <strong>{roleMember?.name}</strong>. Permissions apply immediately.
+              </DialogDescription>
+            </DialogHeader>
+            <div className="space-y-2">
+              <Label htmlFor="change-role-select">Role &amp; Permissions</Label>
+              <Select value={roleValue} onValueChange={setRoleValue}>
+                <SelectTrigger id="change-role-select">
+                  <SelectValue placeholder="Select a role" />
+                </SelectTrigger>
+                <SelectContent>
+                  {roles.length > 0 && (
+                    <>
+                      <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                        Workspace roles
+                      </div>
+                      {roles.map((role) => (
+                        <SelectItem key={role.id} value={encodeRole("custom", role.id)}>
+                          {role.name} · {role.permissions.length} permission{role.permissions.length === 1 ? "" : "s"}
+                        </SelectItem>
+                      ))}
+                      <div className="px-2 py-1.5 mt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-t">
+                        Default roles
+                      </div>
+                    </>
+                  )}
+                  <SelectItem value={encodeRole("legacy", "member")}>
+                    Member — day-to-day work tools
+                  </SelectItem>
+                  <SelectItem value={encodeRole("legacy", "manager")}>
+                    Manager — everything except team management
+                  </SelectItem>
+                  <SelectItem value={encodeRole("legacy", "admin")}>
+                    Admin — full access
+                  </SelectItem>
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">
+                Tailor what each role can do under Roles &amp; Permissions.
+              </p>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setRoleMember(null)}>
+                Cancel
+              </Button>
+              <Button onClick={handleChangeRoleConfirm} disabled={roleSaving || !roleValue || roleValue === (roleMember?.roleId ? encodeRole("custom", roleMember.roleId) : encodeRole("legacy", (roleMember?.role || "member").toLowerCase()))}>
+                {roleSaving ? "Saving..." : "Save Role"}
+              </Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
 
         {/* Delete Confirmation Dialog */}
         <AlertDialog open={!!memberToDelete} onOpenChange={() => setMemberToDelete(null)}>

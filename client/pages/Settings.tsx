@@ -6,6 +6,7 @@ import { assertApiSuccess, getApiMessage, pickResponseField } from "@/lib/api-re
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import PinInput from "@/components/PinInput";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
@@ -720,11 +721,11 @@ export default function Settings() {
                 <div className="space-y-4 py-4">
                   <div className="space-y-2">
                     <Label>New PIN</Label>
-                    <Input type="password" value={newPin} onChange={e => setNewPin(e.target.value)} placeholder="Enter your PIN" maxLength={10} />
+                    <PinInput value={newPin} onChange={setNewPin} />
                   </div>
                   <div className="space-y-2">
                     <Label>Confirm PIN</Label>
-                    <Input type="password" value={confirmNewPin} onChange={e => setConfirmNewPin(e.target.value)} placeholder="Confirm your PIN" maxLength={10} />
+                    <PinInput value={confirmNewPin} onChange={setConfirmNewPin} aria-label="Confirm transaction PIN" />
                   </div>
                 </div>
                 <DialogFooter>
@@ -760,11 +761,11 @@ export default function Settings() {
                     </div>
                     <div className="space-y-2">
                       <Label>New PIN</Label>
-                      <Input type="password" value={newPin} onChange={e => setNewPin(e.target.value)} placeholder="Enter your new PIN" maxLength={10} />
+                      <PinInput value={newPin} onChange={setNewPin} />
                     </div>
                     <div className="space-y-2">
                       <Label>Confirm New PIN</Label>
-                      <Input type="password" value={confirmNewPin} onChange={e => setConfirmNewPin(e.target.value)} placeholder="Confirm your new PIN" maxLength={10} />
+                      <PinInput value={confirmNewPin} onChange={setConfirmNewPin} aria-label="Confirm new transaction PIN" />
                     </div>
                     <div className="text-center">
                       <Button variant="link" size="sm" onClick={handleSendPinUpdateOtp} disabled={pinLoading || isActive}>

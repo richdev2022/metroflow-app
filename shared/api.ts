@@ -41,6 +41,8 @@ export interface TeamMember {
   role: "admin" | "manager" | "member";
   status: "active" | "invited" | "inactive";
   joinedAt?: string;
+  /** true for the business owner (role renders as "Owner"; cannot be changed) */
+  is_owner?: boolean;
   /** custom role assignment (Role & Permission management) */
   roleId?: string | null;
   roleName?: string | null;
