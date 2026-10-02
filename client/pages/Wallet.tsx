@@ -42,6 +42,7 @@ import {
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCountdown } from "@/hooks/useCountdown";
+import PinInput from "@/components/PinInput";
 
 const fundWalletSchema = z.object({
   amount: z.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, "Amount must be greater than 0"),
@@ -673,6 +674,37 @@ export default function Wallet() {
     fetchWalletInfo();
   }, []);
 
+  // Deep link from TransferHistory's "Make New Transfer" chooser — open the
+  // transfer dialog immediately and clean the URL so refresh doesn't replay it.
+  useEffect(() => {
+    if (searchParams.get("transfer") === "new") {
+      setTransferOpen(true);
+      searchParams.delete("transfer");
+      setSearchParams(searchParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Prompt PIN setup before the first transfer instead of failing at submit.
+  const openTransferDialog = (walletType: "user" | "business") => {
+    setSelectedWalletType(walletType);
+    if (walletType === "user" && walletInfo?.user_wallet?.id) {
+      transferForm.setValue("wallet_id", walletInfo.user_wallet.id);
+    }
+    if (walletType === "business" && walletInfo?.business_wallet?.id) {
+      transferForm.setValue("wallet_id", walletInfo.business_wallet.id);
+    }
+    if (!loading && !pinCreated) {
+      toast({
+        title: "Set up your Transaction PIN",
+        description: "Create a 4-digit PIN to secure your transfers.",
+      });
+      setShowCreatePinModal(true);
+      return;
+    }
+    setTransferOpen(true);
+  };
+
   const onFundWallet = async (values: z.infer<typeof fundWalletSchema>) => {
     try {
       setFundingLoading(true);
@@ -876,13 +908,7 @@ export default function Wallet() {
                     <Button 
                       variant="outline"
                       className="w-full" 
-                      onClick={() => {
-                        setSelectedWalletType("user");
-                        setTransferOpen(true);
-                        if (walletInfo?.user_wallet?.id) {
-                          transferForm.setValue("wallet_id", walletInfo.user_wallet.id);
-                        }
-                      }}
+                      onClick={() => openTransferDialog("user")}
                     >
                       <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
                     </Button>
@@ -989,13 +1015,7 @@ export default function Wallet() {
                     <Button 
                       variant="outline"
                       className="w-full" 
-                      onClick={() => {
-                        setSelectedWalletType("business");
-                        setTransferOpen(true);
-                        if (walletInfo?.business_wallet?.id) {
-                          transferForm.setValue("wallet_id", walletInfo.business_wallet.id);
-                        }
-                      }}
+                      onClick={() => openTransferDialog("business")}
                     >
                       <ArrowRightLeft className="mr-2 h-4 w-4" /> Transfer
                     </Button>
@@ -1469,13 +1489,7 @@ export default function Wallet() {
 
                     <div className="space-y-2">
                       <Label>Transaction PIN</Label>
-                      <Input 
-                        type="password" 
-                        placeholder="Enter your PIN" 
-                        value={pin} 
-                        onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                        maxLength={4}
-                      />
+                      <PinInput value={pin} onChange={setPin} />
                       {!pinCreated && (
                         <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
                           Create PIN
@@ -1574,13 +1588,7 @@ export default function Wallet() {
             <div className="space-y-4">
               <div className="space-y-2">
                 <Label>New PIN</Label>
-                <Input 
-                  type="password" 
-                  placeholder="Enter 4-digit PIN" 
-                  value={newPin} 
-                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                  maxLength={4}
-                />
+                <PinInput value={newPin} onChange={setNewPin} />
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setShowCreatePinModal(false)}>Cancel</Button>
@@ -1611,13 +1619,7 @@ export default function Wallet() {
               </div>
               <div className="space-y-2">
                 <Label>New PIN</Label>
-                <Input 
-                  type="password" 
-                  placeholder="Enter 4-digit PIN" 
-                  value={newPin} 
-                  onChange={(e) => setNewPin(e.target.value.replace(/\D/g, '').slice(0, 4))} 
-                  maxLength={4}
-                />
+                <PinInput value={newPin} onChange={setNewPin} />
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setShowResetPinModal(false)}>Cancel</Button>

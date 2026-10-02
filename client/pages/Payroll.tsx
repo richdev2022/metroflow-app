@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
 import {
@@ -23,6 +24,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useToast } from "@/components/ui/use-toast";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
+import PinInput from "@/components/PinInput";
 import {
   Loader2,
   Plus,
@@ -131,9 +133,21 @@ function formatMoney(amount: number): string {
 
 export default function Payroll() {
   const { toast } = useToast();
+  const [searchParams, setSearchParams] = useSearchParams();
 
   /* ---------------- Tabs ---------------- */
   const [activeTab, setActiveTab] = useState<"employees" | "payout" | "adjustments">("employees");
+
+  // Deep link from TransferHistory's "Make New Transfer" chooser — the bulk
+  // payout tab IS the web's bulk-transfer surface. Clean the URL after.
+  useEffect(() => {
+    if (searchParams.get("transfer") === "new") {
+      setActiveTab("payout");
+      searchParams.delete("transfer");
+      setSearchParams(searchParams, { replace: true });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   /* ---------------- Stats + full-directory fetch (payout + adjustment selects) ---------------- */
   const [stats, setStats] = useState<PayrollStats>(EMPTY_STATS);
@@ -1021,13 +1035,7 @@ export default function Payroll() {
   const pinFields = (
     <div className="space-y-2">
       <Label>Transaction PIN</Label>
-      <Input
-        type="password"
-        placeholder="Enter your PIN"
-        value={pin}
-        onChange={(e) => setPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-        maxLength={4}
-      />
+      <PinInput value={pin} onChange={setPin} />
       {!pinCreated && (
         <Button variant="link" size="sm" onClick={() => setShowCreatePinModal(true)} className="p-0 h-auto">
           Create PIN
@@ -2288,13 +2296,7 @@ export default function Payroll() {
           <div className="space-y-4">
             <div className="space-y-2">
               <Label>New PIN</Label>
-              <Input
-                type="password"
-                placeholder="Enter 4-digit PIN"
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                maxLength={4}
-              />
+              <PinInput value={newPin} onChange={setNewPin} />
             </div>
             <DialogFooter>
               <Button onClick={handleCreatePin}>Create PIN</Button>
@@ -2327,13 +2329,7 @@ export default function Payroll() {
             </div>
             <div className="space-y-2">
               <Label>New PIN</Label>
-              <Input
-                type="password"
-                placeholder="Enter 4-digit PIN"
-                value={newPin}
-                onChange={(e) => setNewPin(e.target.value.replace(/\D/g, "").slice(0, 4))}
-                maxLength={4}
-              />
+              <PinInput value={newPin} onChange={setNewPin} />
             </div>
             <DialogFooter>
               <Button onClick={handleResetPin}>Reset PIN</Button>
