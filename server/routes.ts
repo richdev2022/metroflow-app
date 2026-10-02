@@ -278,14 +278,24 @@ export async function registerRoutes(app: Express): Promise<Server> {
     }
   });
 
+  app.post("/api/settings/otp-enabled/send-otp", async (req, res) => {
+    try {
+      const userId = getUserId(req);
+      await storage.sendOtpToggleOtp(userId);
+      res.json({ success: true, message: "OTP sent successfully" });
+    } catch (err) {
+      res.status(500).json({ success: false, message: "Failed to send OTP" });
+    }
+  });
+
   app.put("/api/settings/otp-enabled", async (req, res) => {
     try {
       const businessId = getBusinessId(req);
-      const { enabled } = req.body;
-      await storage.updateOtpEnabledStatus(businessId, enabled);
+      const { enabled, otp } = req.body;
+      await storage.updateOtpEnabledStatus(businessId, enabled, otp);
       res.json({ success: true, message: enabled ? "OTP enabled successfully" : "OTP disabled successfully" });
-    } catch (err) {
-      res.status(500).json({ success: false, message: "Failed to update OTP status" });
+    } catch (err: any) {
+      res.status(400).json({ success: false, message: err.message || "Failed to update OTP status" });
     }
   });
 

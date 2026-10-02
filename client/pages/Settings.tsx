@@ -57,6 +57,15 @@ export default function Settings() {
   const [pinLoading, setPinLoading] = useState(false);
   const [updatePinOtpSent, setUpdatePinOtpSent] = useState(false);
 
+  // OTP-for-transactions toggle: flipping the switch is security-sensitive,
+  // so the server requires an OTP confirmation before it takes effect.
+  const [otpToggleDialogOpen, setOtpToggleDialogOpen] = useState(false);
+  const [otpToggleTarget, setOtpToggleTarget] = useState<boolean | null>(null);
+  const [otpToggleOtpSent, setOtpToggleOtpSent] = useState(false);
+  const [otpToggleOtp, setOtpToggleOtp] = useState("");
+  const [otpToggleLoading, setOtpToggleLoading] = useState(false);
+  const otpToggleCountdown = useCountdown();
+
   useEffect(() => {
     fetchData();
   }, []);
@@ -237,14 +246,50 @@ export default function Settings() {
     }
   };
 
+  // Flipping the Transaction OTP switch no longer fires the PUT directly —
+  // it first asks the user for an OTP confirmation. The backend enforces
+  // this too: PUT /settings/otp-enabled requires { enabled, otp }.
   const handleToggleOtpEnabled = async (enabled: boolean) => {
+    if (enabled === otpEnabled) return;
+    setOtpToggleTarget(enabled);
+    setOtpToggleOtpSent(false);
+    setOtpToggleOtp("");
+    setOtpToggleDialogOpen(true);
+    await sendOtpToggleOtp();
+  };
+
+  const sendOtpToggleOtp = async () => {
     try {
-      const response = await api.put("/settings/otp-enabled", { enabled });
+      setOtpToggleLoading(true);
+      const response = await api.post("/settings/otp-enabled/send-otp");
+      assertApiSuccess(response.data, "Failed to send OTP");
+      setOtpToggleOtpSent(true);
+      otpToggleCountdown.startCountdown();
+      toast({ title: "OTP sent", description: "Enter the OTP we sent you to confirm this change." });
+    } catch (error: any) {
+      toast({ title: "Error", description: getApiMessage(error, "Failed to send OTP"), variant: "destructive" });
+      setOtpToggleDialogOpen(false);
+      setOtpToggleTarget(null);
+    } finally {
+      setOtpToggleLoading(false);
+    }
+  };
+
+  const handleConfirmOtpToggle = async () => {
+    if (otpToggleTarget === null) return;
+    try {
+      setOtpToggleLoading(true);
+      const response = await api.put("/settings/otp-enabled", { enabled: otpToggleTarget, otp: otpToggleOtp });
       const data = assertApiSuccess(response.data, "Failed to update OTP setting");
-      setOtpEnabled(enabled);
-      toast({ title: "Success", description: data.message || (enabled ? "OTP enabled successfully" : "OTP disabled successfully") });
+      setOtpEnabled(otpToggleTarget);
+      setOtpToggleDialogOpen(false);
+      setOtpToggleTarget(null);
+      setOtpToggleOtp("");
+      toast({ title: "Success", description: data.message || (otpToggleTarget ? "OTP enabled successfully" : "OTP disabled successfully") });
     } catch (error: any) {
       toast({ title: "Error", description: getApiMessage(error, "Failed to update OTP setting"), variant: "destructive" });
+    } finally {
+      setOtpToggleLoading(false);
     }
   };
 
@@ -669,6 +714,55 @@ export default function Settings() {
                 </div>
               </CardContent>
             </Card>
+
+            {/* Confirm OTP-toggle dialog: flipping the Transaction OTP switch
+                requires an OTP confirmation (backend-enforced). */}
+            <Dialog open={otpToggleDialogOpen} onOpenChange={(open) => {
+              if (!otpToggleLoading) {
+                setOtpToggleDialogOpen(open);
+                if (!open) setOtpToggleTarget(null);
+              }
+            }}>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Confirm with OTP</DialogTitle>
+                  <DialogDescription>
+                    {otpToggleTarget
+                      ? "You are enabling OTP verification for all transfers. Enter the OTP we sent you to confirm this change."
+                      : "You are disabling OTP verification for transfers. Enter the OTP we sent you to confirm this change."}
+                  </DialogDescription>
+                </DialogHeader>
+                {!otpToggleOtpSent ? (
+                  <div className="flex items-center gap-2 py-4">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm text-muted-foreground">Sending OTP...</span>
+                  </div>
+                ) : (
+                  <div className="space-y-4 py-4">
+                    <div className="space-y-2">
+                      <Label>OTP</Label>
+                      <Input value={otpToggleOtp} onChange={e => setOtpToggleOtp(e.target.value)} placeholder="Enter 6-digit OTP" inputMode="numeric" maxLength={6} />
+                    </div>
+                    <div className="text-center">
+                      <Button variant="link" size="sm" onClick={sendOtpToggleOtp} disabled={otpToggleLoading || otpToggleCountdown.isActive}>
+                        {otpToggleCountdown.isActive ? `Resend OTP in ${otpToggleCountdown.seconds}s` : "Resend OTP"}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                <DialogFooter>
+                  <Button variant="outline" onClick={() => { setOtpToggleDialogOpen(false); setOtpToggleTarget(null); }} disabled={otpToggleLoading}>
+                    Cancel
+                  </Button>
+                  {otpToggleOtpSent && (
+                    <Button onClick={handleConfirmOtpToggle} disabled={otpToggleLoading || otpToggleOtp.length !== 6}>
+                      {otpToggleLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Confirm
+                    </Button>
+                  )}
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
 
             <Card>
               <CardHeader>
