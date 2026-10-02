@@ -47,6 +47,8 @@ import Terms from "./pages/Terms";
 import Privacy from "./pages/Privacy";
 import PaymentLinkPay from "./pages/PaymentLinkPay";
 import PaymentLinks from "./pages/PaymentLinks";
+import InvoicePay from "./pages/InvoicePay";
+import Invoices from "./pages/Invoices";
 import CookieConsentBanner from "./components/CookieConsentBanner";
 import PushManager from "./components/push/PushManager";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
@@ -268,6 +270,13 @@ const App = () => (
             <Route
               path="/payment-links"
               element={<KycProtectedRoute element={<PaymentLinks />} />}
+            />
+            {/* Public client-facing invoice checkout (no auth — clients pay here) */}
+            <Route path="/invoices/:id/pay" element={<InvoicePay />} />
+            {/* Authed: Smart Invoices manager */}
+            <Route
+              path="/invoices"
+              element={<KycProtectedRoute element={<Invoices />} />}
             />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />

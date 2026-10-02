@@ -84,6 +84,11 @@ function PlanFeatures({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan
       `Payment links: ${plan.max_payment_links == null || plan.max_payment_links > 9999 ? "Unlimited" : `up to ${plan.max_payment_links}`} (fee${plan.payment_link_fee_discount_percent ? `, ${Number(plan.payment_link_fee_discount_percent)}% discount` : " at standard rate"})`,
     );
   }
+  if (plan.invoices_enabled !== false) {
+    items.push(
+      `Invoices: ${plan.max_invoices_per_month == null || plan.max_invoices_per_month > 9999 ? "Unlimited" : `${plan.max_invoices_per_month}/month`} (fee${plan.invoice_fee_discount_percent ? `, ${Number(plan.invoice_fee_discount_percent)}% discount` : " at standard rate"})`,
+    );
+  }
   if (plan.ai_credit_discount_percent != null && Number(plan.ai_credit_discount_percent) > 0) {
     items.push(`${Number(plan.ai_credit_discount_percent)}% off MetricAi credit packs`);
   }
@@ -144,11 +149,24 @@ interface CreditPack {
   savings: number;
 }
 
+interface CreditPurchase {
+  id: string;
+  pack_name: string;
+  credits: number;
+  amount: string | number;
+  currency: string;
+  status: string;
+  reference: string;
+  created_at: string;
+}
+
 /** MetricAi Credit Packs — one-time top-ups charged from the wallet. */
 function AiCreditPacksSection() {
   const { toast } = useToast();
   const [packs, setPacks] = useState<CreditPack[]>([]);
   const [balance, setBalance] = useState<number>(0);
+  const [purchases, setPurchases] = useState<CreditPurchase[]>([]);
+  const [historyOpen, setHistoryOpen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [buyingId, setBuyingId] = useState<string | null>(null);
 
@@ -158,6 +176,14 @@ function AiCreditPacksSection() {
       const res = await api.get("/ai-credits/packs");
       setPacks(res.data?.packs || []);
       setBalance(res.data?.balance?.balance || 0);
+      // Purchase history is a nice-to-have — load it in the same pass but never
+      // block the section on it.
+      try {
+        const histRes = await api.get("/ai-credits/purchases");
+        setPurchases(histRes.data?.purchases || []);
+      } catch {
+        /* history is optional */
+      }
     } catch {
       /* section is optional — hide silently on failure */
       setPacks([]);
@@ -235,6 +261,50 @@ function AiCreditPacksSection() {
           </Card>
         ))}
       </div>
+
+      {/* Recent purchase history (collapsible) */}
+      {purchases.length > 0 && (
+        <div className="rounded-2xl border bg-card p-4">
+          <button
+            type="button"
+            onClick={() => setHistoryOpen((v) => !v)}
+            className="flex w-full items-center justify-between text-sm font-semibold"
+          >
+            <span className="inline-flex items-center gap-2">
+              <History className="h-4 w-4 text-muted-foreground" />
+              Recent purchases ({purchases.length})
+            </span>
+            {historyOpen ? <ChevronUp className="h-4 w-4 text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+          </button>
+          {historyOpen && (
+            <div className="mt-3 space-y-2">
+              {purchases.slice(0, 10).map((p) => (
+                <div key={p.id} className="flex items-center justify-between rounded-lg border px-3 py-2 text-sm">
+                  <div className="min-w-0">
+                    <p className="truncate font-medium">{p.pack_name} — {p.credits.toLocaleString()} credits</p>
+                    <p className="text-xs text-muted-foreground">
+                      {new Date(p.created_at).toLocaleString()} · {p.reference}
+                    </p>
+                  </div>
+                  <div className="shrink-0 text-right">
+                    <p className="font-semibold">{Number(p.amount).toLocaleString()} {p.currency}</p>
+                    <Badge
+                      variant="secondary"
+                      className={cn(
+                        "text-[10px]",
+                        p.status === "success" && "bg-emerald-500/10 text-emerald-600",
+                        p.status === "failed" && "bg-red-500/10 text-red-600",
+                      )}
+                    >
+                      {p.status}
+                    </Badge>
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 }

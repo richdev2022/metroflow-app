@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText } from "lucide-react";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
@@ -662,6 +662,14 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 <Link to="/payment-links" onClick={(e) => handleKycProtectedNavigation(e, "/payment-links")}>
                   {kycCheckingPath === "/payment-links" ? <Loader2 className="animate-spin" /> : <LinkIcon />}
                   <span>Payment Links</span>
+                </Link>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            <SidebarMenuItem>
+              <SidebarMenuButton asChild isActive={isActive("/invoices")} tooltip="Invoices" data-tour="nav-invoices">
+                <Link to="/invoices" onClick={(e) => handleKycProtectedNavigation(e, "/invoices")}>
+                  {kycCheckingPath === "/invoices" ? <Loader2 className="animate-spin" /> : <FileText />}
+                  <span>Invoices</span>
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
