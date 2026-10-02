@@ -452,7 +452,8 @@ export default function Backlog() {
         epicId: epicForm.epicId || task.epicId,
         sprint: epicForm.sprint || task.sprint,
         assignedTo: task.assignedTo && task.assignedTo.length > 0 ? task.assignedTo : epicForm.assignedTo,
-        images: imageUrls, // Include uploaded images
+        // Attachments are uploaded via POST /tasks/:id/attachments after
+        // creation — never store local blob: preview URLs in the payload.
       };
 
       const generated = generateTasksFromRange(fullTask);
@@ -474,6 +475,28 @@ export default function Backlog() {
 
       if (data.success && data.data) {
         setTasks((prev) => [...data.data, ...prev]);
+
+        // Upload picked images as REAL attachments on the first created task
+        // (blob: previews are local-only; the actual Files must be uploaded).
+        if (images.length > 0 && data.data.length > 0) {
+          const firstTaskId = data.data[0]?.id;
+          if (firstTaskId) {
+            try {
+              const formData = new FormData();
+              images.forEach((file) => formData.append("files", file));
+              await api.post(`/tasks/${firstTaskId}/attachments`, formData, {
+                headers: { "Content-Type": "multipart/form-data" },
+              });
+            } catch (uploadErr) {
+              console.error("Attachment upload failed:", uploadErr);
+              toast({
+                title: "Tasks created, but attachments failed to upload",
+                description: "Try adding the files again from the task details page.",
+                variant: "destructive",
+              });
+            }
+          }
+        }
 
         // Update epic counts
         const newEpicCounts = { ...epicCounts };

@@ -38,7 +38,7 @@ import {
   PaginationNext,
   PaginationPrevious,
 } from "@/components/ui/pagination";
-import { CheckCircle2, AlertTriangle, CreditCard, Users, History, Loader2, Trash2, Plus, Eye, Search, CalendarIcon, Download, XCircle, Clock } from "lucide-react";
+import { CheckCircle2, AlertTriangle, CreditCard, Users, History, Loader2, Trash2, Plus, Eye, Search, CalendarIcon, Download, XCircle, Clock, ChevronDown, ChevronUp, Link2, Sparkles } from "lucide-react";
 
 import { format } from "date-fns";
 import { DateRange } from "react-day-picker";
@@ -47,6 +47,197 @@ import { cn } from "@/lib/utils";
 // ---- Admin-configured plan capability helpers ----
 const formatPlanLimit = (v?: number | null, unit = "") =>
   v == null || v > 9999 ? "Unlimited" : `${v}${unit}`;
+
+/**
+ * Full feature list for a plan — every admin-configured limit plus the plan's
+ * own feature bullets, with "See more / See less" truncation so long lists
+ * never hide what a plan actually includes.
+ */
+function PlanFeatures({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan> }) {
+  const COLLAPSED_COUNT = 6;
+  const [expanded, setExpanded] = useState(false);
+
+  const items: string[] = [];
+
+  // Computed limits first
+  items.push(
+    `${plan.max_team_members == null ? "Unlimited" : plan.max_team_members > 9999 ? "Unlimited" : `Up to ${plan.max_team_members}`} team members`,
+  );
+  items.push(`${formatPlanLimit(plan.max_meeting_duration, " min")} per call / meeting`);
+  if (plan.max_participants != null) {
+    items.push(`Up to ${plan.max_participants} participants per call`);
+  }
+  if (plan.max_recording_duration != null || plan.max_recording_storage != null) {
+    items.push(
+      `Recordings: ${formatPlanLimit(plan.max_recording_duration, " min")} · ${formatPlanLimit(plan.max_recording_storage, " MB")} storage`,
+    );
+  }
+
+  // MetricAi allowances
+  if (plan.metric_ai_chat_monthly != null) {
+    items.push(`MetricAi: ${formatPlanLimit(plan.metric_ai_chat_monthly)} chats/month${plan.metric_ai_image_monthly != null ? ` · ${formatPlanLimit(plan.metric_ai_image_monthly)} images` : ""}${plan.metric_ai_video_monthly != null ? ` · ${formatPlanLimit(plan.metric_ai_video_monthly)} videos` : ""}`);
+  }
+
+  // Revenue features
+  if (plan.payment_links_enabled !== false) {
+    items.push(
+      `Payment links: ${plan.max_payment_links == null || plan.max_payment_links > 9999 ? "Unlimited" : `up to ${plan.max_payment_links}`} (fee${plan.payment_link_fee_discount_percent ? `, ${Number(plan.payment_link_fee_discount_percent)}% discount` : " at standard rate"})`,
+    );
+  }
+  if (plan.ai_credit_discount_percent != null && Number(plan.ai_credit_discount_percent) > 0) {
+    items.push(`${Number(plan.ai_credit_discount_percent)}% off MetricAi credit packs`);
+  }
+  if (plan.trial_days != null && plan.trial_days > 0 && plan.price === 0) {
+    items.push(`${plan.trial_days}-day free trial of premium features`);
+  }
+
+  // Admin-authored feature bullets
+  if (plan.features && plan.features.length > 0) {
+    items.push(...plan.features);
+  }
+
+  const visible = expanded ? items : items.slice(0, COLLAPSED_COUNT);
+  const hiddenCount = items.length - COLLAPSED_COUNT;
+
+  return (
+    <div>
+      <ul className="space-y-2 text-sm">
+        {visible.map((feature, i) => (
+          <li key={i} className="flex items-start gap-2">
+            <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0 mt-0.5" />
+            <span>{feature}</span>
+          </li>
+        ))}
+      </ul>
+      {hiddenCount > 0 && (
+        <button
+          type="button"
+          onClick={() => setExpanded(true)}
+          className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-primary hover:underline"
+        >
+          <ChevronDown className="h-3.5 w-3.5" />
+          See {hiddenCount} more feature{hiddenCount === 1 ? "" : "s"}
+        </button>
+      )}
+      {expanded && items.length > COLLAPSED_COUNT && (
+        <button
+          type="button"
+          onClick={() => setExpanded(false)}
+          className="mt-2 inline-flex items-center gap-1 text-xs font-semibold text-muted-foreground hover:underline"
+        >
+          <ChevronUp className="h-3.5 w-3.5" />
+          See less
+        </button>
+      )}
+    </div>
+  );
+}
+
+interface CreditPack {
+  id: string;
+  name: string;
+  credits: number;
+  price: number;
+  currency: string;
+  discount_percent: number;
+  discounted_price: number;
+  savings: number;
+}
+
+/** MetricAi Credit Packs — one-time top-ups charged from the wallet. */
+function AiCreditPacksSection() {
+  const { toast } = useToast();
+  const [packs, setPacks] = useState<CreditPack[]>([]);
+  const [balance, setBalance] = useState<number>(0);
+  const [loading, setLoading] = useState(true);
+  const [buyingId, setBuyingId] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    try {
+      const res = await api.get("/ai-credits/packs");
+      setPacks(res.data?.packs || []);
+      setBalance(res.data?.balance?.balance || 0);
+    } catch {
+      /* section is optional — hide silently on failure */
+      setPacks([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    load();
+  }, []);
+
+  const buy = async (pack: CreditPack) => {
+    setBuyingId(pack.id);
+    try {
+      const res = await api.post("/ai-credits/purchase", { pack_id: pack.id });
+      if (res.data?.success) {
+        toast({
+          title: `${res.data.credits_added} MetricAi credits added`,
+          description: `Charged ${res.data.amount_charged} ${res.data.currency} from your wallet.`,
+        });
+        setBalance(res.data?.balance?.balance || balance);
+      } else {
+        toast({ title: res.data?.error || "Purchase failed", variant: "destructive" });
+      }
+    } catch (err: any) {
+      toast({
+        title: err.response?.data?.error || "Could not complete the purchase",
+        variant: "destructive",
+      });
+    } finally {
+      setBuyingId(null);
+    }
+  };
+
+  if (loading) return null;
+  if (packs.length === 0) return null;
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-2">
+        <Sparkles className="h-6 w-6 text-indigo-500" />
+        <h2 className="text-2xl font-bold tracking-tight">MetricAi Credit Packs</h2>
+        <Badge variant="secondary" className="ml-2">Balance: {balance} credits</Badge>
+      </div>
+      <p className="text-sm text-muted-foreground">
+        Out of AI credits? Credit packs work on every plan and never expire — they're used
+        automatically whenever your plan's monthly allowance runs out.
+      </p>
+      <div className="grid gap-4 sm:grid-cols-3">
+        {packs.map((pack) => (
+          <Card key={pack.id} className="flex flex-col p-5">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-base">{pack.name}</CardTitle>
+              {pack.savings > 0 && (
+                <Badge variant="secondary" className="text-green-600 bg-green-100 border-green-200">
+                  Save {pack.savings.toLocaleString()}
+                </Badge>
+              )}
+            </div>
+            <div className="mt-2 text-2xl font-bold">
+              {pack.discounted_price.toLocaleString()}{" "}
+              <span className="text-sm font-normal text-muted-foreground">{pack.currency}</span>
+            </div>
+            <p className="mt-1 text-sm text-muted-foreground">{pack.credits.toLocaleString()} AI credits</p>
+            <Button
+              className="mt-4"
+              variant="outline"
+              onClick={() => buy(pack)}
+              disabled={buyingId === pack.id}
+            >
+              {buyingId === pack.id ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Plus className="mr-2 h-4 w-4" />}
+              Buy with wallet
+            </Button>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+}
 
 function CapabilityChips({ plan }: { plan: Partial<SubscriptionType> & Partial<Plan> }) {
   const caps: { label: string; enabled: boolean }[] = [
@@ -703,28 +894,7 @@ export default function Subscription() {
                       )}
                       <span className="text-muted-foreground text-sm">/{billingCycle === 'yearly' ? 'year' : 'month'}</span>
                     </div>
-                    <ul className="space-y-2 text-sm">
-                      <li className="flex items-center gap-2">
-                        <Users className="h-4 w-4 text-muted-foreground" />
-                        <span>{plan.max_team_members > 9999 ? 'Unlimited' : `Up to ${plan.max_team_members}`} team members</span>
-                      </li>
-                      <li className="flex items-center gap-2">
-                        <Clock className="h-4 w-4 text-muted-foreground" />
-                        <span>{formatPlanLimit(plan.max_meeting_duration, " min")} per call / meeting</span>
-                      </li>
-                      {plan.max_participants != null && (
-                        <li className="flex items-center gap-2">
-                          <Users className="h-4 w-4 text-muted-foreground" />
-                          <span>Up to {plan.max_participants} participants per call</span>
-                        </li>
-                      )}
-                      {plan.features && plan.features.map((feature, i) => (
-                        <li key={i} className="flex items-center gap-2">
-                          <CheckCircle2 className="h-4 w-4 text-green-500 shrink-0" />
-                          <span>{feature}</span>
-                        </li>
-                      ))}
-                    </ul>
+                    <PlanFeatures plan={plan} />
                     <div className="mt-4 pt-3 border-t">
                       <CapabilityChips plan={plan} />
                     </div>
@@ -754,6 +924,10 @@ export default function Subscription() {
             })}
           </div>
         </div>
+
+        {/* MetricAi Credit Packs — revenue feature: buy extra AI usage when a
+            plan's allowance runs out. Charged from the wallet. */}
+        <AiCreditPacksSection />
 
         {/* Transaction History */}
         <div className="space-y-4">

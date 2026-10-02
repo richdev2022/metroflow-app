@@ -42,6 +42,12 @@ import JoinMeeting from "./pages/JoinMeeting";
 import CallDetail, { CallDetailRoute } from "./pages/CallDetail";
 import MeetingDetail, { MeetingDetailRoute } from "./pages/MeetingDetail";
 import JoinCallRing from "./pages/JoinCallRing";
+import About from "./pages/About";
+import Terms from "./pages/Terms";
+import Privacy from "./pages/Privacy";
+import PaymentLinkPay from "./pages/PaymentLinkPay";
+import PaymentLinks from "./pages/PaymentLinks";
+import CookieConsentBanner from "./components/CookieConsentBanner";
 import PushManager from "./components/push/PushManager";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
 import { UpgradePromptProvider } from "./components/UpgradePromptProvider";
@@ -128,6 +134,8 @@ const App = () => (
           <MaintenanceGate>
           {/* Web push bridge: SW registration + sw-call-action handling */}
           <PushManager />
+          {/* Cookie consent: accept/reject on first visit (public + authed) */}
+          <CookieConsentBanner />
           {/* Render-error safety net: a throwing page (e.g. Chat) no longer
               unmounts the whole app / disconnects the socket singleton. */}
           <AppErrorBoundary>
@@ -250,6 +258,17 @@ const App = () => (
               element={<TokenProtectedRoute element={<Recordings />} />}
             />
             <Route path="/accept-invite/:token" element={<AcceptInvite />} />
+            {/* Public static pages (SEO + legal) */}
+            <Route path="/about" element={<About />} />
+            <Route path="/terms" element={<Terms />} />
+            <Route path="/privacy" element={<Privacy />} />
+            {/* Public customer-facing payment link checkout */}
+            <Route path="/pay/:slug" element={<PaymentLinkPay />} />
+            {/* Authed: business "Get Paid" — payment links manager */}
+            <Route
+              path="/payment-links"
+              element={<KycProtectedRoute element={<PaymentLinks />} />}
+            />
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

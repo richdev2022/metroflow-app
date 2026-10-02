@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, Link } from "react-router-dom";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -402,9 +402,14 @@ export default function Register() {
 
           <p className="pt-1 text-center text-xs leading-relaxed text-muted-foreground">
             By creating an account you agree to our{" "}
-            <span className="font-medium text-foreground">Terms of Service</span>{" "}
+            <Link to="/terms" className="font-medium text-foreground underline-offset-2 hover:underline">
+              Terms of Service
+            </Link>{" "}
             and{" "}
-            <span className="font-medium text-foreground">Privacy Policy</span>.
+            <Link to="/privacy" className="font-medium text-foreground underline-offset-2 hover:underline">
+              Privacy Policy
+            </Link>
+            .
           </p>
 
           <p className="text-center text-sm text-muted-foreground">
