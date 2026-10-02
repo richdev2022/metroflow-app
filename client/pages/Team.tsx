@@ -1,11 +1,12 @@
 import { useEffect, useState } from "react";
 import { api } from "@/lib/api-client";
-import { TeamMember, InviteTeamMemberInput, ApiResponse } from "@shared/api";
+import { TeamMember, ApiResponse } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
+import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -22,9 +23,9 @@ import {
   AlertDialogFooter,
   AlertDialogHeader,
   AlertDialogTitle,
-  AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2 } from "lucide-react";
+import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2, ShieldCheck, ChevronDown, ChevronUp, Settings2 } from "lucide-react";
+import { Link } from "react-router-dom";
 import Layout from "@/components/layout";
 import { toast } from "@/hooks/use-toast";
 import {
@@ -34,18 +35,44 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 
+interface WorkspaceRole {
+  id: string;
+  name: string;
+  description?: string | null;
+  permissions: string[];
+  memberCount?: number | string;
+}
+
+interface PermissionMeta {
+  id: string;
+  name: string;
+  description: string;
+}
+
+/** Select value encoding: legacy fixed roles vs workspace custom roles. */
+const LEGACY_PREFIX = "legacy:";
+const encodeRole = (kind: "legacy" | "custom", id: string) =>
+  kind === "legacy" ? `${LEGACY_PREFIX}${id}` : `custom:${id}`;
+const decodeRole = (value: string) =>
+  value.startsWith(LEGACY_PREFIX)
+    ? ({ kind: "legacy", id: value.slice(LEGACY_PREFIX.length) } as const)
+    : ({ kind: "custom", id: value.slice("custom:".length) } as const);
+
 export default function Team() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
+  const [roles, setRoles] = useState<WorkspaceRole[]>([]);
+  const [permissionNames, setPermissionNames] = useState<Record<string, string>>({});
   const [loading, setLoading] = useState(true);
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [inviting, setInviting] = useState(false);
   const [memberToDelete, setMemberToDelete] = useState<TeamMember | null>(null);
+  const [expandedPermissions, setExpandedPermissions] = useState<Record<string, boolean>>({});
 
   const [formData, setFormData] = useState<{
     name: string;
     email: string;
-    role: "admin" | "manager" | "member" | "";
+    role: string; // encoded legacy/custom value
   }>({
     name: "",
     email: "",
@@ -54,6 +81,7 @@ export default function Team() {
 
   useEffect(() => {
     fetchTeamMembers();
+    fetchRoles();
   }, []);
 
   const fetchTeamMembers = async () => {
@@ -75,6 +103,26 @@ export default function Team() {
     }
   };
 
+  const fetchRoles = async () => {
+    try {
+      const [rolesRes, permsRes] = await Promise.all([
+        api.get("/roles"),
+        api.get("/roles/permissions"),
+      ]);
+      const rolesData = rolesRes.data as ApiResponse<{ roles: WorkspaceRole[] }>;
+      if (rolesData.success && rolesData.data) setRoles(rolesData.data.roles || []);
+
+      const permsData = permsRes.data as ApiResponse<{ permissions: PermissionMeta[] }>;
+      if (permsData.success && permsData.data) {
+        const map: Record<string, string> = {};
+        for (const p of permsData.data.permissions || []) map[p.id] = p.name;
+        setPermissionNames(map);
+      }
+    } catch {
+      // Roles are optional for this page (legacy roles still work) — stay quiet.
+    }
+  };
+
   const handleInvite = async () => {
     if (!formData.name || !formData.email || !formData.role) {
       setError("Please fill in all required fields");
@@ -88,14 +136,22 @@ export default function Team() {
       return;
     }
 
+    const decoded = decodeRole(formData.role);
+    const payload: Record<string, unknown> = {
+      name: formData.name,
+      email: formData.email,
+    };
+    if (decoded.kind === "custom") {
+      payload.roleId = decoded.id;
+      payload.role = "member";
+    } else {
+      payload.role = decoded.id;
+    }
+
     try {
       setInviting(true);
       const invitedEmail = formData.email;
-      const response = await api.post("/team/invite", {
-        name: formData.name,
-        email: formData.email,
-        role: formData.role,
-      });
+      const response = await api.post("/team/invite", payload);
       const data = response.data as ApiResponse<TeamMember> & {
         emailSent?: boolean;
         inviteLink?: string;
@@ -114,7 +170,7 @@ export default function Team() {
           return [data.data, ...prev];
         });
 
-        setFormData({ name: "", email: "", role: "" as any });
+        setFormData({ name: "", email: "", role: "" });
         setIsFormOpen(false);
         setError(null);
 
@@ -153,7 +209,7 @@ export default function Team() {
 
       const data = response.data;
       if (data.success) {
-        setTeamMembers(prev => prev.map(d => d.id === id ? { ...d, status: newStatus } : d));
+        setTeamMembers(prev => prev.map(d => d.id === id ? { ...d, status: newStatus as any } : d));
         toast({
           title: `Team member ${newStatus}`,
           description: `Team member has been ${newStatus}d`,
@@ -193,6 +249,11 @@ export default function Team() {
     }
   };
 
+  const memberRoleLabel = (member: TeamMember) => {
+    if (member.roleId && member.roleName) return member.roleName;
+    return member.role || "Member";
+  };
+
   if (loading) {
     return (
       <Layout>
@@ -210,17 +271,25 @@ export default function Team() {
     <Layout>
       <div className="space-y-8">
         {/* Header */}
-        <div className="flex justify-between items-start">
+        <div className="flex flex-col gap-3 sm:flex-row justify-between items-start">
           <div>
             <h1 className="text-4xl font-bold text-foreground">Team</h1>
             <p className="text-muted-foreground mt-2">
               Manage your team and send performance tracking invitations
             </p>
           </div>
-          <Button onClick={() => setIsFormOpen(!isFormOpen)} className="gap-2">
-            <Plus className="h-4 w-4" />
-            Invite Member
-          </Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild variant="outline" className="gap-2">
+              <Link to="/team/roles">
+                <ShieldCheck className="h-4 w-4" />
+                Roles &amp; Permissions
+              </Link>
+            </Button>
+            <Button onClick={() => setIsFormOpen(!isFormOpen)} className="gap-2">
+              <Plus className="h-4 w-4" />
+              Invite Member
+            </Button>
+          </div>
         </div>
 
         {/* Error Alert */}
@@ -266,22 +335,53 @@ export default function Team() {
               </div>
 
               <div>
-                <Label htmlFor="role">Role/Position *</Label>
+                <div className="flex items-center justify-between">
+                  <Label htmlFor="role">Role &amp; Permissions *</Label>
+                  <Link
+                    to="/team/roles"
+                    className="inline-flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <Settings2 className="h-3 w-3" />
+                    Manage roles
+                  </Link>
+                </div>
                 <Select
                   value={formData.role}
-                  onValueChange={(value) =>
-                    setFormData({ ...formData, role: value as "admin" | "manager" | "member" })
-                  }
+                  onValueChange={(value) => setFormData({ ...formData, role: value })}
                 >
                   <SelectTrigger id="role" className="mt-1">
                     <SelectValue placeholder="Select a role" />
                   </SelectTrigger>
                   <SelectContent>
-                    <SelectItem value="member">Member</SelectItem>
-                    <SelectItem value="manager">Manager</SelectItem>
-                    <SelectItem value="admin">Admin</SelectItem>
+                    {roles.length > 0 && (
+                      <>
+                        <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                          Workspace roles
+                        </div>
+                        {roles.map((role) => (
+                          <SelectItem key={role.id} value={encodeRole("custom", role.id)}>
+                            {role.name} · {role.permissions.length} permission{role.permissions.length === 1 ? "" : "s"}
+                          </SelectItem>
+                        ))}
+                        <div className="px-2 py-1.5 mt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-t">
+                          Default roles
+                        </div>
+                      </>
+                    )}
+                    <SelectItem value={encodeRole("legacy", "member")}>
+                      Member — day-to-day work tools
+                    </SelectItem>
+                    <SelectItem value={encodeRole("legacy", "manager")}>
+                      Manager — everything except team management
+                    </SelectItem>
+                    <SelectItem value={encodeRole("legacy", "admin")}>
+                      Admin — full access
+                    </SelectItem>
                   </SelectContent>
                 </Select>
+                <p className="mt-1.5 text-xs text-muted-foreground">
+                  The member can only perform actions their role allows. Create tailored roles under Roles &amp; Permissions.
+                </p>
               </div>
 
               <div className="flex gap-2 justify-end pt-4">
@@ -319,94 +419,140 @@ export default function Team() {
               </Card>
             </div>
           ) : (
-            teamMembers.map((member) => (
-              <Card key={member.id} className="border border-border">
-                <CardHeader>
-                  <div className="flex items-start justify-between">
+            teamMembers.map((member) => {
+              const permissions = member.permissions || [];
+              const expanded = !!expandedPermissions[member.id];
+              const visible = expanded ? permissions : permissions.slice(0, 6);
+              return (
+                <Card key={member.id} className="border border-border">
+                  <CardHeader>
+                    <div className="flex items-start justify-between">
+                      <div className="min-w-0">
+                        <CardTitle className="text-lg truncate">{member.name}</CardTitle>
+                        <p className="text-sm font-medium text-primary mt-1 flex items-center gap-1.5">
+                          <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
+                          {memberRoleLabel(member)}
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {member.status === "active" && (
+                          <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0" />
+                        )}
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button variant="ghost" size="sm">
+                              <MoreVertical className="h-4 w-4" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onClick={() => handleActivateDeactivate(member.id, member.status)}
+                            >
+                              {member.status === "active" ? (
+                                <>
+                                  <UserX className="h-4 w-4 mr-2" />
+                                  Deactivate
+                                </>
+                              ) : (
+                                <>
+                                  <UserCheck className="h-4 w-4 mr-2" />
+                                  Activate
+                                </>
+                              )}
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              onClick={() => handleDeleteClick(member)}
+                              className="text-red-600"
+                            >
+                              <Trash2 className="h-4 w-4 mr-2" />
+                              Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
+                      </div>
+                    </div>
+                  </CardHeader>
+                  <CardContent className="space-y-3">
                     <div>
-                      <CardTitle className="text-lg">{member.name}</CardTitle>
-                      <p className="text-sm text-muted-foreground mt-1">
-                        {member.role}
-                      </p>
+                      <p className="text-xs text-muted-foreground">Email</p>
+                      <p className="text-sm font-medium break-all">{member.email}</p>
                     </div>
-                    <div className="flex items-center gap-2">
-                      {member.status === "active" && (
-                        <CheckCircle className="h-5 w-5 text-green-500 flex-shrink-0" />
-                      )}
-                      <DropdownMenu>
-                        <DropdownMenuTrigger asChild>
-                          <Button variant="ghost" size="sm">
-                            <MoreVertical className="h-4 w-4" />
-                          </Button>
-                        </DropdownMenuTrigger>
-                        <DropdownMenuContent align="end">
-                           <DropdownMenuItem
-                             onClick={() => handleActivateDeactivate(member.id, member.status)}
-                           >
-                             {member.status === "active" ? (
-                               <>
-                                 <UserX className="h-4 w-4 mr-2" />
-                                 Deactivate
-                               </>
-                             ) : (
-                               <>
-                                 <UserCheck className="h-4 w-4 mr-2" />
-                                 Activate
-                               </>
-                             )}
-                           </DropdownMenuItem>
-                           <DropdownMenuItem
-                             onClick={() => handleDeleteClick(member)}
-                             className="text-red-600"
-                           >
-                             <Trash2 className="h-4 w-4 mr-2" />
-                             Delete
-                           </DropdownMenuItem>
-                         </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-                  </div>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  <div>
-                    <p className="text-xs text-muted-foreground">Email</p>
-                    <p className="text-sm font-medium break-all">{member.email}</p>
-                  </div>
 
-                  <div>
-                    <p className="text-xs text-muted-foreground">Status</p>
-                    <span
-                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize mt-1 ${
-                        member.status === "active"
-                          ? "bg-green-100 text-green-700"
-                          : "bg-yellow-100 text-yellow-700"
-                      }`}
-                    >
-                      {member.status === "active" ? (
-                        <>
-                          <Check className="h-3 w-3 mr-1" />
-                          Active
-                        </>
-                      ) : (
-                        <>
-                          <Mail className="h-3 w-3 mr-1" />
-                          Invited
-                        </>
-                      )}
-                    </span>
-                  </div>
-
-                  {member.joinedAt && (
                     <div>
-                      <p className="text-xs text-muted-foreground">Joined</p>
-                      <p className="text-sm">
-                        {new Date(member.joinedAt).toLocaleDateString()}
-                      </p>
+                      <p className="text-xs text-muted-foreground">Status</p>
+                      <span
+                        className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium capitalize mt-1 ${
+                          member.status === "active"
+                            ? "bg-green-100 text-green-700"
+                            : "bg-yellow-100 text-yellow-700"
+                        }`}
+                      >
+                        {member.status === "active" ? (
+                          <>
+                            <Check className="h-3 w-3 mr-1" />
+                            Active
+                          </>
+                        ) : (
+                          <>
+                            <Mail className="h-3 w-3 mr-1" />
+                            Invited
+                          </>
+                        )}
+                      </span>
                     </div>
-                  )}
-                </CardContent>
-              </Card>
-            ))
+
+                    {permissions.length > 0 && (
+                      <div>
+                        <div className="flex items-center justify-between">
+                          <p className="text-xs text-muted-foreground">
+                            Permissions ({permissions.length})
+                          </p>
+                          {permissions.length > 6 && (
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setExpandedPermissions((prev) => ({
+                                  ...prev,
+                                  [member.id]: !prev[member.id],
+                                }))
+                              }
+                              className="inline-flex items-center gap-1 text-[11px] font-medium text-primary hover:underline"
+                            >
+                              {expanded ? "Show less" : "See all"}
+                              {expanded ? <ChevronUp className="h-3 w-3" /> : <ChevronDown className="h-3 w-3" />}
+                            </button>
+                          )}
+                        </div>
+                        <div className="flex flex-wrap gap-1 mt-1.5">
+                          {visible.map((perm) => (
+                            <Badge
+                              key={perm}
+                              variant="secondary"
+                              className="text-[10px] font-normal"
+                              title={permissionNames[perm] || perm}
+                            >
+                              {permissionNames[perm] || perm}
+                            </Badge>
+                          ))}
+                          {permissions.length === 0 && (
+                            <span className="text-xs text-muted-foreground">No permissions</span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {member.joinedAt && (
+                      <div>
+                        <p className="text-xs text-muted-foreground">Joined</p>
+                        <p className="text-sm">
+                          {new Date(member.joinedAt).toLocaleDateString()}
+                        </p>
+                      </div>
+                    )}
+                  </CardContent>
+                </Card>
+              );
+            })
           )}
         </div>
 

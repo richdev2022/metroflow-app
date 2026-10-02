@@ -18,6 +18,7 @@ import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
 import Ranking from "./pages/Ranking";
 import Team from "./pages/Team";
+import TeamRoles from "./pages/TeamRoles";
 import ActivityLogs from "./pages/ActivityLogs";
 import Backlog from "./pages/Backlog";
 import Ideas from "./pages/Ideas";
@@ -172,6 +173,10 @@ const App = () => (
             <Route
               path="/team"
               element={<TokenProtectedRoute element={<Team />} />}
+            />
+            <Route
+              path="/team/roles"
+              element={<TokenProtectedRoute element={<TeamRoles />} />}
             />
             <Route
               path="/activity-logs"

@@ -563,8 +563,12 @@ const SidebarMenuButton = React.forwardRef<
     ref,
   ) => {
     const Comp = asChild ? Slot : "button";
-    const { isMobile, state, setOpenMobile } = useSidebar();
+    const { state, isMobile } = useSidebar();
 
+    // NOTE: no blanket setOpenMobile(false) here — clicking a collapsible
+    // group header on mobile must EXPAND the group, not close the sidebar.
+    // Navigation links close the mobile sheet explicitly in layout.tsx
+    // (closeMobileOnSelect) when a destination is actually chosen.
     const button = (
       <Comp
         ref={ref}
@@ -572,12 +576,7 @@ const SidebarMenuButton = React.forwardRef<
         data-size={size}
         data-active={isActive}
         className={cn(sidebarMenuButtonVariants({ variant, size }), className)}
-        onClick={(e) => {
-          onClick?.(e);
-          if (isMobile) {
-            setOpenMobile(false);
-          }
-        }}
+        onClick={onClick}
         {...props}
       />
     );
