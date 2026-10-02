@@ -856,7 +856,9 @@ export default function MetricAiChat() {
                         }
                       }}
                       onKeyDown={(e) => {
-                        if (e.key === "Enter" && !e.shiftKey) {
+                        // Enter inserts a new paragraph; Ctrl/Cmd+Enter sends
+                        // (matches the Team chat composer behaviour).
+                        if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                           e.preventDefault();
                           send();
                         }
@@ -899,6 +901,9 @@ export default function MetricAiChat() {
                     handleVideoPicked(f);
                   }}
                 />
+                <p className="mt-1.5 hidden text-[11px] text-muted-foreground sm:block">
+                  Enter = new line · Ctrl+Enter to send
+                </p>
               </div>
             </div>
           )}
@@ -1204,7 +1209,8 @@ function SupportConversation({
                   autoGrow();
                 }}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter" && !e.shiftKey) {
+                  // Enter inserts a new paragraph; Ctrl/Cmd+Enter sends.
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
                     e.preventDefault();
                     void send();
                   }
