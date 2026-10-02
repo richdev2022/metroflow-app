@@ -707,8 +707,14 @@ export default function MetricAiChat() {
                     <p className="text-[11px] text-muted-foreground truncate">
                       {helpMode
                         ? "Free help mode · Metricorex questions · sign in for the full MetricAi"
-                        : `Always on · Powered by Metricorex${status?.chatModel ? ` · ${status.chatModel}` : ""}`}
+                        : `Private to you · Always on${status?.chatModel ? ` · ${status.chatModel}` : ""}`}
                     </p>
+                    {!helpMode && (
+                      <p className="text-[10px] text-muted-foreground/80 truncate flex items-center gap-1" title="Each team member has their own private MetricAi chat — the business pays for the plan, but only you can see this conversation.">
+                        <Lock className="h-2.5 w-2.5 shrink-0" />
+                        Only you can see this chat — teammates can't
+                      </p>
+                    )}
                     {formatUsageLine(helpMode ? null : status?.usage) && (
                       <p className="text-[10px] text-muted-foreground/80 truncate" title="Daily usage vs your plan limits">
                         Today: {formatUsageLine(helpMode ? null : status?.usage)}

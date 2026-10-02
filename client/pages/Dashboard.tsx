@@ -732,7 +732,7 @@ export default function Dashboard() {
             <div className="flex flex-wrap items-center gap-2">
               <label htmlFor="member-filter" className="sr-only">Filter by member</label>
               <Select value={selectedMember} onValueChange={setSelectedMember}>
-                <SelectTrigger id="member-filter" className="w-[190px] bg-background">
+                <SelectTrigger id="member-filter" className="w-[150px] bg-background sm:w-[190px]">
                   <SelectValue placeholder="Select team member" />
                 </SelectTrigger>
                 <SelectContent>
@@ -1567,8 +1567,8 @@ function GetPaidTile({ to, icon: Icon, chip, label, lines, onClick }: HubTilePro
       <p className="mt-3 text-sm font-semibold text-foreground">{label}</p>
       {lines ? (
         <div className="mt-1 space-y-0.5">
-          <p className="text-xs text-muted-foreground">{lines[0]}</p>
-          <p className="text-xs font-medium text-foreground/80">{lines[1]}</p>
+          <p className="truncate text-xs text-muted-foreground">{lines[0]}</p>
+          <p className="truncate text-xs font-medium text-foreground/80">{lines[1]}</p>
         </div>
       ) : (
         <div className="mt-2 space-y-1.5">
