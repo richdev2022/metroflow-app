@@ -97,7 +97,8 @@ export interface IStorage {
 
   // 7. OTP Enabled Status
   getOtpEnabledStatus(businessId: string): Promise<{ success: boolean; otpEnabled: boolean; pinCreated: boolean }>;
-  updateOtpEnabledStatus(businessId: string, enabled: boolean): Promise<void>;
+  sendOtpToggleOtp(userId: string): Promise<string>;
+  updateOtpEnabledStatus(businessId: string, enabled: boolean, otp: string): Promise<void>;
 
   // 8. Transaction PIN
   createPin(userId: string, pin: string): Promise<void>;
@@ -172,6 +173,7 @@ export class MemStorage implements IStorage {
   private otpEnabledStatus: Map<string, boolean>; // businessId -> otpEnabled
   private pins: Map<string, string>; // userId -> pin
   private pinUpdateOtps: Map<string, string>; // userId -> otp
+  private otpToggleOtps: Map<string, string>; // userId -> otp (toggle authorization)
   private tasks: Map<string, Task[]>; // businessId -> tasks
   private taskStatuses: Map<string, TaskStatus[]>; // businessId -> task statuses
   private meetings: Map<string, Meeting[]>; // businessId -> meetings
@@ -206,6 +208,7 @@ export class MemStorage implements IStorage {
     this.otpEnabledStatus = new Map();
     this.pins = new Map();
     this.pinUpdateOtps = new Map();
+    this.otpToggleOtps = new Map();
     this.tasks = new Map();
     this.taskStatuses = new Map();
     this.meetings = new Map();
@@ -1196,8 +1199,24 @@ export class MemStorage implements IStorage {
     };
   }
 
-  async updateOtpEnabledStatus(businessId: string, enabled: boolean): Promise<void> {
+  async sendOtpToggleOtp(userId: string): Promise<string> {
+    const otp = Math.floor(100000 + Math.random() * 900000).toString();
+    this.otpToggleOtps.set(userId, otp);
+    return otp;
+  }
+
+  async updateOtpEnabledStatus(businessId: string, enabled: boolean, otp: string): Promise<void> {
+    // Toggling is security-sensitive: require the OTP issued by
+    // sendOtpToggleOtp before the setting may change (mirrors production).
+    const storedOtp = this.otpToggleOtps.get("user_123");
+    if (!storedOtp) {
+      throw new Error("OTP verification required. Please request an OTP first.");
+    }
+    if (storedOtp !== otp) {
+      throw new Error("Invalid OTP");
+    }
     this.otpEnabledStatus.set(businessId, enabled);
+    this.otpToggleOtps.delete("user_123");
   }
 
   // 8. Transaction PIN
