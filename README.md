@@ -1,6 +1,6 @@
 # Metricorex (Fusion Starter)
 
-Metricorex web app (project: Metroflow) — an all-in-one workspace for Personal and Business use: tasks, meetings, chat, wallets, transfers, payroll and a full suite of monetised money features (payment links, smart invoices, bills, savings vaults and MetricAi credits). Built with React (Vite), Node.js and PostgreSQL.
+Metricorex web app (project: Metroflow) — the all-in-one business suite: workspace (tasks, boards, backlog, ideas), team tools (meetings, calls, chat), finance (wallets, transfers, payroll) and the Get Paid revenue suite (payment links, smart invoices, storefront, recurring billing, MetricAi credits). Built with React (Vite), Node.js and PostgreSQL.
 
 ## 🚀 Features
 
@@ -17,10 +17,11 @@ Metricorex web app (project: Metroflow) — an all-in-one workspace for Personal
 - **Wallet & Fintech**: Personal + business wallets, virtual accounts, card funding, single/bulk/international transfers, payroll.
 - **Payment Links**: create shareable checkout links (fixed or custom amount) and track every payment.
 - **Smart Invoices**: itemised invoices with tax & due dates and a public checkout page clients pay on.
-- **Bills Hub**: pay airtime, data, TV, electricity and betting top-ups from any wallet (PIN-verified, instant).
-- **Savings Vaults**: goal-based vaults with daily/weekly/monthly auto-save and progress tracking.
+- **Storefront**: list products/services, share your store link and get paid through hosted checkout (public page at `/store/public/:businessId`, order tracking at `/store/order/:reference`).
+- **Recurring Billing (Subscriptions)**: create customer subscription plans on any interval with auto-charging wallet subscribers and emailed checkout links (public subscribe at `/subscribe/:publicId`).
+- **Collapsible sidebar**: nav restructured into expandable groups (Workspace / Team / Finance / Get Paid / Account) so the suite stays easy to scan.
 - **MetricAi**: AI copilot (chat, images, meeting notes, product documentation) with purchasable credit packs.
-- **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, bills, savings, links, invoices) with full feature lists (see more/see less).
+- **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, store, recurring, links, invoices) with full feature lists (see more/see less).
 
 ## 🛠️ Tech Stack
 
