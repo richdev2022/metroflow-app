@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link2, Plus, Copy, Check, Trash2, ExternalLink, Loader2, Power, TrendingUp, Eye } from "lucide-react";
+import { Link2, Plus, Copy, Check, Trash2, ExternalLink, Loader2, Power, TrendingUp, Eye, Pencil } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -53,6 +53,8 @@ export default function PaymentLinks() {
   const [creating, setCreating] = useState(false);
   const [copiedSlug, setCopiedSlug] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<PaymentLink | null>(null);
+  // When set, the form dialog edits this existing link instead of creating one.
+  const [editingLink, setEditingLink] = useState<PaymentLink | null>(null);
 
   // create form state
   const [title, setTitle] = useState("");
@@ -76,7 +78,25 @@ export default function PaymentLinks() {
     fetchLinks();
   }, [fetchLinks]);
 
-  const handleCreate = async () => {
+  const openEdit = (link: PaymentLink) => {
+    setEditingLink(link);
+    setTitle(link.title || "");
+    setDescription(link.description || "");
+    setAmount(link.amount != null ? String(link.amount) : "");
+    setAllowCustom(!!link.allow_custom_amount);
+    setCreateOpen(true);
+  };
+
+  const openCreate = () => {
+    setEditingLink(null);
+    setTitle("");
+    setDescription("");
+    setAmount("");
+    setAllowCustom(false);
+    setCreateOpen(true);
+  };
+
+  const handleSave = async () => {
     if (!title.trim()) {
       toast.error("Give your link a title");
       return;
@@ -87,14 +107,28 @@ export default function PaymentLinks() {
     }
     setCreating(true);
     try {
-      await api.post("/payment-links", {
-        title: title.trim(),
-        description: description.trim() || undefined,
-        amount: allowCustom ? undefined : Number(amount),
-        allow_custom_amount: allowCustom,
-      });
-      toast.success("Payment link created — share it with your customers");
+      if (editingLink) {
+        await api.put(`/payment-links/${editingLink.id}`, {
+          title: title.trim(),
+          // Empty string explicitly clears the description; backend COALESCEs
+          // null so empty string is the only way to wipe it.
+          description: description.trim(),
+          amount: allowCustom ? null : Number(amount),
+          allow_custom_amount: allowCustom,
+          is_active: editingLink.is_active,
+        });
+        toast.success("Payment link updated");
+      } else {
+        await api.post("/payment-links", {
+          title: title.trim(),
+          description: description.trim() || undefined,
+          amount: allowCustom ? undefined : Number(amount),
+          allow_custom_amount: allowCustom,
+        });
+        toast.success("Payment link created — share it with your customers");
+      }
       setCreateOpen(false);
+      setEditingLink(null);
       setTitle("");
       setDescription("");
       setAmount("");
@@ -103,7 +137,7 @@ export default function PaymentLinks() {
     } catch (e: unknown) {
       const msg =
         (e as { response?: { data?: { error?: string } } })?.response?.data?.error ||
-        "Could not create the payment link";
+        (editingLink ? "Could not update the payment link" : "Could not create the payment link");
       toast.error(msg);
     } finally {
       setCreating(false);
@@ -158,7 +192,7 @@ export default function PaymentLinks() {
             </p>
           </div>
         </div>
-        <Button onClick={() => setCreateOpen(true)} className="shrink-0">
+        <Button onClick={openCreate} className="shrink-0">
           <Plus className="mr-1 h-4 w-4" /> New Link
         </Button>
       </header>
@@ -176,7 +210,7 @@ export default function PaymentLinks() {
               Create a link for invoices, products, donations or tickets. Customers pay by card or
               transfer and you get settled straight into your Metricorex wallet.
             </p>
-            <Button className="mt-5" onClick={() => setCreateOpen(true)}>
+            <Button className="mt-5" onClick={openCreate}>
               <Plus className="mr-1 h-4 w-4" /> Create your first link
             </Button>
           </div>
@@ -244,6 +278,14 @@ export default function PaymentLinks() {
                   <Button
                     size="sm"
                     variant="outline"
+                    title="Edit link"
+                    onClick={() => openEdit(link)}
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
                     title={link.is_active ? "Pause" : "Activate"}
                     onClick={() => toggleActive(link)}
                   >
@@ -268,10 +310,11 @@ export default function PaymentLinks() {
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
-            <DialogTitle>Create payment link</DialogTitle>
+            <DialogTitle>{editingLink ? "Edit payment link" : "Create payment link"}</DialogTitle>
             <DialogDescription>
-              Customers pay through our secure checkout; funds settle into your wallet minus the
-              collection fee.
+              {editingLink
+                ? "Update the title, description or amount — the shareable link and its history stay the same."
+                : "Customers pay through our secure checkout; funds settle into your wallet minus the collection fee."}
             </DialogDescription>
           </DialogHeader>
           <div className="space-y-4">
@@ -320,12 +363,12 @@ export default function PaymentLinks() {
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => setCreateOpen(false)}>
+            <Button variant="outline" onClick={() => { setCreateOpen(false); setEditingLink(null); }}>
               Cancel
             </Button>
-            <Button onClick={handleCreate} disabled={creating}>
-              {creating ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Plus className="mr-1 h-4 w-4" />}
-              Create link
+            <Button onClick={handleSave} disabled={creating}>
+              {creating ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : (editingLink ? <Pencil className="mr-1 h-4 w-4" /> : <Plus className="mr-1 h-4 w-4" />)}
+              {editingLink ? "Save changes" : "Create link"}
             </Button>
           </DialogFooter>
         </DialogContent>
