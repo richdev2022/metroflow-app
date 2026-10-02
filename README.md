@@ -19,6 +19,7 @@ Metricorex web app (project: Metroflow) — the all-in-one business suite: works
 - **Smart Invoices**: itemised invoices with tax & due dates and a public checkout page clients pay on.
 - **Storefront**: list products/services, share your store link and get paid through hosted checkout (public page at `/store/public/:businessId`, order tracking at `/store/order/:reference`).
 - **Recurring Billing (Subscriptions)**: create customer subscription plans on any interval with auto-charging wallet subscribers and emailed checkout links (public subscribe at `/subscribe/:publicId`).
+- **Restructured Home**: business-pillar home — wallet balance strip (business wallet preferred, one-tap Fund), quick actions (work + money mix), a "Get paid, every way" hub with live counts for Payment Links / Invoices / Storefront / Subscriptions, a Money row (Transfers / Payroll / Fund Wallet, KYC-gated) and the work analytics below.
 - **Collapsible sidebar**: nav restructured into expandable groups (Workspace / Team / Finance / Get Paid / Account) so the suite stays easy to scan.
 - **MetricAi**: AI copilot (chat, images, meeting notes, product documentation) with purchasable credit packs.
 - **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, store, recurring, links, invoices) with full feature lists (see more/see less).
