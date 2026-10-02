@@ -1,6 +1,7 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Zap, PiggyBank } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Store, Repeat, ChevronRight, type LucideIcon } from "lucide-react";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { BrandMark } from "./BrandLogo";
@@ -20,6 +21,9 @@ import {
   SidebarMenu,
   SidebarMenuButton,
   SidebarMenuItem,
+  SidebarMenuSub,
+  SidebarMenuSubButton,
+  SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
   SidebarTrigger,
@@ -47,6 +51,80 @@ import { Compass } from "lucide-react";
 const APP_TITLE = (typeof document !== "undefined" && document.title) || "Metricorex — Business OS";
 
 type NotificationCtorOptions = NotificationOptions & { requireInteraction?: boolean };
+
+// ---------------------------------------------------------------------------
+// Collapsible sidebar group ("epic bar" with sub items)
+//
+// Keeps the sidebar short: related features collapse behind one labelled row
+// with a chevron. A group auto-opens (and stays open) while one of its items
+// is the active route; otherwise it remembers the user's toggle.
+// ---------------------------------------------------------------------------
+
+interface NavSubItem {
+  path: string;
+  label: string;
+  icon: React.ReactNode;
+  active: boolean;
+  dataTour?: string;
+  /** shows a tiny spinner instead of the icon while KYC gate checks the path */
+  kycChecking?: boolean;
+  onClick?: (e: React.MouseEvent<HTMLAnchorElement>) => void;
+  /** extra trailing element (unread dot / unread pill) */
+  trailing?: React.ReactNode;
+  /** extra classes on the row (e.g. overflow-visible for corner-pinned dots) */
+  className?: string;
+}
+
+function NavGroup({
+  label,
+  icon: Icon,
+  items,
+}: {
+  label: string;
+  icon: LucideIcon;
+  items: NavSubItem[];
+}) {
+  const anyActive = items.some((i) => i.active);
+  const [open, setOpen] = useState(anyActive || label === "Workspace");
+
+  useEffect(() => {
+    if (anyActive) setOpen(true);
+  }, [anyActive]);
+
+  return (
+    <Collapsible open={open} onOpenChange={setOpen}>
+      <SidebarMenuItem>
+        <CollapsibleTrigger asChild>
+          <SidebarMenuButton tooltip={label} isActive={anyActive}>
+            <Icon />
+            <span>{label}</span>
+            <ChevronRight
+              className={cn(
+                "ml-auto transition-transform duration-200 group-data-[collapsible=icon]:hidden",
+                open && "rotate-90"
+              )}
+            />
+          </SidebarMenuButton>
+        </CollapsibleTrigger>
+        <CollapsibleContent>
+          <SidebarMenuSub>
+            {items.map((item) => (
+              <SidebarMenuSubItem key={item.path}>
+                <SidebarMenuSubButton asChild isActive={item.active} className={item.className}>
+                  <Link to={item.path} onClick={item.onClick} data-tour={item.dataTour}>
+                    {item.kycChecking ? <Loader2 className="animate-spin" /> : item.icon}
+                    <span>{item.label}</span>
+                    {item.trailing}
+                  </Link>
+                </SidebarMenuSubButton>
+              </SidebarMenuSubItem>
+            ))}
+          </SidebarMenuSub>
+        </CollapsibleContent>
+      </SidebarMenuItem>
+    </Collapsible>
+  );
+}
 
 export default function Layout({ children }: { children: React.ReactNode }) {
   console.log("Layout loaded - v2");
@@ -504,6 +582,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         </SidebarHeader>
         <SidebarContent>
           <SidebarMenu>
+            {/* Overview — always visible */}
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/dashboard")} tooltip="Dashboard" data-tour="nav-dashboard">
                 <Link to="/dashboard">
@@ -512,87 +591,86 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/tasks")} tooltip="Tasks" data-tour="nav-tasks">
-                <Link to="/tasks">
-                  <ListTodo />
-                  <span>Tasks</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/board")} tooltip="Board" data-tour="nav-board">
-                <Link to="/board">
-                  <Kanban />
-                  <span>Board</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/backlog")} tooltip="Backlog" data-tour="nav-backlog">
-                <Link to="/backlog">
-                  <ListTodo className="opacity-70" /> 
-                  <span>Backlog</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/ideas")} tooltip="Ideas" data-tour="nav-ideas">
-                <Link to="/ideas">
-                  <Lightbulb />
-                  <span>Ideas</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/meetings")} tooltip="Meetings" data-tour="nav-meetings" className="[&]:overflow-visible">
-                <Link to="/meetings" className="relative flex items-center gap-2 w-full min-w-0">
-                  <Calendar />
-                  <span>Meetings</span>
-                  {meetingsUnread > 0 && (
-                    <>
-                      {/* Expanded: small dot pinned to the end of the row */}
-                      <span className="ml-auto flex h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:hidden" />
-                      {/* Collapsed (icon-only): dot on the icon corner */}
-                      <span className="absolute top-1 right-1 z-10 hidden h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block" />
-                    </>
-                  )}
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/calendar")} tooltip="Calendar" data-tour="nav-calendar">
-                <Link to="/calendar">
-                  <CalendarDays />
-                  <span>Calendar</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/chat")} tooltip="Chat" data-tour="nav-chat" className="[&]:overflow-visible">
-                <Link to="/chat" className="relative flex items-center gap-2 w-full min-w-0">
-                  <MessageSquare />
-                  <span>Chat</span>
-                  {totalUnread > 0 && (
-                    <>
-                      {/* Expanded: count pill inline after the label (never
-                          clipped — it lives inside the flex row, no negative
-                          offsets), styled like modern sidebar badges */}
-                      <span
-                        className={cn(
-                          "ml-auto flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-red-600 px-1.5 text-[10px] font-bold text-white shadow-md shadow-red-500/30 ring-2 ring-sidebar group-data-[collapsible=icon]:hidden",
-                          totalUnread > 99 && "text-[9px]"
-                        )}
-                      >
-                        {totalUnread > 99 ? "99+" : totalUnread}
-                      </span>
-                      {/* Collapsed (icon-only): dot on the icon corner */}
-                      <span className="absolute top-1 right-1 z-10 hidden h-2.5 w-2.5 rounded-full bg-red-500 ring-2 ring-sidebar group-data-[collapsible=icon]:block" />
-                    </>
-                  )}
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+
+            {/* Workspace — tasks, board, backlog, ideas, calendar, activity */}
+            <NavGroup
+              label="Workspace"
+              icon={ListTodo}
+              items={[
+                { path: "/tasks", label: "Tasks", icon: <ListTodo />, active: isActive("/tasks"), dataTour: "nav-tasks" },
+                { path: "/board", label: "Board", icon: <Kanban />, active: isActive("/board"), dataTour: "nav-board" },
+                { path: "/backlog", label: "Backlog", icon: <ListTodo className="opacity-70" />, active: isActive("/backlog"), dataTour: "nav-backlog" },
+                { path: "/ideas", label: "Ideas", icon: <Lightbulb />, active: isActive("/ideas"), dataTour: "nav-ideas" },
+                { path: "/calendar", label: "Calendar", icon: <CalendarDays />, active: isActive("/calendar"), dataTour: "nav-calendar" },
+                { path: "/activity-logs", label: "Activity Log", icon: <Activity />, active: isActive("/activity-logs"), dataTour: "nav-activity-logs" },
+              ]}
+            />
+
+            {/* Team — meetings, chat, calls, recordings, people */}
+            <NavGroup
+              label="Team"
+              icon={Users}
+              items={[
+                {
+                  path: "/meetings",
+                  label: "Meetings",
+                  icon: <Calendar />,
+                  active: isActive("/meetings"),
+                  dataTour: "nav-meetings",
+                  className: "relative overflow-visible",
+                  trailing: meetingsUnread > 0 ? (
+                    <span className="ml-auto flex h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 ring-2 ring-sidebar" />
+                  ) : undefined,
+                },
+                {
+                  path: "/chat",
+                  label: "Chat",
+                  icon: <MessageSquare />,
+                  active: isActive("/chat"),
+                  dataTour: "nav-chat",
+                  className: "relative overflow-visible",
+                  trailing: totalUnread > 0 ? (
+                    <span
+                      className={cn(
+                        "ml-auto flex h-5 min-w-[20px] shrink-0 items-center justify-center rounded-full bg-red-600 px-1.5 text-[10px] font-bold text-white shadow-md shadow-red-500/30 ring-2 ring-sidebar",
+                        totalUnread > 99 && "text-[9px]"
+                      )}
+                    >
+                      {totalUnread > 99 ? "99+" : totalUnread}
+                    </span>
+                  ) : undefined,
+                },
+                { path: "/calls", label: "Calls", icon: <Video />, active: isActive("/calls"), dataTour: "nav-calls" },
+                { path: "/recordings", label: "Recordings", icon: <Mic />, active: isActive("/recordings"), dataTour: "nav-recordings" },
+                { path: "/team", label: "Team", icon: <Users />, active: isActive("/team"), dataTour: "nav-team" },
+                { path: "/ranking", label: "Ranking", icon: <Target />, active: isActive("/ranking"), dataTour: "nav-ranking" },
+              ]}
+            />
+
+            {/* Finance — wallets, payroll, transfers */}
+            <NavGroup
+              label="Finance"
+              icon={Wallet}
+              items={[
+                { path: "/wallet", label: "Wallet", icon: <Wallet />, active: isActive("/wallet"), dataTour: "nav-wallet", kycChecking: kycCheckingPath === "/wallet", onClick: (e) => handleKycProtectedNavigation(e, "/wallet") },
+                { path: "/payroll", label: "Payroll", icon: <Banknote />, active: isActive("/payroll"), dataTour: "nav-payroll", kycChecking: kycCheckingPath === "/payroll", onClick: (e) => handleKycProtectedNavigation(e, "/payroll") },
+                { path: "/transfer-history", label: "Transfer History", icon: <History />, active: isActive("/transfer-history"), dataTour: "nav-transfer-history" },
+              ]}
+            />
+
+            {/* Get Paid — payment links, invoices, store, subscriptions */}
+            <NavGroup
+              label="Get Paid"
+              icon={LinkIcon}
+              items={[
+                { path: "/payment-links", label: "Payment Links", icon: <LinkIcon />, active: isActive("/payment-links"), dataTour: "nav-payment-links", kycChecking: kycCheckingPath === "/payment-links", onClick: (e) => handleKycProtectedNavigation(e, "/payment-links") },
+                { path: "/invoices", label: "Invoices", icon: <FileText />, active: isActive("/invoices"), dataTour: "nav-invoices", kycChecking: kycCheckingPath === "/invoices", onClick: (e) => handleKycProtectedNavigation(e, "/invoices") },
+                { path: "/store", label: "Store", icon: <Store />, active: isActive("/store"), dataTour: "nav-store", kycChecking: kycCheckingPath === "/store", onClick: (e) => handleKycProtectedNavigation(e, "/store") },
+                { path: "/subscriptions", label: "Subscriptions", icon: <Repeat />, active: isActive("/subscriptions"), dataTour: "nav-subscriptions", kycChecking: kycCheckingPath === "/subscriptions", onClick: (e) => handleKycProtectedNavigation(e, "/subscriptions") },
+              ]}
+            />
+
+            {/* MetricAi — always visible */}
             <SidebarMenuItem>
               <SidebarMenuButton asChild isActive={isActive("/metric-ai")} tooltip="MetricAi" data-tour="nav-metric-ai">
                 <Link to="/metric-ai">
@@ -601,126 +679,17 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 </Link>
               </SidebarMenuButton>
             </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/calls")} tooltip="Calls" data-tour="nav-calls">
-                <Link to="/calls">
-                  <Video />
-                  <span>Calls</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/recordings")} tooltip="Recordings" data-tour="nav-recordings">
-                <Link to="/recordings">
-                  <Mic />
-                  <span>Recordings</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/team")} tooltip="Team" data-tour="nav-team">
-                <Link to="/team">
-                  <Users />
-                  <span>Team</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/ranking")} tooltip="Ranking" data-tour="nav-ranking">
-                <Link to="/ranking">
-                  <Target />
-                  <span>Ranking</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/activity-logs")} tooltip="Activity Log" data-tour="nav-activity-logs">
-                <Link to="/activity-logs">
-                  <Activity />
-                  <span>Activity Log</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/wallet")} tooltip="Wallet" data-tour="nav-wallet">
-                <Link to="/wallet" onClick={(e) => handleKycProtectedNavigation(e, "/wallet")}>
-                  {kycCheckingPath === "/wallet" ? <Loader2 className="animate-spin" /> : <Wallet />}
-                  <span>Wallet</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/payroll")} tooltip="Payroll" data-tour="nav-payroll">
-                <Link to="/payroll" onClick={(e) => handleKycProtectedNavigation(e, "/payroll")}>
-                  {kycCheckingPath === "/payroll" ? <Loader2 className="animate-spin" /> : <Banknote />}
-                  <span>Payroll</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/payment-links")} tooltip="Payment Links" data-tour="nav-payment-links">
-                <Link to="/payment-links" onClick={(e) => handleKycProtectedNavigation(e, "/payment-links")}>
-                  {kycCheckingPath === "/payment-links" ? <Loader2 className="animate-spin" /> : <LinkIcon />}
-                  <span>Payment Links</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/invoices")} tooltip="Invoices" data-tour="nav-invoices">
-                <Link to="/invoices" onClick={(e) => handleKycProtectedNavigation(e, "/invoices")}>
-                  {kycCheckingPath === "/invoices" ? <Loader2 className="animate-spin" /> : <FileText />}
-                  <span>Invoices</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/bills")} tooltip="Bills" data-tour="nav-bills">
-                <Link to="/bills" onClick={(e) => handleKycProtectedNavigation(e, "/bills")}>
-                  {kycCheckingPath === "/bills" ? <Loader2 className="animate-spin" /> : <Zap />}
-                  <span>Bills</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/savings")} tooltip="Savings" data-tour="nav-savings">
-                <Link to="/savings" onClick={(e) => handleKycProtectedNavigation(e, "/savings")}>
-                  {kycCheckingPath === "/savings" ? <Loader2 className="animate-spin" /> : <PiggyBank />}
-                  <span>Savings</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/transfer-history")} tooltip="Transfer History" data-tour="nav-transfer-history">
-                <Link to="/transfer-history">
-                  <History />
-                  <span>Transfer History</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/subscription")} tooltip="Subscription" data-tour="nav-subscription">
-                <Link to="/subscription">
-                  <CreditCard />
-                  <span>Subscription</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/profile")} tooltip="Profile" data-tour="nav-profile">
-                <Link to="/profile">
-                  <UserCircle2 />
-                  <span>Profile</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/settings")} tooltip="Settings" data-tour="nav-settings">
-                <Link to="/settings">
-                  <Settings />
-                  <span>Settings</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+
+            {/* Account — plans, profile, settings */}
+            <NavGroup
+              label="Account"
+              icon={Settings}
+              items={[
+                { path: "/subscription", label: "Plans & Billing", icon: <CreditCard />, active: isActive("/subscription"), dataTour: "nav-subscription" },
+                { path: "/profile", label: "Profile", icon: <UserCircle2 />, active: isActive("/profile"), dataTour: "nav-profile" },
+                { path: "/settings", label: "Settings", icon: <Settings />, active: isActive("/settings"), dataTour: "nav-settings" },
+              ]}
+            />
           </SidebarMenu>
         </SidebarContent>
         <SidebarFooter>

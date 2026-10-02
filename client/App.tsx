@@ -49,8 +49,12 @@ import PaymentLinkPay from "./pages/PaymentLinkPay";
 import PaymentLinks from "./pages/PaymentLinks";
 import InvoicePay from "./pages/InvoicePay";
 import Invoices from "./pages/Invoices";
-import Bills from "./pages/Bills";
-import Savings from "./pages/Savings";
+import Store from "./pages/Store";
+import StoreView from "./pages/StoreView";
+import StoreOrder from "./pages/StoreOrder";
+import Recurring from "./pages/Recurring";
+import SubscribePlan from "./pages/SubscribePlan";
+import SubscribeCharge from "./pages/SubscribeCharge";
 import CookieConsentBanner from "./components/CookieConsentBanner";
 import PushManager from "./components/push/PushManager";
 import { SessionTimeoutProvider } from "./components/SessionTimeoutProvider";
@@ -280,16 +284,23 @@ const App = () => (
               path="/invoices"
               element={<KycProtectedRoute element={<Invoices />} />}
             />
-            {/* Authed: Bills Hub (daily-use revenue feature) */}
+            {/* Authed: Metroflow Store manager */}
             <Route
-              path="/bills"
-              element={<KycProtectedRoute element={<Bills />} />}
+              path="/store"
+              element={<KycProtectedRoute element={<Store />} />}
             />
-            {/* Authed: Savings Vaults (daily-use revenue feature) */}
+            {/* Public storefront + order status (no auth — customers shop here) */}
+            <Route path="/store/public/:businessId" element={<StoreView />} />
+            <Route path="/store/order/:reference" element={<StoreOrder />} />
+            {/* Authed: Recurring Billing (customer subscriptions) manager */}
             <Route
-              path="/savings"
-              element={<KycProtectedRoute element={<Savings />} />}
+              path="/subscriptions"
+              element={<KycProtectedRoute element={<Recurring />} />}
             />
+            {/* Public subscribe + charge pay pages (no auth) */}
+            <Route path="/subscribe/:publicId" element={<SubscribePlan />} />
+            <Route path="/subscribe/charge/:reference" element={<SubscribeCharge />} />
+
             {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
             <Route path="*" element={<NotFound />} />
           </Routes>

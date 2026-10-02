@@ -6,7 +6,7 @@ export default function Terms() {
   return (
     <StaticPage
       title="Terms of Service"
-      description={`These terms govern your use of Metricorex — the Business OS covering Personal and Business accounts. Last updated: ${LAST_UPDATED}.`}
+      description={`These terms govern your use of Metricorex — the all-in-one business suite for work, team, money and payments. Last updated: ${LAST_UPDATED}.`}
     >
       <p>
         Welcome to Metricorex. These Terms of Service ("Terms") form a binding agreement between you
@@ -18,9 +18,10 @@ export default function Terms() {
 
       <Section title="1. Who these terms cover">
         <p>
-          Metricorex supports both <strong>Personal</strong> use (your individual wallet, transfers
-          and workspace) and <strong>Business</strong> use (a company workspace with teams, tasks,
-          meetings, payroll and a business wallet). Where a feature is specific to one context — for
+          Metricorex is an <strong>all-in-one business suite</strong>: your workspace (tasks, boards,
+          backlog and ideas), your team tools (meetings, calls and chat), your money (business and
+          personal wallets, transfers and payroll) and your revenue (payment links, smart invoices,
+          a storefront and recurring billing). Where a feature is specific to one context — for
           example business wallets, payroll or team management — these Terms apply to it equally,
           and additional verification (such as business KYC) may be required before you can use it.
         </p>

@@ -1,6 +1,6 @@
 # Metricorex (Fusion Starter)
 
-A comprehensive web application for tracking Key Performance Indicators (KPIs), managing developer tasks, and monitoring business performance. Built with a modern tech stack featuring React, Node.js, and PostgreSQL.
+Metricorex web app (project: Metroflow) — an all-in-one workspace for Personal and Business use: tasks, meetings, chat, wallets, transfers, payroll and a full suite of monetised money features (payment links, smart invoices, bills, savings vaults and MetricAi credits). Built with React (Vite), Node.js and PostgreSQL.
 
 ## 🚀 Features
 
@@ -14,6 +14,13 @@ A comprehensive web application for tracking Key Performance Indicators (KPIs), 
 - **Dashboard**: Visual analytics using Recharts to monitor progress and KPIs.
 - **Activity Logs**: Audit trail of user actions and system events.
 - **Developer Management**: Manage team members, invites, and profiles.
+- **Wallet & Fintech**: Personal + business wallets, virtual accounts, card funding, single/bulk/international transfers, payroll.
+- **Payment Links**: create shareable checkout links (fixed or custom amount) and track every payment.
+- **Smart Invoices**: itemised invoices with tax & due dates and a public checkout page clients pay on.
+- **Bills Hub**: pay airtime, data, TV, electricity and betting top-ups from any wallet (PIN-verified, instant).
+- **Savings Vaults**: goal-based vaults with daily/weekly/monthly auto-save and progress tracking.
+- **MetricAi**: AI copilot (chat, images, meeting notes, product documentation) with purchasable credit packs.
+- **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, bills, savings, links, invoices) with full feature lists (see more/see less).
 
 ## 🛠️ Tech Stack
 
