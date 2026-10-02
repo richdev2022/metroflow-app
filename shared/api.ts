@@ -711,6 +711,19 @@ export interface Plan {
   breakout_rooms_enabled?: boolean;
   virtual_backgrounds?: boolean;
   live_captions?: boolean;
+  // MetricAi (plan limits)
+  metric_ai_enabled?: boolean;
+  metric_ai_chat_daily?: number | null;
+  metric_ai_chat_monthly?: number | null;
+  metric_ai_image_daily?: number | null;
+  metric_ai_image_monthly?: number | null;
+  metric_ai_video_daily?: number | null;
+  metric_ai_video_monthly?: number | null;
+  // Revenue features (Payment Links + AI Credit Packs)
+  payment_links_enabled?: boolean;
+  max_payment_links?: number | null;
+  payment_link_fee_discount_percent?: number | string | null;
+  ai_credit_discount_percent?: number | string | null;
 }
 
 export interface Subscription {
