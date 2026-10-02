@@ -186,7 +186,12 @@ export const useMessages = (conversationId: string, page = 1, limit = 50) => {
       const response = await api.get(`/chat/conversations/${conversationId}/messages`, {
         params: { page, limit },
       });
-      return unwrapApiData<{ messages: Message[]; total: number }>(
+      return unwrapApiData<{
+        messages: Message[];
+        total: number;
+        /** Read-receipt support: each participant's last-read timestamp. */
+        participants?: { userId?: string; user_id?: string; userName?: string; lastReadAt?: string | null }[];
+      }>(
         response.data,
         'Failed to get messages',
       );

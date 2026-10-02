@@ -28,6 +28,7 @@ import { toast } from "sonner";
 import { useSEO } from "@/lib/use-seo";
 import { cn } from "@/lib/utils";
 import type { WalletInfo } from "@shared/api";
+import PinInput from "@/components/PinInput";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -214,8 +215,8 @@ export default function Bills() {
       toast.error("Choose a wallet to pay from");
       return;
     }
-    if (!pin) {
-      toast.error("Enter your transaction PIN");
+    if (!pin || pin.length !== 4) {
+      toast.error("Enter your 4-digit transaction PIN");
       return;
     }
     setPaying(true);
@@ -463,14 +464,7 @@ export default function Bills() {
               <Label className="flex items-center gap-1">
                 <ShieldCheck className="h-3.5 w-3.5" /> Transaction PIN
               </Label>
-              <Input
-                type="password"
-                inputMode="numeric"
-                maxLength={6}
-                placeholder="••••"
-                value={pin}
-                onChange={(e) => setPin(e.target.value)}
-              />
+              <PinInput value={pin} onChange={setPin} />
             </div>
 
             {amountDue > 0 && (
