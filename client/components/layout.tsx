@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Store, Repeat, ChevronRight, type LucideIcon } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Store, Repeat, ShieldCheck, ChevronRight, type LucideIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
@@ -26,7 +26,6 @@ import {
   SidebarMenuSubItem,
   SidebarProvider,
   SidebarRail,
-  SidebarTrigger,
   SidebarInset,
   SidebarSeparator,
 } from "@/components/ui/sidebar";
@@ -47,10 +46,106 @@ import { toast as sonnerToast } from "sonner";
 import { cn } from "@/lib/utils";
 import AppTour, { restartAppTour } from "./AppTour";
 import { Compass } from "lucide-react";
+import { SidebarToggleButton } from "./SidebarToggleButton";
+import { useSidebar } from "@/components/ui/sidebar";
 
 const APP_TITLE = (typeof document !== "undefined" && document.title) || "Metricorex — Business OS";
 
 type NotificationCtorOptions = NotificationOptions & { requireInteraction?: boolean };
+
+// ---------------------------------------------------------------------------
+// Top-level sidebar link (Dashboard / MetricAi) — closes the mobile drawer
+// when the destination is actually selected, never while exploring.
+// ---------------------------------------------------------------------------
+
+function TopNavLink({
+  to,
+  active,
+  tooltip,
+  dataTour,
+  children,
+}: {
+  to: string;
+  active: boolean;
+  tooltip: string;
+  dataTour?: string;
+  children: React.ReactNode;
+}) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <SidebarMenuItem>
+      <SidebarMenuButton asChild isActive={active} tooltip={tooltip} data-tour={dataTour}>
+        <Link
+          to={to}
+          onClick={() => {
+            if (isMobile) setOpenMobile(false);
+          }}
+        >
+          {children}
+        </Link>
+      </SidebarMenuButton>
+    </SidebarMenuItem>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Footer avatar row — same mobile behaviour: close drawer on select.
+// ---------------------------------------------------------------------------
+
+function FooterProfileLink({ userName, userAvatar }: { userName: string; userAvatar: string }) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <SidebarMenuButton asChild tooltip="View profile">
+      <Link
+        to="/profile"
+        className="flex items-center gap-2 min-w-0"
+        onClick={() => {
+          if (isMobile) setOpenMobile(false);
+        }}
+      >
+        <span className="h-6 w-6 rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shrink-0 text-primary-foreground text-[10px] font-bold">
+          {userAvatar ? (
+            <img src={userAvatar} alt="" className="h-full w-full object-cover" />
+          ) : (
+            userName.substring(0, 2).toUpperCase()
+          )}
+        </span>
+        <span className="truncate">{userName}</span>
+      </Link>
+    </SidebarMenuButton>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Header controls — inside SidebarProvider so they can read its context.
+// ---------------------------------------------------------------------------
+
+/** Animated hamburger→X sidebar toggle (mobile drawer + desktop collapse). */
+function HeaderSidebarToggle() {
+  return <SidebarToggleButton />;
+}
+
+/** Header avatar chip -> Profile page; closes the mobile drawer on select. */
+function HeaderProfileLink({ userName, userAvatar }: { userName: string; userAvatar: string }) {
+  const { isMobile, setOpenMobile } = useSidebar();
+  return (
+    <Link
+      to="/profile"
+      title="View profile"
+      aria-label="View profile"
+      onClick={() => {
+        if (isMobile) setOpenMobile(false);
+      }}
+      className="flex h-9 w-9 items-center justify-center rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 text-white text-xs font-bold shadow-sm ring-1 ring-border transition-transform hover:scale-105"
+    >
+      {userAvatar ? (
+        <img src={userAvatar} alt={`${userName} avatar`} className="h-full w-full object-cover" />
+      ) : (
+        userName.substring(0, 2).toUpperCase()
+      )}
+    </Link>
+  );
+}
 
 // ---------------------------------------------------------------------------
 // Collapsible sidebar group ("epic bar" with sub items)
@@ -86,6 +181,12 @@ function NavGroup({
 }) {
   const anyActive = items.some((i) => i.active);
   const [open, setOpen] = useState(anyActive || label === "Workspace");
+  // Mobile: the drawer must stay open while the user expands groups —
+  // it only closes when a destination link is actually selected.
+  const { isMobile, setOpenMobile } = useSidebar();
+  const closeMobileOnSelect = () => {
+    if (isMobile) setOpenMobile(false);
+  };
 
   useEffect(() => {
     if (anyActive) setOpen(true);
@@ -111,7 +212,17 @@ function NavGroup({
             {items.map((item) => (
               <SidebarMenuSubItem key={item.path}>
                 <SidebarMenuSubButton asChild isActive={item.active} className={item.className}>
-                  <Link to={item.path} onClick={item.onClick} data-tour={item.dataTour}>
+                  <Link
+                    to={item.path}
+                    onClick={(e) => {
+                      item.onClick?.(e);
+                      // KYC-gated links call e.preventDefault() and stay —
+                      // only close the drawer when navigation really happens
+                      if (e.defaultPrevented) return;
+                      closeMobileOnSelect();
+                    }}
+                    data-tour={item.dataTour}
+                  >
                     {item.kycChecking ? <Loader2 className="animate-spin" /> : item.icon}
                     <span>{item.label}</span>
                     {item.trailing}
@@ -583,14 +694,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         <SidebarContent>
           <SidebarMenu>
             {/* Overview — always visible */}
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/dashboard")} tooltip="Dashboard" data-tour="nav-dashboard">
-                <Link to="/dashboard">
-                  <BarChart3 />
-                  <span>Dashboard</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            <TopNavLink to="/dashboard" active={isActive("/dashboard")} tooltip="Dashboard" dataTour="nav-dashboard">
+              <BarChart3 />
+              <span>Dashboard</span>
+            </TopNavLink>
 
             {/* Workspace — tasks, board, backlog, ideas, calendar, activity */}
             <NavGroup
@@ -642,7 +749,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 },
                 { path: "/calls", label: "Calls", icon: <Video />, active: isActive("/calls"), dataTour: "nav-calls" },
                 { path: "/recordings", label: "Recordings", icon: <Mic />, active: isActive("/recordings"), dataTour: "nav-recordings" },
-                { path: "/team", label: "Team", icon: <Users />, active: isActive("/team"), dataTour: "nav-team" },
+                { path: "/team", label: "Team", icon: <Users />, active: isActive("/team") || isActive("/team/roles"), dataTour: "nav-team" },
+                { path: "/team/roles", label: "Roles & Permissions", icon: <ShieldCheck />, active: isActive("/team/roles") },
                 { path: "/ranking", label: "Ranking", icon: <Target />, active: isActive("/ranking"), dataTour: "nav-ranking" },
               ]}
             />
@@ -671,14 +779,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             />
 
             {/* MetricAi — always visible */}
-            <SidebarMenuItem>
-              <SidebarMenuButton asChild isActive={isActive("/metric-ai")} tooltip="MetricAi" data-tour="nav-metric-ai">
-                <Link to="/metric-ai">
-                  <Sparkles className="text-indigo-500" />
-                  <span>MetricAi</span>
-                </Link>
-              </SidebarMenuButton>
-            </SidebarMenuItem>
+            <TopNavLink to="/metric-ai" active={isActive("/metric-ai")} tooltip="MetricAi" dataTour="nav-metric-ai">
+              <Sparkles className="text-indigo-500" />
+              <span>MetricAi</span>
+            </TopNavLink>
 
             {/* Account — plans, profile, settings */}
             <NavGroup
@@ -713,19 +817,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             </SidebarMenuItem>
             <SidebarSeparator />
             <SidebarMenuItem>
-              {/* Avatar menu entry -> Profile page */}
-              <SidebarMenuButton asChild tooltip="View profile">
-                <Link to="/profile" className="flex items-center gap-2 min-w-0">
-                  <span className="h-6 w-6 rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 flex items-center justify-center shrink-0 text-primary-foreground text-[10px] font-bold">
-                    {userAvatar ? (
-                      <img src={userAvatar} alt="" className="h-full w-full object-cover" />
-                    ) : (
-                      userName.substring(0, 2).toUpperCase()
-                    )}
-                  </span>
-                  <span className="truncate">{userName}</span>
-                </Link>
-              </SidebarMenuButton>
+              {/* Avatar menu entry -> Profile page (closes mobile drawer on select) */}
+              <FooterProfileLink userName={userName} userAvatar={userAvatar} />
             </SidebarMenuItem>
             <SidebarMenuItem>
               <SidebarMenuButton onClick={handleLogout} tooltip="Logout" className="text-destructive hover:text-destructive">
@@ -744,23 +837,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <SidebarInset className="min-w-0">
         <header className="flex h-16 shrink-0 items-center justify-between gap-2 border-b px-4 flex-row">
           <div className="flex items-center gap-2">
-            <SidebarTrigger className="-ml-1" />
+            <HeaderSidebarToggle />
             <div className="h-4 w-[1px] bg-border mx-2 hidden md:block" />
           </div>
           <div className="flex items-center gap-2">
-            {/* Avatar menu -> Profile page (all breakpoints, incl. mobile) */}
-            <Link
-              to="/profile"
-              title="View profile"
-              aria-label="View profile"
-              className="flex h-9 w-9 items-center justify-center rounded-full overflow-hidden bg-gradient-to-br from-blue-500 to-violet-600 text-white text-xs font-bold shadow-sm ring-1 ring-border transition-transform hover:scale-105"
-            >
-              {userAvatar ? (
-                <img src={userAvatar} alt={`${userName} avatar`} className="h-full w-full object-cover" />
-              ) : (
-                userName.substring(0, 2).toUpperCase()
-              )}
-            </Link>
+            {/* Avatar menu -> Profile page (all breakpoints, incl. mobile;
+                closes the mobile drawer on select) */}
+            <HeaderProfileLink userName={userName} userAvatar={userAvatar} />
             <NotificationBell />
           </div>
         </header>
