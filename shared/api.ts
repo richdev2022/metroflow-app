@@ -711,6 +711,37 @@ export interface Plan {
   breakout_rooms_enabled?: boolean;
   virtual_backgrounds?: boolean;
   live_captions?: boolean;
+  // MetricAi (plan limits)
+  metric_ai_enabled?: boolean;
+  metric_ai_chat_daily?: number | null;
+  metric_ai_chat_monthly?: number | null;
+  metric_ai_image_daily?: number | null;
+  metric_ai_image_monthly?: number | null;
+  metric_ai_video_daily?: number | null;
+  metric_ai_video_monthly?: number | null;
+  // Revenue features (Payment Links + AI Credit Packs + Smart Invoices + Storefront + Recurring Billing)
+  payment_links_enabled?: boolean;
+  max_payment_links?: number | null;
+  payment_link_fee_discount_percent?: number | string | null;
+  ai_credit_discount_percent?: number | string | null;
+  invoices_enabled?: boolean;
+  max_invoices_per_month?: number | null;
+  invoice_fee_discount_percent?: number | string | null;
+  // Storefront (Metroflow Store)
+  store_enabled?: boolean;
+  max_store_products?: number | null;
+  store_fee_discount_percent?: number | string | null;
+  // Recurring Billing (Customer Subscriptions)
+  recurring_enabled?: boolean;
+  max_subscription_plans?: number | null;
+  subscription_fee_discount_percent?: number | string | null;
+  // Personal app features (dormant in the business app — Bills Hub / Savings Vaults)
+  bills_enabled?: boolean;
+  max_bills_per_day?: number | null;
+  bill_fee_discount_percent?: number | string | null;
+  savings_enabled?: boolean;
+  max_savings_vaults?: number | null;
+  savings_break_fee_discount_percent?: number | string | null;
 }
 
 export interface Subscription {
