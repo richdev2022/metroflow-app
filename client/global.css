@@ -83,6 +83,19 @@
   body {
     @apply bg-background text-foreground;
   }
+
+  /**
+   * Lock horizontal PAGE scroll on every route (mobile-safe): sideways
+   * overflow is clipped at the root without creating a scroll container,
+   * so position:sticky (sidebar/header) keeps working. Deliberate inner
+   * scroll areas marked overflow-x-auto (board carousels, wide tables,
+   * sticker panels) are unaffected — only the viewport is locked.
+   */
+  html,
+  body {
+    overflow-x: hidden;
+    overflow-x: clip;
+  }
 }
 
 /* ============================================
