@@ -42,6 +42,7 @@ import {
   Loader2,
   X,
   Check,
+  CheckCheck,
   Search,
   ArrowLeft,
   Smile,
@@ -684,8 +685,14 @@ const MessageBubble = ({
           </button>
         ) : isSending ? (
           <Loader2 className="h-3 w-3 animate-spin opacity-60" />
+        ) : isRead ? (
+          <span className="opacity-80" title="Read">
+            <CheckCheck className="h-3 w-3 text-cyan-200" />
+          </span>
         ) : (
-          <span className="opacity-60" title={isRead ? "Read" : "Sent"}><Check className={cn("h-3 w-3", isRead && "text-cyan-200")} /></span>
+          <span className="opacity-60" title="Sent">
+            <Check className="h-3 w-3" />
+          </span>
         )
       )}
     </div>
@@ -1232,6 +1239,11 @@ export default function Chat() {
   const [groupInfoOpen, setGroupInfoOpen] = useState(false);
   const [blockedUserIds, setBlockedUserIds] = useState<Set<string>>(new Set());
   const [lastSeenOverrides, setLastSeenOverrides] = useState<Record<string, string | null>>({});
+
+  // Read receipts: conversationId -> timestamp (ms) of the PEER's latest read
+  // (max lastReadAt across other participants). Own messages older than this
+  // render the Teams-style double tick.
+  const [peerReadMap, setPeerReadMap] = useState<Record<string, number>>({});
   const [blockBusy, setBlockBusy] = useState(false);
   // Multi-select mode (WhatsApp-style): forward / bulk copy / bulk delete-for-me
   const [selectionMode, setSelectionMode] = useState(false);
@@ -1354,7 +1366,32 @@ export default function Chat() {
   // Fetch messages
   const { data: messagesData } = useMessages(selectedConversation?.id || "", 1, 100);
 
+  // Read receipts — derive the peer's latest read timestamp from (a) the
+  // messages payload's participants (backend GET messages) and (b) the
+  // conversation list payload's participants. Only ever moves forward.
+  useEffect(() => {
+    const convId = selectedConversation?.id;
+    if (!convId) return;
+    const parts = [
+      ...(((messagesData as any)?.participants || []) as any[]),
+      ...((((selectedConversation as any)?.participants || []) as any[])),
+    ];
+    if (parts.length === 0) return;
+    const me = CURRENT_USER_ID();
+    let maxMs = 0;
+    for (const p of parts) {
+      const pid = p?.userId || p?.user_id;
+      if (!pid || pid === me) continue;
+      const t = p?.lastReadAt ? new Date(p.lastReadAt).getTime() : 0;
+      if (t > maxMs) maxMs = t;
+    }
+    if (maxMs > 0) {
+      setPeerReadMap((prev) => (maxMs > (prev[convId] || 0) ? { ...prev, [convId]: maxMs } : prev));
+    }
+  }, [messagesData, selectedConversation?.id]);
+
   // Combine & deduplicate messages (+ apply realtime patches and system rows)
+  const peerReadMs = peerReadMap[selectedConversation?.id || ""] || 0;
   const combinedMessages = useMemo(() => {
     const apiMsgs = (messagesData?.messages || []) as ChatMessage[];
     const all = [...apiMsgs, ...localMessages, ...systemEvents];
@@ -1366,8 +1403,19 @@ export default function Chat() {
         return true;
       })
       .map((m) => (messagePatches[m.id] ? { ...m, ...messagePatches[m.id] } : m))
+      .map((m) => {
+        // Teams-style read receipts: own, settled messages sent before the
+        // peer's latest read render as "read" (double tick in the bubble).
+        if (!peerReadMs) return m;
+        const senderId = getMsgSenderId(m);
+        if (senderId !== CURRENT_USER_ID()) return m;
+        if (m.status === "sending" || m.status === "failed" || m.status === "read") return m;
+        const t = new Date(getMsgTime(m)).getTime();
+        if (t && t <= peerReadMs) return { ...m, status: "read" as const };
+        return m;
+      })
       .sort((a, b) => new Date(getMsgTime(a)).getTime() - new Date(getMsgTime(b)).getTime());
-  }, [messagesData?.messages, localMessages, systemEvents, messagePatches]);
+  }, [messagesData?.messages, localMessages, systemEvents, messagePatches, peerReadMs]);
 
   // Group messages for visual grouping
   const groupedMessages = useMemo(() => {
@@ -1461,11 +1509,21 @@ export default function Chat() {
     };
   }, [selectedConversation?.id, isConnected, on, off, scrollToBottom]);
 
-  // Socket: Read receipts (backend emits `conversation:read` on markConversationAsRead)
+  // Socket: Read receipts (backend emits `conversation:read` on markConversationAsRead;
+  // `chat:conversation-read` is the socket.ts rebroadcast; `chat:read-updated`
+  // is the local dev server's variant). All update the peer-read cursor.
   useEffect(() => {
     if (!isConnected) return;
-    const handleRead = ({ conversationId, userId }: { conversationId: string; userId: string }) => {
-      if (conversationId !== selectedConversation?.id || userId === CURRENT_USER_ID()) return;
+    const handleRead = (payload: any) => {
+      const conversationId = payload?.conversationId;
+      const userId = payload?.userId;
+      if (!conversationId || conversationId !== selectedConversation?.id) return;
+      if (!userId || userId === CURRENT_USER_ID()) return;
+      const ts = payload?.lastReadAt || payload?.readAt;
+      const ms = ts ? new Date(ts).getTime() : Date.now();
+      if (ms) {
+        setPeerReadMap((prev) => (ms > (prev[conversationId] || 0) ? { ...prev, [conversationId]: ms } : prev));
+      }
       setLocalMessages((prev) => prev.map((m) => {
         const senderId = (m as any).senderId || (m as any).sender_id || '';
         const isOwn = senderId === CURRENT_USER_ID();
@@ -1473,7 +1531,13 @@ export default function Chat() {
       }));
     };
     on("conversation:read", handleRead as any);
-    return () => off("conversation:read", handleRead as any);
+    on("chat:conversation-read", handleRead as any);
+    on("chat:read-updated", handleRead as any);
+    return () => {
+      off("conversation:read", handleRead as any);
+      off("chat:conversation-read", handleRead as any);
+      off("chat:read-updated", handleRead as any);
+    };
   }, [selectedConversation?.id, isConnected, on, off]);
 
   // Socket: Presence
