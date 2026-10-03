@@ -220,7 +220,10 @@ export default function Profile() {
 
   const kycNextRoute = (() => {
     if (!kycStatus) return "/kyc";
-    if (!kycStatus.bvn_verified || !kycStatus.nin_verified) return "/kyc";
+    // Tier-1 complete when EITHER identity document is verified (matches the
+    // backend's checkKycStatus). Only route to /kyc when NEITHER is done;
+    // otherwise the next step is the voluntary business verification.
+    if (!kycStatus.bvn_verified && !kycStatus.nin_verified) return "/kyc";
     if (kycStatus.business_kyc_status !== "verified") return "/kyc/business";
     return null;
   })();
