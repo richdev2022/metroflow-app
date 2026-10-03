@@ -534,6 +534,35 @@ export default function TransferHistory() {
                             </DialogTitle>
                         </DialogHeader>
                         <div className="space-y-6 py-4">
+                            {/* Receipt hero: gradient card with amount, type + status chips */}
+                            <div className="rounded-2xl p-6 text-white bg-gradient-to-br from-blue-600 to-violet-600 shadow-lg">
+                                <div className="flex flex-col items-center gap-3 text-center">
+                                    <div className="flex h-12 w-12 items-center justify-center rounded-full bg-white/20">
+                                        {(() => {
+                                            const isCredit = selectedTransfer.direction === "credit" || selectedTransfer.type === "transaction" && selectedTransfer.direction !== "debit";
+                                            return isCredit
+                                                ? <ArrowDownLeft className="h-6 w-6" />
+                                                : <ArrowUpRight className="h-6 w-6" />;
+                                        })()}
+                                    </div>
+                                    <div className="text-3xl font-extrabold tracking-tight">
+                                        {selectedTransfer.currency} {Number(selectedTransfer.amount).toLocaleString()}
+                                    </div>
+                                    <div className="flex items-center gap-2">
+                                        <span className="rounded-full bg-white/25 px-3 py-1 text-[11px] font-bold uppercase tracking-wide">
+                                            {(() => {
+                                                const isCredit = selectedTransfer.direction === "credit" || selectedTransfer.type === "transaction" && selectedTransfer.direction !== "debit";
+                                                const t = (selectedTransfer.transaction_type || "").toLowerCase();
+                                                return (isCredit || t === "refund") ? "Credit" : "Debit";
+                                            })()}
+                                        </span>
+                                        <span className="rounded-full bg-black/20 px-3 py-1 text-[11px] font-bold uppercase tracking-wide">
+                                            {selectedTransfer.status}
+                                        </span>
+                                    </div>
+                                </div>
+                            </div>
+
                             <div className="space-y-2">
                                 <div className="flex items-center justify-between">
                                     <span className="text-sm text-muted-foreground">Reference</span>
@@ -552,10 +581,6 @@ export default function TransferHistory() {
                                         </Button>
                                     </div>
                                 </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-muted-foreground">Amount</span>
-                                    <AmountCell t={selectedTransfer} />
-                                </div>
                                 {Number(selectedTransfer.fee) > 0 && (
                                     <div className="flex items-center justify-between">
                                         <span className="text-sm text-muted-foreground">Fee</span>
@@ -563,13 +588,7 @@ export default function TransferHistory() {
                                     </div>
                                 )}
                                 <div className="flex items-center justify-between">
-                                    <span className="text-sm text-muted-foreground">Status</span>
-                                    <Badge variant={selectedTransfer.status === 'success' ? 'default' : selectedTransfer.status === 'failed' ? 'destructive' : 'secondary'}>
-                                        {selectedTransfer.status}
-                                    </Badge>
-                                </div>
-                                <div className="flex items-center justify-between">
-                                    <span className="text-sm text-muted-foreground">Type</span>
+                                    <span className="text-sm text-muted-foreground">Channel</span>
                                     <Badge variant="outline" className="font-normal capitalize">
                                       {selectedTransfer.type === "transaction"
                                         ? (selectedTransfer.transaction_type || "credit").replace(/_/g, " ")
