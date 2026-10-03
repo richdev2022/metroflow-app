@@ -239,6 +239,14 @@ export default function Meetings() {
       timezone: meeting.timezone,
       attendeeIds: meeting.attendees?.map((a) => a.userId) ?? [],
       status: meeting.status,
+      // SEED THE CONFIG FLAGS — they were previously undefined, so the edit
+      // dialog's Waiting-room/Recording/Screen-sharing toggles always showed
+      // OFF even for meetings that had them ON ("configuration lost" bug).
+      waitingRoomEnabled: (meeting as any).waitingRoomEnabled ?? false,
+      recordingEnabled: (meeting as any).recordingEnabled ?? false,
+      screenSharingEnabled: (meeting as any).screenSharingEnabled ?? true,
+      maxParticipants: (meeting as any).maxParticipants ?? 100,
+      password: (meeting as any).password || "",
     });
     setIsEditDialogOpen(true);
   };
