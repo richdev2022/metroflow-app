@@ -9,9 +9,15 @@ export function normalizeKycStatus(data: any): KycStatus {
     
     const bvnVerified = user.bvnStatus === 'verified';
     const ninVerified = user.ninStatus === 'verified';
-    
+
+    // TIER-1 = BVN **OR** NIN verified — the backend middleware
+    // (checkKycStatus) treats a user as KYC-verified when EITHER identity
+    // number is verified. The old AND here locked BVN-only users out of
+    // Wallet/Payroll/PaymentLinks even though the server considered them
+    // verified (and vice versa it let the client demand a NIN the backend
+    // never requires).
     let userKycStatus: KycStatus['user_kyc_status'] = 'pending';
-    if (bvnVerified && ninVerified) {
+    if (bvnVerified || ninVerified) {
       userKycStatus = 'verified';
     } else if (user.bvnStatus === 'rejected' || user.ninStatus === 'rejected') {
       userKycStatus = 'rejected';
