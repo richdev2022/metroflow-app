@@ -13,6 +13,7 @@ import ResetPasswordOtp from "./pages/ResetPasswordOtp";
 import ResetPassword from "./pages/ResetPassword";
 import Kyc from "./pages/Kyc";
 import KycPrompt from "./pages/KycPrompt";
+import ProfileComplete from "./pages/ProfileComplete";
 import KycBusiness from "./pages/KycBusiness";
 import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
@@ -157,6 +158,7 @@ const App = () => (
             <Route path="/reset-password" element={<ResetPassword />} />
                             <Route path="/kyc" element={<TokenProtectedRoute element={<Kyc />} />} />
                             <Route path="/kyc/prompt" element={<TokenProtectedRoute element={<KycPrompt />} />} />
+            <Route path="/profile-complete" element={<TokenProtectedRoute element={<ProfileComplete />} />} />
                             <Route path="/kyc/business" element={<TokenProtectedRoute element={<KycBusiness />} />} />
             <Route
               path="/dashboard"
