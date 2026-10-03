@@ -24,7 +24,9 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2, ShieldCheck, ChevronDown, ChevronUp, Settings2, Pencil } from "lucide-react";
+import { Mail, Plus, Check, AlertCircle, CheckCircle, MoreVertical, UserCheck, UserX, Trash2, ShieldCheck, ChevronDown, ChevronUp, Settings2, Pencil, ChevronsUpDown } from "lucide-react";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 import { Link } from "react-router-dom";
 import Layout from "@/components/layout";
 import { toast } from "@/hooks/use-toast";
@@ -66,6 +68,121 @@ const decodeRole = (value: string) =>
     ? ({ kind: "legacy", id: value.slice(LEGACY_PREFIX.length) } as const)
     : ({ kind: "custom", id: value.slice("custom:".length) } as const);
 
+interface RoleOption {
+  value: string;
+  label: string;
+  hint?: string;
+  group: string;
+}
+
+/**
+ * Searchable role dropdown (combobox).
+ *
+ * The shadcn Select is not searchable; with many workspace roles admins could
+ * not find the role they wanted. This lists EVERY role — workspace roles from
+ * /roles plus the Manager/Member/Admin defaults — with a type-to-filter box,
+ * and is shared by the invite form and the change-role dialog.
+ */
+function RoleCombobox({
+  value,
+  onChange,
+  options,
+  id,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: RoleOption[];
+  id?: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const selected = options.find((o) => o.value === value);
+  const groups = Array.from(new Set(options.map((o) => o.group)));
+  const filtered = options.filter((o) =>
+    `${o.label} ${o.hint ?? ""}`.toLowerCase().includes(query.trim().toLowerCase()),
+  );
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <Button
+          id={id}
+          type="button"
+          variant="outline"
+          role="combobox"
+          aria-expanded={open}
+          className="w-full justify-between font-normal"
+        >
+          <span className="truncate">
+            {selected ? (
+              <span>
+                {selected.label}
+                {selected.hint ? (
+                  <span className="text-muted-foreground"> · {selected.hint}</span>
+                ) : null}
+              </span>
+            ) : (
+              <span className="text-muted-foreground">Search and select a role…</span>
+            )}
+          </span>
+          <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+        </Button>
+      </PopoverTrigger>
+      <PopoverContent className="w-[--radix-popover-trigger-width] p-0" align="start">
+        <div className="p-2 border-b">
+          <Input
+            autoFocus
+            placeholder="Search roles…"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            className="h-9"
+          />
+        </div>
+        <div className="max-h-64 overflow-y-auto p-1">
+          {filtered.length === 0 ? (
+            <p className="py-6 text-center text-sm text-muted-foreground">No roles match “{query}”</p>
+          ) : (
+            groups.map((group) => {
+              const groupOptions = filtered.filter((o) => o.group === group);
+              if (groupOptions.length === 0) return null;
+              return (
+                <div key={group}>
+                  <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                    {group}
+                  </div>
+                  {groupOptions.map((o) => (
+                    <button
+                      key={o.value}
+                      type="button"
+                      className={cn(
+                        "w-full flex items-center justify-between rounded-md px-2 py-2 text-left text-sm hover:bg-accent hover:text-accent-foreground",
+                        o.value === value && "bg-accent",
+                      )}
+                      onClick={() => {
+                        onChange(o.value);
+                        setOpen(false);
+                        setQuery("");
+                      }}
+                    >
+                      <span className="min-w-0">
+                        <span className="block truncate font-medium">{o.label}</span>
+                        {o.hint ? (
+                          <span className="block truncate text-xs text-muted-foreground">{o.hint}</span>
+                        ) : null}
+                      </span>
+                      {o.value === value ? <Check className="h-4 w-4 shrink-0 text-primary" /> : null}
+                    </button>
+                  ))}
+                </div>
+              );
+            })
+          )}
+        </div>
+      </PopoverContent>
+    </Popover>
+  );
+}
+
 export default function Team() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [roles, setRoles] = useState<WorkspaceRole[]>([]);
@@ -85,10 +202,18 @@ export default function Team() {
     name: string;
     email: string;
     role: string; // encoded legacy/custom value
+    phone: string;
+    jobTitle: string;
+    department: string;
+    employmentType: string;
   }>({
     name: "",
     email: "",
     role: "",
+    phone: "",
+    jobTitle: "",
+    department: "",
+    employmentType: "",
   });
 
   useEffect(() => {
@@ -152,6 +277,12 @@ export default function Team() {
     const payload: Record<string, unknown> = {
       name: formData.name,
       email: formData.email,
+      // Complete employee information (all optional, backend persists what it
+      // gets — see POST /team/invite).
+      phone_number: formData.phone || null,
+      job_title: formData.jobTitle || null,
+      department: formData.department || null,
+      employment_type: formData.employmentType || null,
     };
     if (decoded.kind === "custom") {
       payload.roleId = decoded.id;
@@ -182,7 +313,7 @@ export default function Team() {
           return [data.data, ...prev];
         });
 
-        setFormData({ name: "", email: "", role: "" });
+        setFormData({ name: "", email: "", role: "", phone: "", jobTitle: "", department: "", employmentType: "" });
         setIsFormOpen(false);
         setError(null);
 
@@ -266,6 +397,35 @@ export default function Team() {
     if (member.is_owner || (member.role || "").toLowerCase() === "owner") return "Owner";
     return member.role || "Member";
   };
+
+  // ALL roles as one searchable option list: workspace roles (seeded Manager/
+  // Member included — they are real team_roles rows now) + the legacy defaults.
+  const roleOptions: RoleOption[] = [
+    ...roles.map((role) => ({
+      value: encodeRole("custom", role.id),
+      label: role.name,
+      hint: `${role.permissions.length} permission${role.permissions.length === 1 ? "" : "s"}`,
+      group: "Workspace roles",
+    })),
+    {
+      value: encodeRole("legacy", "member"),
+      label: "Member",
+      hint: "Day-to-day work tools",
+      group: "Default roles",
+    },
+    {
+      value: encodeRole("legacy", "manager"),
+      label: "Manager",
+      hint: "Everything except team management",
+      group: "Default roles",
+    },
+    {
+      value: encodeRole("legacy", "admin"),
+      label: "Admin",
+      hint: "Full access",
+      group: "Default roles",
+    },
+  ];
 
   const openChangeRole = (member: TeamMember) => {
     // Preselect the member's current role (custom first, then legacy).
@@ -417,43 +577,72 @@ export default function Team() {
                     Manage roles
                   </Link>
                 </div>
-                <Select
-                  value={formData.role}
-                  onValueChange={(value) => setFormData({ ...formData, role: value })}
-                >
-                  <SelectTrigger id="role" className="mt-1">
-                    <SelectValue placeholder="Select a role" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {roles.length > 0 && (
-                      <>
-                        <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                          Workspace roles
-                        </div>
-                        {roles.map((role) => (
-                          <SelectItem key={role.id} value={encodeRole("custom", role.id)}>
-                            {role.name} · {role.permissions.length} permission{role.permissions.length === 1 ? "" : "s"}
-                          </SelectItem>
-                        ))}
-                        <div className="px-2 py-1.5 mt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-t">
-                          Default roles
-                        </div>
-                      </>
-                    )}
-                    <SelectItem value={encodeRole("legacy", "member")}>
-                      Member — day-to-day work tools
-                    </SelectItem>
-                    <SelectItem value={encodeRole("legacy", "manager")}>
-                      Manager — everything except team management
-                    </SelectItem>
-                    <SelectItem value={encodeRole("legacy", "admin")}>
-                      Admin — full access
-                    </SelectItem>
-                  </SelectContent>
-                </Select>
+                <div className="mt-1">
+                  <RoleCombobox
+                    id="role"
+                    value={formData.role}
+                    onChange={(value) => setFormData({ ...formData, role: value })}
+                    options={roleOptions}
+                  />
+                </div>
                 <p className="mt-1.5 text-xs text-muted-foreground">
                   The member can only perform actions their role allows. Create tailored roles under Roles &amp; Permissions.
                 </p>
+              </div>
+
+              {/* Complete employee information */}
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div>
+                  <Label htmlFor="phone">Phone Number</Label>
+                  <Input
+                    id="phone"
+                    type="tel"
+                    placeholder="+234 801 234 5678"
+                    value={formData.phone}
+                    onChange={(e) => setFormData({ ...formData, phone: e.target.value })}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="job-title">Job Title</Label>
+                  <Input
+                    id="job-title"
+                    placeholder="e.g. Sales Executive"
+                    value={formData.jobTitle}
+                    onChange={(e) => setFormData({ ...formData, jobTitle: e.target.value })}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="department">Department</Label>
+                  <Input
+                    id="department"
+                    placeholder="e.g. Operations"
+                    value={formData.department}
+                    onChange={(e) => setFormData({ ...formData, department: e.target.value })}
+                    className="mt-1"
+                  />
+                </div>
+                <div>
+                  <Label htmlFor="employment-type">Employment Type</Label>
+                  <Select
+                    value={formData.employmentType || "unspecified"}
+                    onValueChange={(value) =>
+                      setFormData({ ...formData, employmentType: value === "unspecified" ? "" : value })
+                    }
+                  >
+                    <SelectTrigger id="employment-type" className="mt-1">
+                      <SelectValue placeholder="Select employment type" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="unspecified">Not specified</SelectItem>
+                      <SelectItem value="full_time">Full-time</SelectItem>
+                      <SelectItem value="part_time">Part-time</SelectItem>
+                      <SelectItem value="contract">Contract</SelectItem>
+                      <SelectItem value="internship">Internship</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
               </div>
 
               <div className="flex gap-2 justify-end pt-4">
@@ -501,6 +690,11 @@ export default function Team() {
                     <div className="flex items-start justify-between">
                       <div className="min-w-0">
                         <CardTitle className="text-lg truncate">{member.name}</CardTitle>
+                        {(member as any).jobTitle || (member as any).department ? (
+                          <p className="text-xs text-muted-foreground mt-0.5 truncate">
+                            {[(member as any).jobTitle, (member as any).department].filter(Boolean).join(" · ")}
+                          </p>
+                        ) : null}
                         {member.is_owner || (member.role || "").toLowerCase() === "owner" ? (
                           <p className="text-sm font-medium text-amber-600 dark:text-amber-400 mt-1 flex items-center gap-1.5">
                             <ShieldCheck className="h-3.5 w-3.5 shrink-0" />
@@ -658,37 +852,12 @@ export default function Team() {
             </DialogHeader>
             <div className="space-y-2">
               <Label htmlFor="change-role-select">Role &amp; Permissions</Label>
-              <Select value={roleValue} onValueChange={setRoleValue}>
-                <SelectTrigger id="change-role-select">
-                  <SelectValue placeholder="Select a role" />
-                </SelectTrigger>
-                <SelectContent>
-                  {roles.length > 0 && (
-                    <>
-                      <div className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
-                        Workspace roles
-                      </div>
-                      {roles.map((role) => (
-                        <SelectItem key={role.id} value={encodeRole("custom", role.id)}>
-                          {role.name} · {role.permissions.length} permission{role.permissions.length === 1 ? "" : "s"}
-                        </SelectItem>
-                      ))}
-                      <div className="px-2 py-1.5 mt-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground border-t">
-                        Default roles
-                      </div>
-                    </>
-                  )}
-                  <SelectItem value={encodeRole("legacy", "member")}>
-                    Member — day-to-day work tools
-                  </SelectItem>
-                  <SelectItem value={encodeRole("legacy", "manager")}>
-                    Manager — everything except team management
-                  </SelectItem>
-                  <SelectItem value={encodeRole("legacy", "admin")}>
-                    Admin — full access
-                  </SelectItem>
-                </SelectContent>
-              </Select>
+              <RoleCombobox
+                id="change-role-select"
+                value={roleValue}
+                onChange={setRoleValue}
+                options={roleOptions}
+              />
               <p className="text-xs text-muted-foreground">
                 Tailor what each role can do under Roles &amp; Permissions.
               </p>
