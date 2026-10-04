@@ -28,6 +28,16 @@ export default function Settings() {
   const [otpEnabled, setOtpEnabled] = useState(true);
   const [pinCreated, setPinCreated] = useState(false);
   const [fees, setFees] = useState<FeeConfig[]>([]);
+  // Personal (own) profile — for invited members who cannot touch the
+  // business profile. Email is read-only; name/phone are editable and any
+  // save marks the personal profile complete (same contract as the
+  // first-login completion prompt).
+  const [myRole, setMyRole] = useState<string>("member");
+  const [myName, setMyName] = useState("");
+  const [myEmail, setMyEmail] = useState("");
+  const [myPhone, setMyPhone] = useState("");
+  const [personalSaving, setPersonalSaving] = useState(false);
+  const isBusinessAdmin = myRole === "owner" || myRole === "admin";
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
 
@@ -102,9 +112,13 @@ export default function Settings() {
       setFees(feesData.data ?? []);
 
       // /auth/me is best-effort: its only consumer here is the SSO password card
-      const meData = (meRes?.data as { data?: { hasPassword?: boolean; authProvider?: string } } | null)?.data;
+      const meData = (meRes?.data as { data?: { hasPassword?: boolean; authProvider?: string; role?: string; name?: string; email?: string; phoneNumber?: string } } | null)?.data;
       setHasPassword(Boolean(meData?.hasPassword));
       setAuthProvider(meData?.authProvider || "local");
+      setMyRole(meData?.role || "member");
+      setMyName(meData?.name || "");
+      setMyEmail(meData?.email || "");
+      setMyPhone(meData?.phoneNumber || "");
 
     } catch (error) {
       toast({
@@ -118,6 +132,32 @@ export default function Settings() {
   };
 
   const isGoogleAccount = authProvider.toLowerCase().includes("google");
+
+  // Personal-profile save for invited members (Settings → My Profile).
+  // Mirrors PUT /settings/profile: email is NEVER sent — read-only.
+  const handleSavePersonalProfile = async () => {
+    if (!myName.trim()) {
+      toast({ title: "Your name is required", variant: "destructive" });
+      return;
+    }
+    setPersonalSaving(true);
+    try {
+      await api.put("/settings/profile", {
+        name: myName.trim(),
+        phone_number: myPhone.trim() || null,
+      });
+      localStorage.setItem("userName", myName.trim());
+      toast({ title: "Profile updated", description: "Your personal profile has been saved." });
+    } catch (error) {
+      toast({
+        title: "Could not save",
+        description: getApiMessage(error, "Failed to save your profile."),
+        variant: "destructive",
+      });
+    } finally {
+      setPersonalSaving(false);
+    }
+  };
 
   const handleSetPassword = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -407,8 +447,10 @@ export default function Settings() {
               viewport on small phones (snap + gradient fade masks at edges). */}
           <div className="relative -mx-4 px-4 sm:mx-0 sm:px-0">
             <TabsList className="h-auto min-h-11 w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/60 bg-muted/60 p-1 no-scrollbar sm:justify-center">
-              <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">Business Profile</TabsTrigger>
-              <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>
+              {/* Business-profile editing is for business admins ONLY —
+                  invited members see their PERSONAL profile here instead. */}
+              <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">{isBusinessAdmin ? "Business Profile" : "My Profile"}</TabsTrigger>
+              {isBusinessAdmin && <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>}
               <TabsTrigger value="security" className="snap-start shrink-0 rounded-lg px-3 py-2">Security</TabsTrigger>
               <TabsTrigger value="preference" className="snap-start shrink-0 rounded-lg px-3 py-2">OTP Preferences</TabsTrigger>
               <TabsTrigger value="fees" className="snap-start shrink-0 rounded-lg px-3 py-2">Fee Schedule</TabsTrigger>
@@ -418,6 +460,7 @@ export default function Settings() {
           </div>
 
           <TabsContent value="profile">
+            {isBusinessAdmin ? (
             <Card>
               <CardHeader>
                 <CardTitle>Business Profile</CardTitle>
@@ -510,6 +553,51 @@ export default function Settings() {
                 </form>
               </CardContent>
             </Card>
+            ) : (
+            /* PERSONAL profile for invited members — photo/name live here and
+               on /profile; email is read-only; phone number saves with the
+               same contract as the first-login completion prompt. */
+            <Card>
+              <CardHeader>
+                <CardTitle>My Profile</CardTitle>
+                <CardDescription>Your personal details. Only business admins can edit the business profile.</CardDescription>
+              </CardHeader>
+              <CardContent>
+                <div className="max-w-none space-y-4 sm:max-w-md">
+                  <div className="space-y-2">
+                    <Label htmlFor="my-name">Full Name</Label>
+                    <Input
+                      id="my-name"
+                      value={myName}
+                      onChange={(e) => setMyName(e.target.value)}
+                      placeholder="Your name"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="my-email" className="flex items-center gap-1.5">Email</Label>
+                    <Input id="my-email" value={myEmail} disabled />
+                    <p className="text-xs text-muted-foreground">Email can't be changed — it identifies your account.</p>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="my-phone">Phone Number</Label>
+                    <Input
+                      id="my-phone"
+                      value={myPhone}
+                      onChange={(e) => setMyPhone(e.target.value)}
+                      placeholder="Phone number"
+                      inputMode="tel"
+                    />
+                  </div>
+                  <div className="sticky bottom-0 -mx-1 flex justify-stretch bg-gradient-to-t from-background via-background/95 to-transparent px-1 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-3 sm:justify-end">
+                    <Button type="button" onClick={handleSavePersonalProfile} disabled={personalSaving} className="h-11 w-full px-6 sm:h-10 sm:w-auto">
+                      {personalSaving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                      Save Changes
+                    </Button>
+                  </div>
+                </div>
+              </CardContent>
+            </Card>
+            )}
           </TabsContent>
 
           <TabsContent value="contact">
