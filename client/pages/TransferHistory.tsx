@@ -187,6 +187,23 @@ export default function TransferHistory() {
     }
   };
 
+  // "Reverse now" — pull the money for a FAILED transfer straight back into
+  // the wallet (POST /transfers/:id/reverse). The backend refuses
+  // double-reversals and no-debit cases with friendly messages.
+  const [reversingId, setReversingId] = useState<string | null>(null);
+  const reverseTransfer = async (id: string) => {
+    setReversingId(id);
+    try {
+      const response = await api.post(`/transfers/${id}/reverse`);
+      toast({ title: "Success", description: (response.data as any)?.message || "Reversal successful — the amount is back in your wallet." });
+      fetchTransfers();
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to reverse transfer", variant: "destructive" });
+    } finally {
+      setReversingId(null);
+    }
+  };
+
   useEffect(() => {
     fetchTransfers(transferPage);
   }, [transferPage]);
@@ -476,10 +493,16 @@ export default function TransferHistory() {
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
                         {t.type !== "transaction" && t.status === 'failed' && (
-                        <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)} disabled={retryingId === t.id}>
+                        <div className="flex items-center justify-end gap-2">
+                          <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)} disabled={retryingId === t.id}>
                             {retryingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
                             Retry
-                        </Button>
+                          </Button>
+                          <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-600" onClick={() => reverseTransfer(t.id)} disabled={reversingId === t.id}>
+                            {reversingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1" />}
+                            Reverse now
+                          </Button>
+                        </div>
                         )}
                     </TableCell>
                     </TableRow>
