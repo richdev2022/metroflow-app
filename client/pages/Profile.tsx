@@ -96,6 +96,13 @@ export default function Profile() {
   const [uploadingAvatar, setUploadingAvatar] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // Phone verification (SMS OTP) — mirrors the first-login completion CTA so
+  // users who skipped can verify their number here any time.
+  const [phoneVerified, setPhoneVerified] = useState(false);
+  const [phoneOtpSent, setPhoneOtpSent] = useState(false);
+  const [phoneOtp, setPhoneOtp] = useState("");
+  const [phoneOtpLoading, setPhoneOtpLoading] = useState(false);
+
   // KYC + security status
   const [kycStatus, setKycStatus] = useState<KycStatus | null>(null);
   const [otpEnabled, setOtpEnabled] = useState<boolean | null>(null);
@@ -116,6 +123,11 @@ export default function Profile() {
       setProfile(me);
       setName(me?.name || localStorage.getItem("userName") || "");
       setPhone(me?.phone_number || "");
+      // Verification state rides on /auth/me (best-effort).
+      try {
+        const meRes = await api.get("/auth/me");
+        setPhoneVerified((meRes.data?.data as { phoneVerified?: boolean } | undefined)?.phoneVerified === true);
+      } catch { /* best-effort */ }
       const resolvedAvatar = resolveMediaUrl(me?.avatarUrl || localStorage.getItem("userAvatar") || "");
       setAvatarUrl(resolvedAvatar);
       if (resolvedAvatar) {
@@ -340,6 +352,73 @@ export default function Profile() {
                     autoComplete="tel"
                   />
                 </div>
+                {phoneVerified ? (
+                  <p className="flex items-center gap-1 text-xs text-green-600 dark:text-green-400">
+                    <BadgeCheck className="h-3.5 w-3.5" /> Phone number verified
+                  </p>
+                ) : (
+                  <div className="space-y-2">
+                    {!phoneOtpSent ? (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        onClick={async () => {
+                          if (!phone.trim()) {
+                            toast({ title: "Error", description: "Enter your phone number first", variant: "destructive" });
+                            return;
+                          }
+                          setPhoneOtpLoading(true);
+                          try {
+                            await api.post("/settings/profile/phone/send-otp", { phone: phone.trim() });
+                            setPhoneOtpSent(true);
+                            setPhoneOtp("");
+                            toast({ title: "Verification code sent", description: `Check ${phone.trim()} for the code.` });
+                          } catch (error) {
+                            toast({ title: "Error", description: getApiMessage(error, "Could not send the verification code"), variant: "destructive" });
+                          } finally {
+                            setPhoneOtpLoading(false);
+                          }
+                        }}
+                        disabled={phoneOtpLoading}
+                      >
+                        {phoneOtpLoading && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                        Verify phone number
+                      </Button>
+                    ) : (
+                      <div className="flex gap-2">
+                        <Input
+                          value={phoneOtp}
+                          onChange={(e) => setPhoneOtp(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                          placeholder="6-digit code"
+                          inputMode="numeric"
+                          className="tracking-[0.35em] max-w-[180px]"
+                        />
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={phoneOtp.length < 4 || phoneOtpLoading}
+                          onClick={async () => {
+                            setPhoneOtpLoading(true);
+                            try {
+                              await api.post("/settings/profile/phone/verify-otp", { phone: phone.trim(), otp: phoneOtp.trim() });
+                              setPhoneVerified(true);
+                              setPhoneOtpSent(false);
+                              toast({ title: "Phone number verified" });
+                            } catch (error) {
+                              toast({ title: "Error", description: getApiMessage(error, "Invalid or expired code"), variant: "destructive" });
+                            } finally {
+                              setPhoneOtpLoading(false);
+                            }
+                          }}
+                        >
+                          {phoneOtpLoading ? <Loader2 className="h-4 w-4 animate-spin" /> : "Verify"}
+                        </Button>
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
               {(profile?.jobTitle || profile?.department) && (
                 <div className="space-y-2 sm:col-span-2">

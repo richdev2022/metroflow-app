@@ -13,6 +13,7 @@ import { useToast } from "@/components/ui/use-toast";
 import { KycModal } from "./KycModal";
 import { AudioUtils } from "@/lib/audio-utils";
 import IncomingCallModal, { IncomingCallData } from "./IncomingCallModal";
+import { ProfileCompletion } from "./ProfileCompletion";
 import {
   Sidebar,
   SidebarContent,
@@ -683,6 +684,11 @@ export default function Layout({ children }: { children: React.ReactNode }) {
         call={incomingCall}
         onClose={() => setIncomingCall(null)}
       />
+
+      {/* First-login PERSONAL profile completion (invited members — the
+          backend's requiresProfileCompletion flag decides; business admins
+          never see this). Supports skip → finish later in Settings. */}
+      <ProfileCompletion />
 
       <Sidebar collapsible="icon">
         <SidebarHeader>
