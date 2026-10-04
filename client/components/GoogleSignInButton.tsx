@@ -88,10 +88,20 @@ export default function GoogleSignInButton({
         const firstName = (data.user?.name || data.user?.email || "there")
           .split(" ")[0];
 
-        // SSO PROFILE-COMPLETION GATE: Google sign-ups (and existing SSO
-        // accounts whose business profile is still incomplete) must fill in
-        // the business name, industry, phone number and logo BEFORE the
-        // dashboard — the backend answers profileCompleted:false.
+        // SSO PROFILE-COMPLETION GATE (role-aware): invited team members
+        // complete their PERSONAL profile (photo, name, read-only email,
+        // phone OTP, skip) via the dashboard modal; business admins complete
+        // the BUSINESS profile page. The backend returns both flags.
+        if (data.requiresProfileCompletion === true) {
+          localStorage.setItem("profileCompleted", "false");
+          setSuccess(
+            data.isNewUser
+              ? `Account created — welcome aboard, ${firstName}! Finish your profile to get started...`
+              : `Welcome back, ${firstName}! Finish setting up your profile...`,
+          );
+          setTimeout(() => navigate("/dashboard"), 900);
+          return;
+        }
         if (data.profileCompleted === false) {
           localStorage.setItem("profileCompleted", "false");
           setSuccess(
