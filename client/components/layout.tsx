@@ -4,7 +4,7 @@ import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, T
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
-import { BrandMark } from "./BrandLogo";
+import { WorkspaceLogo } from "./BrandLogo";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -687,7 +687,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       <Sidebar collapsible="icon">
         <SidebarHeader>
           <div className="flex items-center gap-2 p-2 group-data-[collapsible=icon]:justify-center">
-            <BrandMark size={32} />
+            {/* WORKSPACE LOGO (SSO parity): prefers the business logo the
+                user uploaded at SSO profile completion, falls back to the
+                static MetriCorex shield. */}
+            <WorkspaceLogo size={32} />
             <span className="font-bold text-xl group-data-[collapsible=icon]:hidden truncate">Metricorex</span>
           </div>
         </SidebarHeader>
