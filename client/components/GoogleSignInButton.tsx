@@ -102,7 +102,7 @@ export default function GoogleSignInButton({
           setTimeout(() => navigate("/dashboard"), 900);
           return;
         }
-        if (data.profileCompleted === false) {
+        if (data.profileCompleted === false && data.profilePromptDismissed !== true) {
           localStorage.setItem("profileCompleted", "false");
           setSuccess(
             data.isNewUser

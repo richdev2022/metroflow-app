@@ -125,6 +125,21 @@ export default function ProfileComplete() {
     }
   };
 
+  const handleSkip = async () => {
+    // "Skip for now" — dismiss the prompt server-side so the gate does not
+    // re-nag on the next login (profile_prompt_dismissed), then continue to
+    // the dashboard. The profile can always be finished from Settings.
+    setSaving(true);
+    try {
+      await api.post("/settings/profile/dismiss");
+    } catch {
+      // Skipping must never trap the user — server failure is non-blocking.
+    } finally {
+      setSaving(false);
+    }
+    navigate("/dashboard");
+  };
+
   if (loading) {
     return (
       <div className="flex min-h-screen items-center justify-center bg-background">
@@ -226,6 +241,16 @@ export default function ProfileComplete() {
             ) : (
               "Save & Continue"
             )}
+          </Button>
+
+          <Button
+            type="button"
+            variant="ghost"
+            className="w-full text-muted-foreground"
+            disabled={saving}
+            onClick={handleSkip}
+          >
+            Skip for now — I'll do it later in Settings
           </Button>
         </form>
       </div>
