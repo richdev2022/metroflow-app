@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { api } from "@/lib/api-client";
 import { Task, KPISummary, ApiResponse, TeamMember, Comment, CreateCommentInput, Epic, WalletInfo } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
+import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, ArrowUpRight, Users, Plus, Wallet, Banknote, Link2, FileText, Store, Repeat, History, ShoppingBag, Video, ListTodo, ChevronRight } from "lucide-react";
@@ -21,6 +22,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { useToast } from "@/components/ui/use-toast";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Edit, X, Check, Loader2, Copy, MessageSquare, Smile, Send, ThumbsUp, Heart, Trash2 } from "lucide-react";
 import Layout from "@/components/layout";
 import { Badge } from "@/components/ui/badge";
@@ -93,6 +95,12 @@ export default function Dashboard() {
   const [invoiceStats, setInvoiceStats] = useState<{ open: number; outstanding: number } | null>(null);
   const [storeCounts, setStoreCounts] = useState<{ products: number; pendingOrders: number } | null>(null);
   const [recurringCounts, setRecurringCounts] = useState<{ plans: number; activeSubscribers: number } | null>(null);
+
+  // "Choose wallet to fund" picker — opened by the +Fund pill and the Fund
+  // Wallet tile, then hands off to /wallet?fund=<walletId> which auto-opens
+  // the wallet page's fund dialog with that wallet preselected.
+  const [fundPickOpen, setFundPickOpen] = useState(false);
+  const [fundPickWalletId, setFundPickWalletId] = useState("");
 
   const { toast } = useToast();
   const navigate = useNavigate();
@@ -667,6 +675,39 @@ export default function Dashboard() {
       ? walletInfo.business_wallet
       : walletInfo?.user_wallet;
 
+  /** Wallets available for funding — nulls stripped, business gated by role. */
+  const fundWalletOptions = useMemo(() => {
+    const options: { id: string; label: string; currency: string; balance: string }[] = [];
+    if (walletInfo?.user_wallet) {
+      options.push({
+        id: walletInfo.user_wallet.id,
+        label: "Personal",
+        currency: walletInfo.user_wallet.currency || "NGN",
+        balance: walletInfo.user_wallet.balance,
+      });
+    }
+    if (walletInfo?.canManageBusinessWallet && walletInfo.business_wallet) {
+      options.push({
+        id: walletInfo.business_wallet.id,
+        label: "Business",
+        currency: walletInfo.business_wallet.currency || "NGN",
+        balance: walletInfo.business_wallet.balance,
+      });
+    }
+    return options;
+  }, [walletInfo]);
+
+  const openFundWalletPicker = () => {
+    setFundPickWalletId(primaryWallet?.id || fundWalletOptions[0]?.id || "");
+    setFundPickOpen(true);
+  };
+
+  const confirmFundWallet = () => {
+    if (!fundPickWalletId) return;
+    setFundPickOpen(false);
+    navigateWithKyc(`/wallet?fund=${fundPickWalletId}`);
+  };
+
   const quickActions: { to: string; label: string; icon: LucideIcon; chip: string; kyc?: boolean }[] = [
     { to: "/tasks", label: "New Task", icon: ListTodo, chip: "bg-primary/10 text-primary" },
     { to: "/meetings", label: "Start Meeting", icon: Video, chip: "bg-violet-500/10 text-violet-600" },
@@ -719,7 +760,7 @@ export default function Dashboard() {
                     tabIndex={0}
                     onClick={(e) => {
                       e.stopPropagation();
-                      navigateWithKyc("/wallet");
+                      openFundWalletPicker();
                     }}
                     className="rounded-full bg-primary px-3 py-1 text-xs font-semibold text-primary-foreground shadow-sm transition-transform group-hover/wallet:scale-[1.04]"
                   >
@@ -877,7 +918,7 @@ export default function Dashboard() {
               chip="bg-primary/10 text-primary"
               label="Fund Wallet"
               description="Card or bank transfer top-ups"
-              onClick={kycLinkProps("/wallet").onClick}
+              onClick={openFundWalletPicker}
             />
           </div>
         </section>
@@ -1528,6 +1569,61 @@ export default function Dashboard() {
                 </div>
               </div>
             )}
+          </DialogContent>
+        </Dialog>
+
+        {/* Choose wallet to fund — +Fund pill and Fund Wallet tile hand-off */}
+        <Dialog open={fundPickOpen} onOpenChange={setFundPickOpen}>
+          <DialogContent className="sm:max-w-md">
+            <DialogHeader>
+              <DialogTitle>Choose wallet to fund</DialogTitle>
+              <DialogDescription>
+                Pick the wallet you want to top up — you'll continue on the wallet page.
+              </DialogDescription>
+            </DialogHeader>
+            {fundWalletOptions.length > 0 ? (
+              <RadioGroup
+                value={fundPickWalletId}
+                onValueChange={setFundPickWalletId}
+                className="gap-2"
+              >
+                {fundWalletOptions.map((wallet) => (
+                  <Label
+                    key={wallet.id}
+                    htmlFor={`fund-wallet-${wallet.id}`}
+                    className={cn(
+                      "flex cursor-pointer items-center gap-3 rounded-xl border p-3 transition-colors",
+                      fundPickWalletId === wallet.id
+                        ? "border-primary/60 bg-primary/5"
+                        : "hover:bg-accent/40"
+                    )}
+                  >
+                    <RadioGroupItem value={wallet.id} id={`fund-wallet-${wallet.id}`} />
+                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-primary/10 text-primary">
+                      <Wallet className="h-4 w-4" />
+                    </span>
+                    <span className="min-w-0 flex-1">
+                      <span className="block text-sm font-semibold">{wallet.label}</span>
+                      <span className="block text-xs text-muted-foreground">
+                        {wallet.currency} · {fmtMoney(wallet.balance, wallet.currency)}
+                      </span>
+                    </span>
+                  </Label>
+                ))}
+              </RadioGroup>
+            ) : (
+              <p className="rounded-lg border border-dashed p-4 text-center text-sm text-muted-foreground">
+                No wallets are available yet. Wallets appear here once they are created.
+              </p>
+            )}
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setFundPickOpen(false)}>
+                Cancel
+              </Button>
+              <Button onClick={confirmFundWallet} disabled={!fundPickWalletId}>
+                Continue
+              </Button>
+            </DialogFooter>
           </DialogContent>
         </Dialog>
       </div>

@@ -300,6 +300,19 @@ export interface TransferItem {
   remark?: string;
   source_type?: string;
   source_id?: string;
+  /** Payout currency for this row — "NGN" (default) or "USD". */
+  currency?: string;
+  /* ---- USD / international beneficiary details (bankName etc. are the
+   * /transfers/single handler names; recipientBankName etc. are the
+   * /transfers/bulk item names — see routes/transfers.ts) ---- */
+  bank_name?: string;
+  swift_code?: string;
+  routing_number?: string;
+  account_type?: string;
+  beneficiary_email?: string;
+  recipient_address?: string;
+  recipient_city?: string;
+  recipient_country?: string;
 }
 
 export interface CreateBusinessWalletInput {
@@ -595,6 +608,10 @@ export interface TransferQuote {
   fee: number;
   total_debit: number;
   provider?: string;
+  /** Quote lock window — the rate/fee snapshot is only valid until this
+   *  ISO timestamp (backend stamps it on every GET /transfers/quote). */
+  expires_at?: string;
+  expires_in_seconds?: number;
 }
 
 export interface LoginInput {
