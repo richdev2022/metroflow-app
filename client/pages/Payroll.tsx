@@ -131,6 +131,77 @@ function formatMoney(amount: number): string {
   return amount.toLocaleString(undefined, { maximumFractionDigits: 2 });
 }
 
+/* ------------------------------------------------------------------ */
+/* USD (international) beneficiary validation                          */
+/* ------------------------------------------------------------------ */
+
+/** ABA routing-number checksum: 3(d1+d4+d7) + 7(d2+d5+d8) + (d3+d6+d9) ≡ 0 (mod 10). */
+export function isValidAbaRoutingNumber(value: string): boolean {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length !== 9) return false;
+  let sum = 0;
+  for (let i = 0; i < 9; i++) {
+    const d = Number(digits[i]);
+    sum += d * [3, 7, 1][i % 3];
+  }
+  return sum % 10 === 0;
+}
+
+/** SWIFT/BIC: 8 or 11 chars — 4 letters (bank), 2 letters (country), 2 alnum, optional 3 alnum. */
+export function isValidSwiftCode(value: string): boolean {
+  return /^[A-Za-z]{6}[A-Za-z0-9]{2}([A-Za-z0-9]{3})?$/.test(value.trim());
+}
+
+const EPIC_COUNTRIES: { code: string; name: string }[] = [
+  { code: "US", name: "United States" },
+  { code: "GB", name: "United Kingdom" },
+  { code: "CA", name: "Canada" },
+  { code: "NG", name: "Nigeria" },
+  { code: "DE", name: "Germany" },
+  { code: "FR", name: "France" },
+  { code: "ES", name: "Spain" },
+  { code: "IT", name: "Italy" },
+  { code: "NL", name: "Netherlands" },
+  { code: "BE", name: "Belgium" },
+  { code: "AT", name: "Austria" },
+  { code: "PT", name: "Portugal" },
+  { code: "FI", name: "Finland" },
+  { code: "GR", name: "Greece" },
+  { code: "IE", name: "Ireland" },
+  { code: "CH", name: "Switzerland" },
+  { code: "SE", name: "Sweden" },
+  { code: "NO", name: "Norway" },
+  { code: "DK", name: "Denmark" },
+  { code: "AE", name: "United Arab Emirates" },
+  { code: "ZA", name: "South Africa" },
+  { code: "KE", name: "Kenya" },
+  { code: "GH", name: "Ghana" },
+  { code: "IN", name: "India" },
+  { code: "CN", name: "China" },
+  { code: "JP", name: "Japan" },
+  { code: "SG", name: "Singapore" },
+  { code: "AU", name: "Australia" },
+  { code: "NZ", name: "New Zealand" },
+  { code: "BR", name: "Brazil" },
+  { code: "MX", name: "Mexico" },
+];
+
+/** Row-level currency readiness used to gate the "Send OTP / Continue" button. */
+function isEpicRecipientComplete(item: TransferItem): boolean {
+  const currency = (item.currency || "NGN").toUpperCase();
+  if (!item.amount || item.amount <= 0) return false;
+  if (currency === "USD") {
+    return (
+      !!item.bank_name?.trim() &&
+      isValidSwiftCode(item.swift_code || "") &&
+      isValidAbaRoutingNumber(item.routing_number || "") &&
+      !!item.recipient_account?.trim() &&
+      !!item.recipient_country
+    );
+  }
+  return !!item.recipient_bank && !!item.recipient_account;
+}
+
 export default function Payroll() {
   const { toast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -712,6 +783,7 @@ export default function Payroll() {
           recipient_bank: "",
           recipient_name: "",
           amount: 0,
+          currency: "NGN",
           remark: epics.find((e) => e.id === values.epic_id)?.name || "",
           source_type: "epic",
           source_id: values.epic_id || "",
@@ -752,11 +824,47 @@ export default function Payroll() {
         recipient_bank: "",
         recipient_name: "",
         amount: 0,
+        currency: "NGN",
+        recipient_country: "US",
         remark: selectedEpic?.name || "",
         source_type: "epic",
         source_id: values.epic_id || "",
       },
     ]);
+  };
+
+  /** Switch a row's currency — clears the fields + lookup state of the other corridor. */
+  const setRecipientCurrency = (index: number, currency: "NGN" | "USD") => {
+    setEpicTransferItems(
+      epicTransferItems.map((item, i) => {
+        if (i !== index) return item;
+        if ((item.currency || "NGN").toUpperCase() === currency) return item;
+        if (currency === "USD") {
+          return {
+            ...item,
+            currency,
+            recipient_bank: "",
+            recipient_country: item.recipient_country || "US",
+          };
+        }
+        return {
+          ...item,
+          currency,
+          bank_name: "",
+          swift_code: "",
+          routing_number: "",
+          account_type: undefined,
+          beneficiary_email: "",
+          recipient_address: "",
+          recipient_city: "",
+        };
+      })
+    );
+    setRecipientLookupStatus((prev) => {
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
   };
 
   const removeRecipient = (id: string) => {
@@ -780,6 +888,10 @@ export default function Payroll() {
     const index = epicTransferItems.findIndex((_, i) => `recipient_${i}` === id);
     if (!recipient || !recipient.recipient_bank || !recipient.recipient_account) {
       toast({ title: "Error", description: "Please select a bank and enter account number", variant: "destructive" });
+      return;
+    }
+    if ((recipient.currency || "NGN").toUpperCase() === "USD") {
+      // USD beneficiaries have no provider account-name lookup — nothing to verify.
       return;
     }
     try {
@@ -819,12 +931,15 @@ export default function Payroll() {
   };
 
   // Auto-lookup recipient account names as rows are completed (bank + 10-digit
-  // account). Rows already resolved or in-flight are skipped.
+  // account). Rows already resolved or in-flight are skipped. NGN-only — USD
+  // (international) beneficiaries have no provider account-resolution and are
+  // entered manually.
   useEffect(() => {
     const runLookups = async () => {
       for (let index = 0; index < epicTransferItems.length; index++) {
         const item = epicTransferItems[index];
         const currentStatus = recipientLookupStatus[index];
+        if ((item.currency || "NGN").toUpperCase() === "USD") continue;
         if (item.recipient_bank && item.recipient_account && item.recipient_account.length === 10) {
           if (currentStatus?.success || currentStatus?.loading) continue;
           setRecipientLookupStatus((prev) => ({
@@ -883,27 +998,33 @@ export default function Payroll() {
       const values = epicTransferForm.getValues();
       const selectedEpic = epics.find((e) => e.id === values.epic_id);
 
-      // Resolve the funding wallet's currency — every item must be sent in
-      // that currency or the backend wallet-currency guard rejects the batch.
-      const selectedWallet =
-        wallets?.business_wallet && wallets.business_wallet.id === values.source_wallet_id
-          ? wallets.business_wallet
-          : wallets?.user_wallet;
-      const walletCurrency = (selectedWallet?.currency || "NGN").toUpperCase();
-
       // Single recipient -> route through /transfers/single
       if (epicTransferMode === "single" && epicTransferItems.length === 1) {
         const item = epicTransferItems[0];
+        const currency = (item.currency || "NGN").toUpperCase();
         const payload: any = {
           bankCode: item.recipient_bank,
           accountNumber: item.recipient_account,
           accountName: item.recipient_name,
           amount: item.amount,
-          currency: (item as any).currency || walletCurrency,
+          currency,
           remark: selectedEpic?.name || "",
           pin: pin,
           wallet_id: values.source_wallet_id,
         };
+        if (currency === "USD") {
+          // International beneficiary fields — /transfers/single handler names
+          // (server/routes/transfers.ts: bankName/swiftCode/routingNumber +
+          // recipient-prefixed address fields, ISO-2 country).
+          payload.bankName = item.bank_name?.trim() || undefined;
+          payload.swiftCode = item.swift_code?.trim()?.toUpperCase() || undefined;
+          payload.routingNumber = item.routing_number?.trim() || undefined;
+          payload.recipientAddress = item.recipient_address?.trim() || undefined;
+          payload.recipientCity = item.recipient_city?.trim() || undefined;
+          payload.recipientCountry = (item.recipient_country || "US").toUpperCase();
+          payload.accountType = item.account_type || undefined;
+          payload.beneficiaryEmail = item.beneficiary_email?.trim() || undefined;
+        }
         if (otpEnabled) payload.otp = epicOtp;
 
         const response = await api.post("/transfers/single", payload);
@@ -925,19 +1046,40 @@ export default function Payroll() {
         return;
       }
 
-      const items = epicTransferItems.map((item) => ({
-        bankCode: item.recipient_bank,
-        accountNumber: item.recipient_account,
-        accountName: item.recipient_name,
-        amount: item.amount,
-        currency: (item as any).currency || walletCurrency,
-        remark: selectedEpic?.name || "",
-      }));
+      // Bulk items use the /transfers/bulk contract field names: NGN rows
+      // carry bankCode (6-digit); USD rows carry the recipient-prefixed
+      // international beneficiary fields instead.
+      const items = epicTransferItems.map((item) => {
+        const currency = (item.currency || "NGN").toUpperCase();
+        const mapped: any = {
+          accountNumber: item.recipient_account,
+          accountName: item.recipient_name || "",
+          amount: item.amount,
+          currency,
+          remark: selectedEpic?.name || "",
+        };
+        if (currency === "NGN") {
+          mapped.bankCode = item.recipient_bank;
+        } else {
+          mapped.recipientBankName = item.bank_name?.trim() || undefined;
+          mapped.recipientSwiftCode = item.swift_code?.trim()?.toUpperCase() || undefined;
+          mapped.recipientRoutingNumber = item.routing_number?.trim() || undefined;
+          mapped.recipientAddress = item.recipient_address?.trim() || undefined;
+          mapped.recipientCity = item.recipient_city?.trim() || undefined;
+          mapped.recipientCountry = (item.recipient_country || "US").toUpperCase();
+          mapped.beneficiaryEmail = item.beneficiary_email?.trim() || undefined;
+          mapped.accountType = item.account_type || undefined;
+        }
+        return mapped;
+      });
 
       const payload: any = {
         type: "Epic",
+        epicId: values.epic_id,
         pin: pin,
         source_wallet_id: values.source_wallet_id,
+        items,
+        // Legacy shape kept in sync — older backends read data.items.
         data: { items },
       };
       if (otpEnabled) payload.otp = epicOtp;
@@ -1975,7 +2117,7 @@ export default function Payroll() {
           }
         }}
       >
-        <DialogContent className="sm:max-w-[600px] max-h-[90vh] overflow-y-auto">
+        <DialogContent className="sm:max-w-[720px] max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Epic Transfer</DialogTitle>
             <DialogDescription>Send one-off payments to recipients from an epic.</DialogDescription>
@@ -2091,66 +2233,36 @@ export default function Payroll() {
                   return epicTransferItems.map((item, index) => {
                     const id = `recipient_${index}`;
                     const status = recipientLookupStatus[index];
+                    const rowCurrency = (item.currency || "NGN").toUpperCase();
+                    const isUsd = rowCurrency === "USD";
+                    const routingDigits = (item.routing_number || "").replace(/\D/g, "");
+                    const routingInvalid = routingDigits.length > 0 && !isValidAbaRoutingNumber(routingDigits);
+                    const swiftValue = (item.swift_code || "").trim();
+                    const swiftInvalid = swiftValue.length > 0 && !isValidSwiftCode(swiftValue);
                     return (
                       <div key={id} className="bg-muted p-3 rounded-lg border space-y-3">
-                        <div className="flex justify-between items-start">
-                          <div className="flex-1 space-y-3">
-                            <div className="flex flex-col">
-                              <Label>Bank</Label>
-                              <Popover
-                                open={openBankPopover === index}
-                                onOpenChange={(open) => setOpenBankPopover(open ? index : null)}
-                              >
-                                <PopoverTrigger asChild>
-                                  <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
-                                    {item.recipient_bank
-                                      ? banks.find((b) => b.code === item.recipient_bank)?.name || item.recipient_bank
-                                      : "Select bank"}
-                                    <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
-                                  </Button>
-                                </PopoverTrigger>
-                                <PopoverContent className="w-[300px] p-0">
-                                  <Command>
-                                    <CommandInput placeholder="Search bank..." />
-                                    <CommandList className="max-h-[200px] overflow-y-auto">
-                                      <CommandEmpty>No bank found.</CommandEmpty>
-                                      <CommandGroup>
-                                        {banks.map((bank) => (
-                                          <CommandItem
-                                            key={bank.code}
-                                            value={bank.name}
-                                            onSelect={() => {
-                                              updateRecipient(id, "recipient_bank", bank.code);
-                                              setOpenBankPopover(null);
-                                            }}
-                                          >
-                                            {bank.name}
-                                          </CommandItem>
-                                        ))}
-                                      </CommandGroup>
-                                    </CommandList>
-                                  </Command>
-                                </PopoverContent>
-                              </Popover>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2">
+                            <div className="flex rounded-lg border border-border bg-background p-0.5">
+                              {(["NGN", "USD"] as const).map((c) => (
+                                <button
+                                  key={c}
+                                  type="button"
+                                  onClick={() => setRecipientCurrency(index, c)}
+                                  className={cn(
+                                    "rounded-md px-2.5 py-1 text-xs font-semibold transition-colors",
+                                    rowCurrency === c
+                                      ? "bg-primary text-primary-foreground shadow-sm"
+                                      : "text-muted-foreground hover:text-foreground"
+                                  )}
+                                >
+                                  {c}
+                                </button>
+                              ))}
                             </div>
-                            <div className="flex flex-col">
-                              <Label>Account Number</Label>
-                              <Input
-                                value={item.recipient_account}
-                                onChange={(e) => updateRecipient(id, "recipient_account", e.target.value.replace(/\D/g, ""))}
-                                maxLength={10}
-                                placeholder="10-digit account number"
-                              />
-                            </div>
-                            <div className="flex flex-col">
-                              <Label>Amount</Label>
-                              <Input
-                                type="number"
-                                value={item.amount || ""}
-                                onChange={(e) => updateRecipient(id, "amount", Number(e.target.value))}
-                                placeholder="0"
-                              />
-                            </div>
+                            <Badge variant="outline" className="text-[10px] font-semibold">
+                              {rowCurrency}
+                            </Badge>
                           </div>
                           <Button
                             variant="ghost"
@@ -2163,17 +2275,207 @@ export default function Payroll() {
                           </Button>
                         </div>
 
-                        {status?.loading && (
+                        <div className="space-y-3">
+                          {isUsd ? (
+                            <>
+                              <div className="grid gap-3 sm:grid-cols-2">
+                                <div className="flex flex-col">
+                                  <Label>Bank Name *</Label>
+                                  <Input
+                                    value={item.bank_name || ""}
+                                    onChange={(e) => updateRecipient(id, "bank_name", e.target.value)}
+                                    placeholder="e.g. JPMorgan Chase"
+                                    maxLength={150}
+                                  />
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>SWIFT Code *</Label>
+                                  <Input
+                                    value={item.swift_code || ""}
+                                    onChange={(e) => updateRecipient(id, "swift_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+                                    maxLength={11}
+                                    placeholder="e.g. CHASUS33"
+                                    className={cn(swiftInvalid && "border-destructive focus-visible:ring-destructive")}
+                                  />
+                                  {swiftInvalid && (
+                                    <p className="text-xs text-destructive">SWIFT must be 8 or 11 characters</p>
+                                  )}
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Routing Number (ABA)</Label>
+                                  <Input
+                                    value={item.routing_number || ""}
+                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.replace(/\D/g, ""))}
+                                    maxLength={9}
+                                    placeholder="9-digit ABA routing number"
+                                    className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
+                                  />
+                                  {routingInvalid ? (
+                                    <p className="text-xs text-destructive">Invalid ABA checksum — check the 9-digit number</p>
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground">Required for USD payouts</p>
+                                  )}
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Account Number *</Label>
+                                  <Input
+                                    value={item.recipient_account}
+                                    onChange={(e) => updateRecipient(id, "recipient_account", e.target.value)}
+                                    placeholder="Beneficiary account number"
+                                    maxLength={34}
+                                  />
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Account Type</Label>
+                                  <Select
+                                    value={(item as any).account_type || "checking"}
+                                    onValueChange={(v) => updateRecipient(id, "account_type", v)}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      <SelectItem value="checking">Checking</SelectItem>
+                                      <SelectItem value="savings">Savings</SelectItem>
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Account Name</Label>
+                                  <Input
+                                    value={item.recipient_name || ""}
+                                    onChange={(e) => updateRecipient(id, "recipient_name", e.target.value)}
+                                    placeholder="Beneficiary name"
+                                    maxLength={100}
+                                  />
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Beneficiary Email</Label>
+                                  <Input
+                                    type="email"
+                                    value={item.beneficiary_email || ""}
+                                    onChange={(e) => updateRecipient(id, "beneficiary_email", e.target.value)}
+                                    placeholder="name@example.com"
+                                    maxLength={120}
+                                  />
+                                </div>
+                                <div className="flex flex-col">
+                                  <Label>Country</Label>
+                                  <Select
+                                    value={item.recipient_country || "US"}
+                                    onValueChange={(v) => updateRecipient(id, "recipient_country", v)}
+                                  >
+                                    <SelectTrigger>
+                                      <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                      {EPIC_COUNTRIES.map((country) => (
+                                        <SelectItem key={country.code} value={country.code}>
+                                          {country.name}
+                                        </SelectItem>
+                                      ))}
+                                    </SelectContent>
+                                  </Select>
+                                </div>
+                                <div className="flex flex-col sm:col-span-2">
+                                  <Label>Address (street)</Label>
+                                  <Input
+                                    value={item.recipient_address || ""}
+                                    onChange={(e) => updateRecipient(id, "recipient_address", e.target.value)}
+                                    placeholder="Street address"
+                                    maxLength={200}
+                                  />
+                                </div>
+                                <div className="flex flex-col sm:col-span-2">
+                                  <Label>City</Label>
+                                  <Input
+                                    value={item.recipient_city || ""}
+                                    onChange={(e) => updateRecipient(id, "recipient_city", e.target.value)}
+                                    placeholder="City"
+                                    maxLength={100}
+                                  />
+                                </div>
+                              </div>
+                            </>
+                          ) : (
+                            <>
+                              <div className="flex flex-col">
+                                <Label>Bank</Label>
+                                <Popover
+                                  open={openBankPopover === index}
+                                  onOpenChange={(open) => setOpenBankPopover(open ? index : null)}
+                                >
+                                  <PopoverTrigger asChild>
+                                    <Button variant="outline" role="combobox" className="w-full justify-between font-normal">
+                                      {item.recipient_bank
+                                        ? banks.find((b) => b.code === item.recipient_bank)?.name || item.recipient_bank
+                                        : "Select bank"}
+                                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                                    </Button>
+                                  </PopoverTrigger>
+                                  <PopoverContent className="w-[300px] p-0">
+                                    <Command>
+                                      <CommandInput placeholder="Search bank..." />
+                                      <CommandList className="max-h-[200px] overflow-y-auto">
+                                        <CommandEmpty>No bank found.</CommandEmpty>
+                                        <CommandGroup>
+                                          {banks.map((bank) => (
+                                            <CommandItem
+                                              key={bank.code}
+                                              value={bank.name}
+                                              onSelect={() => {
+                                                updateRecipient(id, "recipient_bank", bank.code);
+                                                setOpenBankPopover(null);
+                                              }}
+                                            >
+                                              {bank.name}
+                                            </CommandItem>
+                                          ))}
+                                        </CommandGroup>
+                                      </CommandList>
+                                    </Command>
+                                  </PopoverContent>
+                                </Popover>
+                              </div>
+                              <div className="flex flex-col">
+                                <Label>Account Number</Label>
+                                <Input
+                                  value={item.recipient_account}
+                                  onChange={(e) => updateRecipient(id, "recipient_account", e.target.value.replace(/\D/g, ""))}
+                                  maxLength={10}
+                                  placeholder="10-digit account number"
+                                />
+                              </div>
+                            </>
+                          )}
+                          <div className="flex flex-col">
+                            <Label>Amount ({rowCurrency})</Label>
+                            <div className="relative">
+                              <Input
+                                type="number"
+                                value={item.amount || ""}
+                                onChange={(e) => updateRecipient(id, "amount", Number(e.target.value))}
+                                placeholder="0"
+                                className="pr-12"
+                              />
+                              <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-xs font-semibold text-muted-foreground">
+                                {rowCurrency}
+                              </span>
+                            </div>
+                          </div>
+                        </div>
+
+                        {!isUsd && status?.loading && (
                           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                             <Loader2 className="h-3 w-3 animate-spin" /> Verifying account…
                           </p>
                         )}
-                        {!status?.loading && status?.success && status.name && (
+                        {!isUsd && !status?.loading && status?.success && status.name && (
                           <p className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                             <Check className="h-3.5 w-3.5" /> Account name: {status.name}
                           </p>
                         )}
-                        {!status?.loading && status?.error && (
+                        {!isUsd && !status?.loading && status?.error && (
                           <div className="flex items-center gap-2">
                             <p className="text-xs text-destructive">{status.error}</p>
                             <Button
@@ -2188,7 +2490,7 @@ export default function Payroll() {
                             </Button>
                           </div>
                         )}
-                        {!status && (
+                        {!isUsd && !status && (
                           <Button
                             type="button"
                             variant="outline"
@@ -2214,7 +2516,18 @@ export default function Payroll() {
               <div className="flex items-center justify-between rounded-lg bg-muted p-3">
                 <p className="font-semibold">Total</p>
                 <p className="font-bold text-primary text-lg">
-                  NGN {epicTransferItems.reduce((acc, item) => acc + (Number(item.amount) || 0), 0).toLocaleString()}
+                  {(() => {
+                    const ngnTotal = epicTransferItems
+                      .filter((item) => (item.currency || "NGN").toUpperCase() === "NGN")
+                      .reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
+                    const usdTotal = epicTransferItems
+                      .filter((item) => (item.currency || "NGN").toUpperCase() === "USD")
+                      .reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
+                    const parts: string[] = [];
+                    if (ngnTotal > 0 || usdTotal === 0) parts.push(`NGN ${ngnTotal.toLocaleString()}`);
+                    if (usdTotal > 0) parts.push(`USD ${usdTotal.toLocaleString()}`);
+                    return parts.join("  ·  ");
+                  })()}
                 </p>
               </div>
 
@@ -2227,10 +2540,14 @@ export default function Payroll() {
                   disabled={
                     epicOtpLoading ||
                     epicTransferItems.length === 0 ||
-                    epicTransferItems.some((_, index) => {
-                      const item = epicTransferItems[index];
+                    epicTransferItems.some((item, index) => {
                       const st = recipientLookupStatus[index];
-                      return !item.recipient_bank || !item.recipient_account || !item.amount || item.amount <= 0 || (st && !st.success && !!st.error);
+                      // NGN rows additionally require a resolved (or at least
+                      // not-failed) account-name lookup.
+                      const lookupBad =
+                        (item.currency || "NGN").toUpperCase() !== "USD" &&
+                        st && !st.success && !!st.error;
+                      return !isEpicRecipientComplete(item) || lookupBad;
                     })
                   }
                 >

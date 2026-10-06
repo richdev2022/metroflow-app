@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
-import { Link2, Plus, Copy, Check, Trash2, ExternalLink, Loader2, Power, TrendingUp, Eye, Pencil } from "lucide-react";
+import { Link2, Plus, Copy, Check, Trash2, ExternalLink, Loader2, Power, TrendingUp, Eye, Pencil, ReceiptText } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -14,6 +14,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import Layout from "@/components/layout";
+import EntityTransactionsDrawer, { EntityTransactionsTarget } from "@/components/EntityTransactionsDrawer";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 import { useSEO } from "@/lib/use-seo";
@@ -55,6 +56,8 @@ export default function PaymentLinks() {
   const [deleteTarget, setDeleteTarget] = useState<PaymentLink | null>(null);
   // When set, the form dialog edits this existing link instead of creating one.
   const [editingLink, setEditingLink] = useState<PaymentLink | null>(null);
+  // When set, the drill-down drawer lists every payment received through this link.
+  const [txTarget, setTxTarget] = useState<EntityTransactionsTarget | null>(null);
 
   // create form state
   const [title, setTitle] = useState("");
@@ -166,6 +169,19 @@ export default function PaymentLinks() {
     }
   };
 
+  /** Drill-down: every payment collected through this specific link. */
+  const openPayments = (link: PaymentLink) => {
+    setTxTarget({
+      kind: "payment-link",
+      id: link.id,
+      title: link.title,
+      subtitle: link.allow_custom_amount
+        ? "Open-amount link"
+        : `${fmtMoney(link.amount, link.currency)} · ${link.is_active ? "Active" : "Paused"}`,
+      publicUrl: shareUrl(link.slug),
+    });
+  };
+
   const confirmDelete = async () => {
     if (!deleteTarget) return;
     try {
@@ -219,7 +235,16 @@ export default function PaymentLinks() {
             {links.map((link) => (
               <div
                 key={link.id}
-                className="flex flex-col rounded-2xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
+                role="button"
+                tabIndex={0}
+                onClick={() => openPayments(link)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    openPayments(link);
+                  }
+                }}
+                className="flex cursor-pointer flex-col rounded-2xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0">
@@ -260,7 +285,27 @@ export default function PaymentLinks() {
                 </div>
 
                 <div className="mt-4 flex items-center gap-2">
-                  <Button size="sm" variant="secondary" className="flex-1" onClick={() => copyLink(link)}>
+                  <Button
+                    size="sm"
+                    variant="secondary"
+                    className="flex-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openPayments(link);
+                    }}
+                  >
+                    <ReceiptText className="mr-1 h-3.5 w-3.5" />
+                    Payments
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    className="flex-1"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      copyLink(link);
+                    }}
+                  >
                     {copiedSlug === link.slug ? (
                       <Check className="mr-1 h-3.5 w-3.5" />
                     ) : (
@@ -271,7 +316,10 @@ export default function PaymentLinks() {
                   <Button
                     size="sm"
                     variant="outline"
-                    onClick={() => window.open(shareUrl(link.slug), "_blank")}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      window.open(shareUrl(link.slug), "_blank");
+                    }}
                   >
                     <ExternalLink className="h-3.5 w-3.5" />
                   </Button>
@@ -279,7 +327,10 @@ export default function PaymentLinks() {
                     size="sm"
                     variant="outline"
                     title="Edit link"
-                    onClick={() => openEdit(link)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      openEdit(link);
+                    }}
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </Button>
@@ -287,7 +338,10 @@ export default function PaymentLinks() {
                     size="sm"
                     variant="outline"
                     title={link.is_active ? "Pause" : "Activate"}
-                    onClick={() => toggleActive(link)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleActive(link);
+                    }}
                   >
                     <Power className="h-3.5 w-3.5" />
                   </Button>
@@ -295,7 +349,10 @@ export default function PaymentLinks() {
                     size="sm"
                     variant="outline"
                     className="text-destructive hover:text-destructive"
-                    onClick={() => setDeleteTarget(link)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setDeleteTarget(link);
+                    }}
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
@@ -394,6 +451,9 @@ export default function PaymentLinks() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Per-link payments drill-down */}
+      <EntityTransactionsDrawer target={txTarget} onClose={() => setTxTarget(null)} />
       </div>
     </Layout>
   );

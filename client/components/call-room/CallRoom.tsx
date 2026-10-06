@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { useSocket } from "@/hooks/useSocket";
 import { getSingletonSocket } from "@/hooks/useSocket";
 import { api } from "@/lib/api-client";
@@ -230,6 +230,18 @@ export function CallRoom({
   const [endsAt, setEndsAt] = useState<string | null>(null);
   const [now, setNow] = useState(Date.now());
 
+  // ------------------------------------------------------------------
+  // Reactions + raised hands (app-level socket events, room-wide)
+  // ------------------------------------------------------------------
+  const REACTION_EMOJIS = ["👍", "❤️", "😂", "😮", "👏", "🎉"];
+  const [reactionsOpen, setReactionsOpen] = useState(false);
+  const [floatingReactions, setFloatingReactions] = useState<
+    Array<{ id: string; emoji: string; fromName?: string; x: number; tilt: number }>
+  >([]);
+  const [raisedHands, setRaisedHands] = useState<Record<string, { name: string; ts: number }>>({});
+  /** Echo guard — a just-sent local reaction is already animated on click. */
+  const lastLocalReactionRef = useRef<{ emoji: string; at: number }>({ emoji: "", at: 0 });
+
   const clientRef = useRef<CallingClient | null>(null);
   const credentialsRef = useRef<CallingCredentials | null>(calling || null);
   const admittedRef = useRef(false);
@@ -284,6 +296,44 @@ export function CallRoom({
     if (ack) socket.emit(event, payload, ack);
     else socket.emit(event, payload);
   }, []);
+
+  /** Spawn a floating emoji rising from the bottom of the stage area.
+   * Capped at ~8 concurrent animations; each self-removes after ~3s. */
+  const spawnReaction = useCallback((emoji: string, fromName?: string) => {
+    const id = `react-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+    const item = {
+      id,
+      emoji,
+      fromName,
+      x: 12 + Math.random() * 72,
+      tilt: Math.round(Math.random() * 24 - 12),
+    };
+    setFloatingReactions((prev) => (prev.length >= 8 ? [...prev.slice(prev.length - 7), item] : [...prev, item]));
+    window.setTimeout(() => {
+      setFloatingReactions((prev) => prev.filter((r) => r.id !== id));
+    }, 3000);
+  }, []);
+
+  const sendReaction = useCallback(
+    (emoji: string) => {
+      lastLocalReactionRef.current = { emoji, at: Date.now() };
+      emitRoom("call:reaction", { roomCode: effectiveRoomId, emoji });
+      // Instant local feedback — the server echo is deduped in the listener.
+      spawnReaction(emoji);
+    },
+    [effectiveRoomId, emitRoom, spawnReaction],
+  );
+
+  const toggleRaiseHand = useCallback(() => {
+    const raised = !raisedHands[localUserId];
+    setRaisedHands((prev) => {
+      const next = { ...prev };
+      if (raised) next[localUserId] = { name: displayName, ts: Date.now() };
+      else delete next[localUserId];
+      return next;
+    });
+    emitRoom("call:raise-hand", { roomCode: effectiveRoomId, raised });
+  }, [displayName, effectiveRoomId, emitRoom, localUserId, raisedHands]);
 
   /** Server-side (Egress) recording id when one is active for this room. */
   const serverRecordingIdRef = useRef<string | null>(null);
@@ -677,6 +727,11 @@ export function CallRoom({
           setMediaParticipants((prev) => prev.filter((x) => x.id !== p.userId));
           setAppParticipants((prev) => prev.filter((x) => x.id !== p.userId));
           setWaitingQueue((prev) => prev.filter((x) => x.participantId !== p.userId));
+          setRaisedHands((prev) => {
+            const next = { ...prev };
+            delete next[p.userId];
+            return next;
+          });
         }
       }],
       [`${prefix}:participant-mute-requested`, (p) => {
@@ -754,6 +809,27 @@ export function CallRoom({
         });
         setInsightsVisible(true);
       }],
+      [`call:reaction-received`, (p: any) => {
+        if (!p?.emoji) return;
+        // The backend may echo the sender's own reaction back — skip it when it
+        // matches a reaction we just emitted locally (already animated).
+        const last = lastLocalReactionRef.current;
+        if (p?.fromName === displayName && last.emoji === p.emoji && Date.now() - last.at < 2500) {
+          lastLocalReactionRef.current = { emoji: "", at: 0 };
+          return;
+        }
+        spawnReaction(String(p.emoji), p?.fromName ? String(p.fromName) : undefined);
+      }],
+      [`call:hand-updated`, (p: any) => {
+        const userId = String(p?.userId || "");
+        if (!userId) return;
+        setRaisedHands((prev) => {
+          const next = { ...prev };
+          if (p?.raised) next[userId] = { name: String(p?.name || "Participant"), ts: Number(p?.ts) || Date.now() };
+          else delete next[userId];
+          return next;
+        });
+      }],
       [`recording:started`, (p: any) => {
         setRecordingActive(true);
         if (p?.recordingId && p?.mode === "server") serverRecordingIdRef.current = p.recordingId;
@@ -782,7 +858,7 @@ export function CallRoom({
         socket.off(event, handler);
       }
     };
-  }, [connectMedia, displayName, effectiveRoomId, isGuest, isMeeting, localUserId, prefix, toast]);
+  }, [connectMedia, displayName, effectiveRoomId, isGuest, isMeeting, localUserId, prefix, spawnReaction, toast]);
 
   // Socket reconnection handling — never strand a participant.
   useEffect(() => {
@@ -1566,7 +1642,18 @@ export function CallRoom({
 
   const renderCameraTile = (tile: GridTile, opts: { filmstrip?: boolean; stage?: boolean } = {}) => {
     const isPinned = tile.key === pinnedKey && !!stageTile && stageTile.key === tile.key;
-    return (
+    // Raised-hand badge: match the tile back to its participant id (local tile,
+    // media tile `p-<id>` or app-level tile `ap-<id>`).
+    const participantId = tile.key === "local" ? localUserId : tile.participant?.id || tile.key.replace(/^(p|ap)-/, "");
+    const isRaised = !!raisedHands[participantId];
+    const sizingClass = cn(
+      opts.filmstrip && "h-full w-[9.5rem] shrink-0 snap-center sm:w-44",
+      // Stage keeps a true 16:9 box: portrait derives height from width,
+      // landscape derives width from height — never stretched.
+      opts.stage && "aspect-video h-auto max-h-full w-full max-w-full sm:h-full sm:w-auto",
+      !opts.filmstrip && !opts.stage && gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center",
+    );
+    const tileEl = (
       <ParticipantTile
         key={tile.key}
         participant={tile.participant}
@@ -1579,14 +1666,20 @@ export function CallRoom({
         pinned={isPinned}
         onTogglePin={() => setPinnedKey((cur) => (cur === tile.key ? null : tile.key))}
         isRoomAudioOnly={callType === "audio"}
-        className={cn(
-          opts.filmstrip && "h-full w-[9.5rem] shrink-0 snap-center sm:w-44",
-          // Stage keeps a true 16:9 box: portrait derives height from width,
-          // landscape derives width from height — never stretched.
-          opts.stage && "aspect-video h-auto max-h-full w-full max-w-full sm:h-full sm:w-auto",
-          !opts.filmstrip && !opts.stage && gridTiles.length === 1 && "mx-auto aspect-video h-auto max-h-full max-w-3xl self-center",
-        )}
+        className={isRaised ? "h-full w-full" : sizingClass}
       />
+    );
+    if (!isRaised) return tileEl;
+    return (
+      <div key={tile.key} className={cn("relative", sizingClass)}>
+        {tileEl}
+        <span
+          className="absolute right-2 top-2 z-10 flex h-7 min-w-7 items-center justify-center rounded-full bg-amber-400 px-1 text-sm shadow-lg ring-2 ring-black/20"
+          title={`${raisedHands[participantId].name} raised their hand`}
+        >
+          ✋
+        </span>
+      </div>
     );
   };
 
@@ -1710,6 +1803,14 @@ export function CallRoom({
           <Users className="h-3 w-3" />
           {participantCount}
         </span>
+        {Object.keys(raisedHands).length > 0 && (
+          <span
+            className="inline-flex items-center gap-1 rounded-full border border-amber-400/40 bg-amber-500/15 px-2.5 py-1 text-[11px] font-medium text-amber-300 backdrop-blur"
+            title={`${Object.keys(raisedHands).map((id) => raisedHands[id].name).join(", ")} raised their hand`}
+          >
+            ✋ {Object.keys(raisedHands).length}
+          </span>
+        )}
         {recordingActive && (
           <span className="inline-flex items-center gap-1.5 rounded-full bg-red-600/20 px-2.5 py-1 text-[11px] font-medium text-red-300">
             <Radio className="h-3 w-3 animate-pulse" /> Rec
@@ -1905,6 +2006,40 @@ export function CallRoom({
           </div>
         )}
 
+        {/* Floating reactions — rise from the bottom of the stage area */}
+        {floatingReactions.map((r) => (
+          <div
+            key={r.id}
+            className="mf-reaction-float pointer-events-none absolute bottom-6 z-40 flex flex-col items-center gap-1"
+            style={{ left: `${r.x}%`, "--mf-tilt": `${r.tilt}deg` } as CSSProperties}
+          >
+            {r.fromName && (
+              <span className="rounded-full bg-black/60 px-2 py-0.5 text-[10px] font-medium text-white/90 backdrop-blur">
+                {r.fromName}
+              </span>
+            )}
+            <span className="text-4xl leading-none drop-shadow-lg">{r.emoji}</span>
+          </div>
+        ))}
+
+        {/* Reaction bar — emoji picker strip above the control dock */}
+        {reactionsOpen && (
+          <div className="pointer-events-auto absolute bottom-3 left-1/2 z-40 flex -translate-x-1/2 items-center gap-0.5 rounded-full border border-white/10 bg-[#141B2E]/95 px-2 py-1.5 shadow-xl backdrop-blur-xl animate-in fade-in slide-in-from-bottom-2 duration-150">
+            {REACTION_EMOJIS.map((emoji) => (
+              <button
+                key={emoji}
+                type="button"
+                onClick={() => sendReaction(emoji)}
+                className="rounded-full p-1.5 text-2xl leading-none transition-transform hover:scale-125 hover:bg-white/10"
+                aria-label={`React ${emoji}`}
+                title={`React ${emoji}`}
+              >
+                {emoji}
+              </button>
+            ))}
+          </div>
+        )}
+
         {participantsOpen && (
           <ParticipantsPanel
             appParticipants={appParticipants}
@@ -1979,6 +2114,10 @@ export function CallRoom({
           onToggleCaptions={toggleCaptions}
           recordingActive={recordingActive}
           onToggleRecording={isHost && !isGuest ? toggleRecording : undefined}
+          reactionsOpen={reactionsOpen}
+          onToggleReactions={() => setReactionsOpen((v) => !v)}
+          raiseHandActive={!!raisedHands[localUserId]}
+          onToggleRaiseHand={toggleRaiseHand}
           onMore={() => setInfoOpen(true)}
           onMinimize={minimizeCall}
           onSwitchCamera={switchCamera}

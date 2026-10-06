@@ -39,6 +39,38 @@ const formatStartsIn = (ms: number) => {
   return `${s}s`;
 };
 
+/** Per-room persisted guest identity — re-invoking an invite link must reuse
+ * the same guest (guestId) instead of minting a new one on every click. */
+interface StoredGuestIdentity {
+  guestId: string;
+  guestName: string;
+  guestEmail?: string;
+}
+
+const guestStorageKey = (callCode: string) => `mf_guest_${callCode}`;
+
+function loadGuestIdentity(callCode?: string): StoredGuestIdentity | null {
+  if (!callCode) return null;
+  try {
+    const raw = localStorage.getItem(guestStorageKey(callCode));
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (parsed?.guestId && parsed?.guestName) return parsed as StoredGuestIdentity;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function saveGuestIdentity(callCode: string, identity: StoredGuestIdentity) {
+  try {
+    localStorage.setItem(guestStorageKey(callCode), JSON.stringify(identity));
+  } catch {
+    // storage may be unavailable (private mode) — joining still works, the
+    // dedupe just won't persist
+  }
+}
+
 const JoinCall = () => {
   const { callCode } = useParams<{ callCode: string }>();
   const navigate = useNavigate();
@@ -57,7 +89,13 @@ const JoinCall = () => {
   // --- Guest state ---
   const [guestValidating, setGuestValidating] = useState(isGuest);
   const [guestValidateResult, setGuestValidateResult] = useState<any>(null);
-  const [guestName, setGuestName] = useState('');
+  const storedGuestRef = useRef<StoredGuestIdentity | null>(null);
+  const [guestName, setGuestName] = useState(() => {
+    // Prefill the previously-used name for this room; it is only overwritten
+    // in storage again if the user edits the field before joining.
+    storedGuestRef.current = loadGuestIdentity(callCode);
+    return storedGuestRef.current?.guestName || '';
+  });
   const [guestJoining, setGuestJoining] = useState(false);
   const [guestInfo, setGuestInfo] = useState<{ guestId: string; guestName: string; call: any; calling?: any } | null>(null);
 
@@ -122,7 +160,16 @@ const JoinCall = () => {
       setErrorScreen(null);
       setGuestJoining(true);
       try {
-        const result = await guestJoinCall(callCode, name, passwordVal);
+        // Reuse the persisted per-room guest identity so repeat clicks on the
+        // same invite link don't mint a new participant every time.
+        const stored = storedGuestRef.current || loadGuestIdentity(callCode);
+        storedGuestRef.current = stored;
+        const result = await guestJoinCall(callCode, name, passwordVal, stored?.guestId);
+        saveGuestIdentity(callCode, {
+          guestId: result.guestId,
+          guestName: result.guestName || name,
+          guestEmail: (result as any).guestEmail || stored?.guestEmail || '',
+        });
         const prevUserId = localStorage.getItem('userId');
         const prevUserName = localStorage.getItem('userName');
         localStorage.setItem('userId', result.guestId);
