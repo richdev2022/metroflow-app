@@ -1,4 +1,4 @@
-# Metricorex (Fusion Starter)
+# Metricorex — Web App
 
 Metricorex web app (project: Metroflow) — the all-in-one business suite: workspace (tasks, boards, backlog, ideas), team tools (meetings, calls, chat), finance (wallets, transfers, payroll) and the Get Paid revenue suite (payment links, smart invoices, storefront, recurring billing, MetricAi credits). Built with React (Vite), Node.js and PostgreSQL.
 
@@ -23,6 +23,11 @@ Metricorex web app (project: Metroflow) — the all-in-one business suite: works
 - **Collapsible sidebar**: nav restructured into expandable groups (Workspace / Team / Finance / Get Paid / Account) so the suite stays easy to scan.
 - **MetricAi**: AI copilot (chat, images, meeting notes, product documentation) with purchasable credit packs.
 - **Subscription & Pricing**: plan limits ladder (team, RTC, MetricAi, store, recurring, links, invoices) with full feature lists (see more/see less).
+- **International transfers**: live FX quotes with a visible **rate-lock countdown**, server-enforced pricing, NGN + USD recipient corridors and **Epic transfers** (one-off payments to multiple recipients from an epic).
+- **Fund wallet, your choice**: the Fund action opens a **wallet picker** (personal vs business wallet) before jumping into funding.
+- **Checkout auto-verify**: the payment-callback page verifies on mount, polls while the payment settles, then auto-redirects (reference-prefix aware); payment links, invoices and subscriptions each have a **per-entity transactions drill-down**.
+- **Calls & chat**: LiveKit-powered call rooms with reactions/raise-hand, guest identity reuse on rejoin, WhatsApp-style chat with attachments, voice notes and typing indicators.
+- **Web Push (VAPID)**: incoming-call rings and chat notifications even when the tab is closed (service worker `public/sw.js`).
 
 ## 🛠️ Tech Stack
 
@@ -68,19 +73,30 @@ Metricorex web app (project: Metroflow) — the all-in-one business suite: works
 
 ## 🔧 Configuration
 
-1. **Environment Variables**
-   Create a `.env` file in the root directory based on `.env.example`:
+1. **Environment Variables** — create `.env` from `.env.example`:
 
-   ```bash
-   cp .env.example .env
-   ```
-
-2. **Update `.env` values**
    ```env
-   DATABASE_URL="postgresql://user:password@localhost:5432/your_database"
-   JWT_SECRET="your-secure-jwt-secret"
-   CLIENT_URL="http://localhost:5173" # Update port if different
+   VITE_API_BASE_URL=https://api.metricorex.com/api   # backend API (repo metroflow-backend)
+   VITE_SITE_URL=https://metroflow-site.netlify.app
+   VITE_GOOGLE_CLIENT_ID=...                          # Google SSO (public by design)
+   VITE_PAYLOAD_ENCRYPTION_KEY=...                    # 32-byte base64 — MUST match the backend's PAYLOAD_ENCRYPTION_KEY
    ```
+
+   > When `VITE_PAYLOAD_ENCRYPTION_KEY` is unset the app runs fully plaintext (older deployments). Never invent your own value — copy it from the backend.
+
+2. The database, payments and email all live in the **backend** repo — this app only talks to its REST API.
+
+## 🔐 E2E Payload Encryption (x-mfv-enc)
+
+`client/lib/payload-crypto.ts` mirrors the backend's AES-256-GCM cipher. When the key is configured:
+
+- every JSON **request body** leaves as an envelope `{ v, iv, tag, ct }` and **every response** (GETs included — the app opts in on all requests) comes back encrypted, so the browser network tab never shows raw data;
+- envelopes are detected by **shape first** (`v=1` + `iv/tag/ct`), not only by the response header, so cross-origin header-hiding or stripping proxies cannot break decryption;
+- if a keyless server answers `400 DECRYPT_FAILED`, the request transparently **retries once in plaintext** — mismatched deployments degrade, never break.
+
+## 🔔 Web Push
+
+`client/lib/push.ts` registers the service worker, subscribes the browser via the backend's VAPID public key (`GET /push/vapid-public-key`) and posts the subscription to `POST /push/subscribe`. Incoming calls ring through the service worker even with the tab closed.
 
 ## 🏃‍♂️ Running the Application
 

@@ -72,6 +72,13 @@ api.interceptors.request.use(async (config) => {
       console.error("[payload-crypto] request encryption failed — sending plaintext:", err);
     }
   }
+  // Opt in to response encryption on EVERY request — including bodyless
+  // GET/DELETE — so balances, chats and profiles are ciphertext in the
+  // network tab too. The server never tries to decrypt a GET body; it only
+  // uses the header as the "this client supports encryption" signal.
+  if (isClientEncryptionEnabled() && (config as any)._mfvRetryPlaintext !== true) {
+    config.headers["x-mfv-enc"] = "1";
+  }
   return config;
 });
 
