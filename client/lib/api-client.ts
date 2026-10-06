@@ -77,14 +77,22 @@ api.interceptors.request.use(async (config) => {
 
 api.interceptors.response.use(
   async (response) => {
-    // E2E payload encryption: the server stamps x-mfv-enc: 1 on encrypted
-    // JSON responses — decrypt before anything downstream reads the body.
-    if (response.headers?.["x-mfv-enc"] === "1" && looksLikeEncryptedEnvelope(response.data)) {
+    // E2E payload encryption: decrypt envelopes before anything downstream
+    // reads the body. The ENVELOPE SHAPE is the primary signal — browsers
+    // hide custom response headers cross-origin unless the server exposes
+    // them (Access-Control-Expose-Headers), so relying on the header alone
+    // would leave every response unreadable. Decrypt failure with a visible
+    // header is a hard error; without it we pass the body through untouched.
+    if (looksLikeEncryptedEnvelope(response.data) && isClientEncryptionEnabled()) {
+      const headerEnc = response.headers?.["x-mfv-enc"] === "1";
       try {
         response.data = await decryptPayload(response.data);
       } catch (err) {
-        console.error("[payload-crypto] response decryption failed:", err);
-        return Promise.reject(new Error("Unable to decrypt server response"));
+        if (headerEnc) {
+          console.error("[payload-crypto] response decryption failed:", err);
+          return Promise.reject(new Error("Unable to decrypt server response"));
+        }
+        console.error("[payload-crypto] envelope-shaped body failed to decrypt — passing through:", err);
       }
     }
     // Check if response data is string and starts with < (likely HTML)
@@ -104,12 +112,17 @@ api.interceptors.response.use(
     return response;
   },
   async (error) => {
-    // E2E payload encryption on ERROR paths too (4xx/5xx envelopes).
-    if (error.response?.headers?.["x-mfv-enc"] === "1" && looksLikeEncryptedEnvelope(error.response?.data)) {
+    // E2E payload encryption on ERROR paths too (4xx/5xx envelopes) — same
+    // shape-first detection as the success path (CORS header visibility).
+    if (looksLikeEncryptedEnvelope(error.response?.data) && isClientEncryptionEnabled()) {
+      const headerEnc = error.response?.headers?.["x-mfv-enc"] === "1";
       try {
         error.response.data = await decryptPayload(error.response.data);
-      } catch {
-        return Promise.reject(new Error("Unable to decrypt server response"));
+      } catch (err) {
+        if (headerEnc) {
+          return Promise.reject(new Error("Unable to decrypt server response"));
+        }
+        console.error("[payload-crypto] error-envelope failed to decrypt — passing through:", err);
       }
     }
     // ENCRYPTION MISMATCH FALLBACK: the client encrypted the body but the
