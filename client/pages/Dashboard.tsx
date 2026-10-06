@@ -102,6 +102,32 @@ export default function Dashboard() {
   const [fundPickOpen, setFundPickOpen] = useState(false);
   const [fundPickWalletId, setFundPickWalletId] = useState("");
 
+  /** Wallets available for funding — nulls stripped, business gated by role.
+   *  HOOK ORDER: this useMemo MUST live above the `if (loading)` early return
+   *  below — a hook after a conditional return throws React error #310
+   *  ("Rendered more hooks than during the previous render") the moment the
+   *  dashboard finishes loading. */
+  const fundWalletOptions = useMemo(() => {
+    const options: { id: string; label: string; currency: string; balance: string }[] = [];
+    if (walletInfo?.user_wallet) {
+      options.push({
+        id: walletInfo.user_wallet.id,
+        label: "Personal",
+        currency: walletInfo.user_wallet.currency || "NGN",
+        balance: walletInfo.user_wallet.balance,
+      });
+    }
+    if (walletInfo?.canManageBusinessWallet && walletInfo.business_wallet) {
+      options.push({
+        id: walletInfo.business_wallet.id,
+        label: "Business",
+        currency: walletInfo.business_wallet.currency || "NGN",
+        balance: walletInfo.business_wallet.balance,
+      });
+    }
+    return options;
+  }, [walletInfo]);
+
   const { toast } = useToast();
   const navigate = useNavigate();
 
@@ -674,28 +700,6 @@ export default function Dashboard() {
     walletInfo?.canManageBusinessWallet && walletInfo.business_wallet
       ? walletInfo.business_wallet
       : walletInfo?.user_wallet;
-
-  /** Wallets available for funding — nulls stripped, business gated by role. */
-  const fundWalletOptions = useMemo(() => {
-    const options: { id: string; label: string; currency: string; balance: string }[] = [];
-    if (walletInfo?.user_wallet) {
-      options.push({
-        id: walletInfo.user_wallet.id,
-        label: "Personal",
-        currency: walletInfo.user_wallet.currency || "NGN",
-        balance: walletInfo.user_wallet.balance,
-      });
-    }
-    if (walletInfo?.canManageBusinessWallet && walletInfo.business_wallet) {
-      options.push({
-        id: walletInfo.business_wallet.id,
-        label: "Business",
-        currency: walletInfo.business_wallet.currency || "NGN",
-        balance: walletInfo.business_wallet.balance,
-      });
-    }
-    return options;
-  }, [walletInfo]);
 
   const openFundWalletPicker = () => {
     setFundPickWalletId(primaryWallet?.id || fundWalletOptions[0]?.id || "");
