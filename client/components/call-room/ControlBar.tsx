@@ -21,6 +21,8 @@ import {
   Headphones,
   Phone,
   Check,
+  Smile,
+  Hand,
 } from "lucide-react";
 import type { AudioOutputDevice } from "@/lib/calling";
 
@@ -72,6 +74,11 @@ interface ControlBarProps {
   /** Host-only room recording — button renders only when a handler is given. */
   recordingActive?: boolean;
   onToggleRecording?: () => void;
+  /** Reactions + raise hand (call-room socket features). */
+  reactionsOpen?: boolean;
+  onToggleReactions?: () => void;
+  raiseHandActive?: boolean;
+  onToggleRaiseHand?: () => void;
 }
 
 function CtrlButton({ spec, small }: { spec: ControlButtonSpec; small?: boolean }) {
@@ -269,6 +276,28 @@ export function ControlBar(props: ControlBarProps) {
       active: props.participantsOpen,
       onClick: props.onToggleParticipants,
     },
+    ...(props.onToggleReactions
+      ? [
+          {
+            key: "reactions",
+            icon: <Smile className="h-5 w-5" />,
+            label: "Reactions",
+            active: props.reactionsOpen,
+            onClick: props.onToggleReactions,
+          },
+        ]
+      : []),
+    ...(props.onToggleRaiseHand
+      ? [
+          {
+            key: "raise-hand",
+            icon: <Hand className="h-5 w-5" />,
+            label: props.raiseHandActive ? "Lower hand" : "Raise hand",
+            active: props.raiseHandActive,
+            onClick: props.onToggleRaiseHand,
+          },
+        ]
+      : []),
   ];
 
   // Recording CTA — hosts only (backend also enforces host-only). Rendered

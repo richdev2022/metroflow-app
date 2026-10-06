@@ -1,6 +1,12 @@
 import axios from "axios";
 import { triggerSessionTimeout } from "@/components/SessionTimeoutProvider";
 import { triggerUpgradePrompt, isPlanUpgradeError } from "@/components/UpgradePromptProvider";
+import {
+  isClientEncryptionEnabled,
+  looksLikeEncryptedEnvelope,
+  encryptPayload,
+  decryptPayload,
+} from "@/lib/payload-crypto";
 
 export const api = axios.create({
   baseURL: (import.meta.env.VITE_API_BASE_URL || "/api").trim(),
@@ -20,7 +26,7 @@ if (!import.meta.env.VITE_API_BASE_URL && import.meta.env.PROD) {
   console.warn("VITE_API_BASE_URL is not set. API calls might fail if backend is not proxied correctly.");
 }
 
-api.interceptors.request.use((config) => {
+api.interceptors.request.use(async (config) => {
   if (IS_DEV) {
     console.log(`[API Request] ${config.method?.toUpperCase()} ${config.baseURL}${config.url}`);
   }
@@ -37,11 +43,50 @@ api.interceptors.request.use((config) => {
   if (userId) {
     config.headers["x-user-id"] = userId;
   }
+  // E2E payload encryption: JSON bodies travel as ciphertext (network-tab
+  // safe). FormData/raw uploads and responses to keyless clients stay as-is.
+  if (
+    isClientEncryptionEnabled() &&
+    config.data !== undefined &&
+    config.data !== null &&
+    !(config.data instanceof FormData) &&
+    !(config.data instanceof Blob) &&
+    !(config.data instanceof ArrayBuffer) &&
+    typeof config.data !== "string" &&
+    typeof config.data === "object" &&
+    !looksLikeEncryptedEnvelope(config.data)
+  ) {
+    // Keep the plaintext around so a DECRYPT_FAILED mismatch (client has a
+    // key but the backend was deployed without PAYLOAD_ENCRYPTION_KEY) can
+    // transparently retry once in plaintext instead of failing the call.
+    (config as any)._mfvPlaintext = config.data;
+    if ((config as any)._mfvRetryPlaintext === true) {
+      // Already retried once in plaintext — send as-is, no header.
+      delete config.headers["x-mfv-enc"];
+      return config;
+    }
+    try {
+      config.data = await encryptPayload(config.data);
+      config.headers["x-mfv-enc"] = "1";
+    } catch (err) {
+      console.error("[payload-crypto] request encryption failed — sending plaintext:", err);
+    }
+  }
   return config;
 });
 
 api.interceptors.response.use(
-  (response) => {
+  async (response) => {
+    // E2E payload encryption: the server stamps x-mfv-enc: 1 on encrypted
+    // JSON responses — decrypt before anything downstream reads the body.
+    if (response.headers?.["x-mfv-enc"] === "1" && looksLikeEncryptedEnvelope(response.data)) {
+      try {
+        response.data = await decryptPayload(response.data);
+      } catch (err) {
+        console.error("[payload-crypto] response decryption failed:", err);
+        return Promise.reject(new Error("Unable to decrypt server response"));
+      }
+    }
     // Check if response data is string and starts with < (likely HTML)
     if (typeof response.data === 'string' && response.data.trim().startsWith('<')) {
         console.error("Received HTML response instead of JSON. Check API URL configuration.");
@@ -58,7 +103,32 @@ api.interceptors.response.use(
     }
     return response;
   },
-  (error) => {
+  async (error) => {
+    // E2E payload encryption on ERROR paths too (4xx/5xx envelopes).
+    if (error.response?.headers?.["x-mfv-enc"] === "1" && looksLikeEncryptedEnvelope(error.response?.data)) {
+      try {
+        error.response.data = await decryptPayload(error.response.data);
+      } catch {
+        return Promise.reject(new Error("Unable to decrypt server response"));
+      }
+    }
+    // ENCRYPTION MISMATCH FALLBACK: the client encrypted the body but the
+    // server has no PAYLOAD_ENCRYPTION_KEY (400 DECRYPT_FAILED). Retry the
+    // exact same request once in plaintext so a half-configured deployment
+    // degrades instead of breaking every JSON POST.
+    if (
+      error.response?.status === 400 &&
+      error.response?.data?.code === "DECRYPT_FAILED" &&
+      error.config?.headers?.["x-mfv-enc"] === "1" &&
+      error.config?._mfvRetryPlaintext !== true
+    ) {
+      console.warn("[payload-crypto] server rejected the encrypted payload — retrying in plaintext");
+      const retryConfig = { ...error.config };
+      retryConfig.data = error.config._mfvPlaintext ?? error.config.data;
+      retryConfig._mfvRetryPlaintext = true;
+      delete retryConfig.headers?.["x-mfv-enc"];
+      return api.request(retryConfig);
+    }
     // Handle Network Errors (CORS, Offline, Server Down)
     if (error.code === 'ERR_NETWORK') {
         console.error("Network Error: Unable to connect to the server.");

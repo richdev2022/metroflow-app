@@ -291,3 +291,36 @@
       0 0 24px 4px rgba(52, 211, 153, 0.35);
   }
 }
+
+/* Call room — floating reaction emojis (rise from the bottom of the stage).
+ * translateX(-50%) is baked into the keyframes so the emoji stays centered on
+ * its `left` position (an animation overrides the Tailwind translate class). */
+@keyframes mf-reaction-rise {
+  0% {
+    transform: translateX(-50%) translateY(0) scale(0.5);
+    opacity: 0;
+  }
+  12% {
+    transform: translateX(-50%) translateY(-24px) scale(1.1);
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    transform: translateX(-50%) translateY(-260px) scale(1.25)
+      rotate(var(--mf-tilt, 8deg));
+    opacity: 0;
+  }
+}
+
+.mf-reaction-float {
+  animation: mf-reaction-rise 3s ease-out forwards;
+  will-change: transform, opacity;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .mf-reaction-float {
+    animation-timing-function: linear;
+  }
+}

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   Repeat, Plus, Copy, Check, Trash2, Loader2, Users, TrendingUp, CalendarClock,
-  UserPlus, RotateCcw, Wallet,
+  UserPlus, RotateCcw, Wallet, ReceiptText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Badge } from "@/components/ui/badge";
 import Layout from "@/components/layout";
+import EntityTransactionsDrawer, { EntityTransactionsTarget } from "@/components/EntityTransactionsDrawer";
 import { api } from "@/lib/api-client";
 import { toast } from "sonner";
 import { useSEO } from "@/lib/use-seo";
@@ -122,6 +123,9 @@ export default function Recurring() {
   const [subEmail, setSubEmail] = useState("");
   const [subPhone, setSubPhone] = useState("");
   const [savingSub, setSavingSub] = useState(false);
+
+  // Per-subscriber transaction drill-down (drawer)
+  const [txTarget, setTxTarget] = useState<EntityTransactionsTarget | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -270,6 +274,17 @@ export default function Recurring() {
     }
   };
 
+  /** Drill-down: every transaction charged against this subscriber. */
+  const openSubscriberTransactions = (s: Subscriber) => {
+    setTxTarget({
+      kind: "subscription",
+      id: s.id,
+      subscriberEmail: s.customer_email,
+      title: s.customer_name,
+      subtitle: `${s.plan_name} · ${s.customer_email}`,
+    });
+  };
+
   return (
     <Layout>
       <div className="flex flex-col gap-6">
@@ -414,6 +429,14 @@ export default function Recurring() {
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
                     <Badge className={subBadge(s.status)}>{s.status.replace("_", " ")}</Badge>
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      title="View all transactions for this subscriber"
+                      onClick={() => openSubscriberTransactions(s)}
+                    >
+                      <ReceiptText className="h-3.5 w-3.5 mr-1.5" /> Transactions
+                    </Button>
                     {s.status === "past_due" && (
                       <Button size="sm" variant="outline" onClick={() => reactivateSubscriber(s)}>
                         <RotateCcw className="h-3.5 w-3.5 mr-1.5" /> Reactivate
@@ -563,6 +586,9 @@ export default function Recurring() {
             </DialogFooter>
           </DialogContent>
         </Dialog>
+
+        {/* Per-subscriber transactions drill-down */}
+        <EntityTransactionsDrawer target={txTarget} onClose={() => setTxTarget(null)} />
       </div>
     </Layout>
   );

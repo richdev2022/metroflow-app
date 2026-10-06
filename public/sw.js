@@ -78,6 +78,23 @@ self.addEventListener("push", (event) => {
     return;
   }
 
+  if (type === "chat-message") {
+    const sender = data.senderName || data.sender_name || data.title || "New message";
+    const convo = data.conversationId || data.conversation_id || "";
+    const body = data.message || data.body || "";
+    const deepLink = "/chat" + (convo ? "?conversation=" + encodeURIComponent(convo) : "");
+    event.waitUntil(
+      self.registration.showNotification(sender, {
+        body: body,
+        tag: data.tag || ("chat-" + (convo || Date.now())),
+        icon: "/icon-192.png",
+        badge: "/icon-192.png",
+        data: { url: deepLink, conversationId: convo, type: "chat-message" },
+      }),
+    );
+    return;
+  }
+
   // Generic fallback (chat messages, etc. — payload { title?, body?, url? }).
   if (data.title || data.body) {
     event.waitUntil(
