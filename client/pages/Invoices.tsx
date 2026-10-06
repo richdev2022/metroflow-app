@@ -263,6 +263,16 @@ export default function Invoices() {
     }
   };
 
+  /** How much of this invoice has actually been paid: the backend-stamped
+   *  amount_paid when present, else the successful payments just loaded. */
+  const invoicePaidAmount = (inv: Invoice, loaded: InvoicePayment[]) => {
+    const stamped = Number(inv.amount_paid ?? inv.total_paid);
+    if (!Number.isNaN(stamped) && stamped > 0) return stamped;
+    return loaded
+      .filter((p) => p.status === "success")
+      .reduce((s, p) => s + (Number(p.amount) || 0), 0);
+  };
+
   const activeCount = invoices.filter((i) => i.status === "pending").length;
   const paidTotal = invoices
     .filter((i) => i.status === "paid")
@@ -328,7 +338,16 @@ export default function Invoices() {
                   return (
                     <div
                       key={inv.id}
-                      className="flex flex-col rounded-2xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md"
+                      role="button"
+                      tabIndex={0}
+                      onClick={() => openPayments(inv)}
+                      onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          openPayments(inv);
+                        }
+                      }}
+                      className="flex cursor-pointer flex-col rounded-2xl border bg-card p-5 shadow-sm transition-shadow hover:shadow-md focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                     >
                       <div className="flex items-start justify-between gap-2">
                         <div className="min-w-0">
@@ -376,7 +395,10 @@ export default function Invoices() {
                             size="sm"
                             variant="secondary"
                             className="flex-1"
-                            onClick={() => copyLink(inv)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              copyLink(inv);
+                            }}
                           >
                             {copiedId === inv.id ? (
                               <Check className="mr-1 h-3.5 w-3.5" />
@@ -390,7 +412,10 @@ export default function Invoices() {
                           size="sm"
                           variant="outline"
                           title="Payments"
-                          onClick={() => openPayments(inv)}
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            openPayments(inv);
+                          }}
                         >
                           <ReceiptText className="h-3.5 w-3.5" />
                         </Button>
@@ -399,7 +424,10 @@ export default function Invoices() {
                             size="sm"
                             variant="outline"
                             title="Cancel invoice"
-                            onClick={() => setCancelTarget(inv)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setCancelTarget(inv);
+                            }}
                           >
                             <XCircle className="h-3.5 w-3.5" />
                           </Button>
@@ -410,7 +438,10 @@ export default function Invoices() {
                             variant="outline"
                             className="text-destructive hover:text-destructive"
                             title="Delete invoice"
-                            onClick={() => setDeleteTarget(inv)}
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              setDeleteTarget(inv);
+                            }}
                           >
                             <Trash2 className="h-3.5 w-3.5" />
                           </Button>
@@ -659,13 +690,35 @@ export default function Invoices() {
         <Dialog open={!!paymentsFor} onOpenChange={(open) => !open && setPaymentsFor(null)}>
           <DialogContent className="sm:max-w-md">
             <DialogHeader>
-              <DialogTitle>
-                Payments — {paymentsFor?.invoice_number}
+              <DialogTitle className="flex flex-wrap items-center gap-2">
+                <span>Payments — {paymentsFor?.invoice_number}</span>
+                {paymentsFor && (
+                  <span
+                    className={cn(
+                      "rounded-full px-2 py-0.5 text-[11px] font-semibold",
+                      statusMeta(paymentsFor).className,
+                    )}
+                  >
+                    {statusMeta(paymentsFor).label}
+                  </span>
+                )}
               </DialogTitle>
               <DialogDescription>
                 {paymentsFor?.client_name} · {fmtMoney(paymentsFor?.total, "NGN")} total
               </DialogDescription>
             </DialogHeader>
+            {paymentsFor && (
+              <div className="flex items-center justify-between rounded-xl border bg-muted/30 px-3 py-2 text-sm">
+                <span className="font-medium">
+                  Paid {fmtMoney(invoicePaidAmount(paymentsFor, payments), "NGN")} of{" "}
+                  {fmtMoney(paymentsFor.total, "NGN")}
+                </span>
+                <span className="text-xs text-muted-foreground">
+                  {payments.filter((p) => p.status === "success").length} of {payments.length} payment
+                  {payments.length === 1 ? "" : "s"} successful
+                </span>
+              </div>
+            )}
             {paymentsLoading ? (
               <div className="flex h-24 items-center justify-center">
                 <Loader2 className="h-5 w-5 animate-spin text-primary" />
@@ -677,26 +730,33 @@ export default function Invoices() {
             ) : (
               <div className="max-h-72 space-y-2 overflow-y-auto">
                 {payments.map((p) => (
-                  <div key={p.id} className="flex items-center justify-between rounded-lg border p-3 text-sm">
-                    <div className="min-w-0">
-                      <p className="truncate font-medium">{p.payer_name || p.payer_email || "Payment"}</p>
-                      <p className="text-xs text-muted-foreground">
-                        {new Date(p.created_at).toLocaleString()} · {p.payment_provider || "unknown"}
-                      </p>
-                    </div>
-                    <div className="text-right">
-                      <p className="font-semibold">{fmtMoney(p.amount, p.currency)}</p>
-                      <Badge
-                        variant="secondary"
-                        className={cn(
-                          "text-[10px]",
-                          p.status === "success" && "bg-emerald-500/10 text-emerald-600",
-                          p.status === "pending" && "bg-amber-500/10 text-amber-600",
-                          p.status === "failed" && "bg-red-500/10 text-red-600",
+                  <div key={p.id} className="rounded-lg border p-3 text-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="min-w-0">
+                        <p className="truncate font-medium">{p.payer_name || p.payer_email || "Payment"}</p>
+                        <p className="text-xs text-muted-foreground">
+                          {new Date(p.created_at).toLocaleString()} · {p.payment_provider || "unknown"}
+                        </p>
+                        {p.transaction_reference && (
+                          <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">
+                            {p.transaction_reference}
+                          </p>
                         )}
-                      >
-                        {p.status}
-                      </Badge>
+                      </div>
+                      <div className="flex shrink-0 flex-col items-end gap-1">
+                        <p className="font-semibold">{fmtMoney(p.amount, p.currency)}</p>
+                        <Badge
+                          variant="secondary"
+                          className={cn(
+                            "text-[10px] capitalize",
+                            p.status === "success" && "bg-emerald-500/10 text-emerald-600",
+                            p.status === "pending" && "bg-amber-500/10 text-amber-600",
+                            p.status === "failed" && "bg-red-500/10 text-red-600",
+                          )}
+                        >
+                          {p.status}
+                        </Badge>
+                      </div>
                     </div>
                   </div>
                 ))}

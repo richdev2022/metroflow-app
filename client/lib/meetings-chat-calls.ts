@@ -514,7 +514,18 @@ export const guestValidateCall = async (code: string, inviteToken?: string) => {
   return unwrapApiData<GuestCallInfo>(response.data, 'Failed to validate call link');
 };
 
-export const guestJoinCall = async (code: string, name: string, password?: string) => {
-  const response = await api.post(`/calls/guest/${code}/join`, { name, password });
+export const guestJoinCall = async (
+  code: string,
+  name: string,
+  password?: string,
+  guestId?: string
+) => {
+  // Returning guests re-send their minted guestId so the backend reuses the
+  // same identity instead of creating a new participant on every link click.
+  const response = await api.post(`/calls/guest/${code}/join`, {
+    name,
+    password,
+    ...(guestId ? { guestId } : {}),
+  });
   return unwrapApiData<GuestCallJoinResult>(response.data, 'Failed to join call as guest');
 };

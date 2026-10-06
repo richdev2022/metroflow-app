@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from "react";
+import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
@@ -10,7 +10,7 @@ import { Label } from "@/components/ui/label";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog";
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
-import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRightLeft, RefreshCw, AlertCircle, CheckCircle2 } from "lucide-react";
+import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRightLeft, RefreshCw, AlertCircle, CheckCircle2, Timer, ClockAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
   Command,
@@ -144,6 +144,11 @@ export default function Wallet() {
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteConfirmed, setQuoteConfirmed] = useState(false);
+  // Quote lock window: epoch-ms deadline from the backend's expires_at /
+  // expires_in_seconds (null when the backend didn't stamp an expiry).
+  const [quoteExpiresAt, setQuoteExpiresAt] = useState<number | null>(null);
+  // Ticked once per second while a quote is live — drives the mm:ss chip.
+  const [quoteNow, setQuoteNow] = useState(Date.now());
   const [otpLoading, setOtpLoading] = useState(false);
   const [transferLoading, setTransferLoading] = useState(false);
   const [otp, setOtp] = useState("");
@@ -341,11 +346,48 @@ export default function Wallet() {
   }, [watchedAccountNumber, watchedBankCode, watchedCurrency]);
 
   // International payout quote (USD transfers): live FX rate + markup + fees.
+  const loadQuote = useCallback(async (amountNum: number) => {
+    try {
+      setQuoteLoading(true);
+      setQuoteError(null);
+      const res = await api.get(
+        `/transfers/quote?amount=${amountNum}&source_currency=NGN&destination_currency=USD`
+      );
+      if (res.data?.success && res.data?.data) {
+        const freshQuote: TransferQuote = res.data.data;
+        setQuote(freshQuote);
+        setQuoteConfirmed(false);
+        // Fresh quote → (re)start the lock countdown from the server deadline.
+        const ttl = Number(freshQuote.expires_in_seconds);
+        setQuoteExpiresAt(
+          freshQuote.expires_at
+            ? new Date(freshQuote.expires_at).getTime()
+            : Number.isFinite(ttl) && ttl > 0
+              ? Date.now() + ttl * 1000
+              : null,
+        );
+      } else {
+        setQuote(null);
+        setQuoteExpiresAt(null);
+        setQuoteError(res.data?.error || "Could not fetch a quote right now");
+      }
+    } catch (e: any) {
+      setQuote(null);
+      setQuoteExpiresAt(null);
+      setQuoteError(
+        e.response?.data?.error || "Could not fetch a quote — international payouts may be unavailable"
+      );
+    } finally {
+      setQuoteLoading(false);
+    }
+  }, []);
+
   useEffect(() => {
     if (watchedCurrency !== "USD") {
       setQuote(null);
       setQuoteError(null);
       setQuoteConfirmed(false);
+      setQuoteExpiresAt(null);
       return;
     }
     const amountNum = Number(watchedAmount);
@@ -353,33 +395,53 @@ export default function Wallet() {
       setQuote(null);
       setQuoteError(null);
       setQuoteConfirmed(false);
+      setQuoteExpiresAt(null);
       return;
     }
-    const timer = setTimeout(async () => {
-      try {
-        setQuoteLoading(true);
-        setQuoteError(null);
-        const res = await api.get(
-          `/transfers/quote?amount=${amountNum}&source_currency=NGN&destination_currency=USD`
-        );
-        if (res.data?.success && res.data?.data) {
-          setQuote(res.data.data);
-          setQuoteConfirmed(false);
-        } else {
-          setQuote(null);
-          setQuoteError(res.data?.error || "Could not fetch a quote right now");
-        }
-      } catch (e: any) {
-        setQuote(null);
-        setQuoteError(
-          e.response?.data?.error || "Could not fetch a quote — international payouts may be unavailable"
-        );
-      } finally {
-        setQuoteLoading(false);
-      }
+    const timer = setTimeout(() => {
+      loadQuote(amountNum);
     }, 500);
     return () => clearTimeout(timer);
-  }, [watchedCurrency, watchedAmount]);
+  }, [watchedCurrency, watchedAmount, loadQuote]);
+
+  // Live countdown tick — one interval per active quote, cleaned up on
+  // unmount and whenever the quote (or its deadline) changes.
+  useEffect(() => {
+    if (!quote || quoteExpiresAt == null) return;
+    setQuoteNow(Date.now());
+    const interval = window.setInterval(() => setQuoteNow(Date.now()), 1000);
+    return () => window.clearInterval(interval);
+  }, [quote, quoteExpiresAt]);
+
+  const quoteRemainingSeconds =
+    quote && quoteExpiresAt != null
+      ? Math.max(0, Math.ceil((quoteExpiresAt - quoteNow) / 1000))
+      : null;
+  const quoteExpired = !!quote && quoteExpiresAt != null && quoteRemainingSeconds === 0;
+  const quoteCountdown =
+    quoteRemainingSeconds != null
+      ? `${Math.floor(quoteRemainingSeconds / 60)}:${String(quoteRemainingSeconds % 60).padStart(2, "0")}`
+      : null;
+
+  // A lapsed quote can no longer be confirmed — drop the confirmation flag
+  // so the submit gate (which checks quoteConfirmed) blocks the transfer.
+  useEffect(() => {
+    if (quoteExpired) setQuoteConfirmed(false);
+  }, [quoteExpired]);
+
+  /** Submit-time guard: the render-time chip can lag the wall clock by up to
+   *  1s, so the handlers re-check against the actual deadline. */
+  const isQuoteExpiredNow = useCallback(
+    () => !!quote && quoteExpiresAt != null && Date.now() >= quoteExpiresAt,
+    [quote, quoteExpiresAt],
+  );
+
+  /** "Refresh quote" — re-runs the quote fetch immediately (no debounce). */
+  const handleRefreshQuote = useCallback(() => {
+    const amountNum = Number(watchedAmount);
+    if (!amountNum || isNaN(amountNum) || amountNum <= 0) return;
+    loadQuote(amountNum);
+  }, [watchedAmount, loadQuote]);
 
   const onInitiateTransfer = async (values: z.infer<typeof transferSchema>) => {
      if (!pin || pin.length !== 4) {
@@ -439,6 +501,14 @@ export default function Wallet() {
           return;
       }
       const values = transferForm.getValues();
+      if (values.currency === "USD" && isQuoteExpiredNow()) {
+          toast({
+              title: "Quote expired",
+              description: "Your exchange-rate quote has expired. Refresh the quote and confirm the new rate before sending.",
+              variant: "destructive"
+          });
+          return;
+      }
       if (values.currency === "USD" && (!quote || !quoteConfirmed)) {
           toast({
               title: "Quote confirmation required",
@@ -520,6 +590,14 @@ export default function Wallet() {
       return;
     }
     const values = transferForm.getValues();
+    if (values.currency === "USD" && isQuoteExpiredNow()) {
+      toast({
+          title: "Quote expired",
+          description: "Your exchange-rate quote has expired. Refresh the quote and confirm the new rate before sending.",
+          variant: "destructive"
+      });
+      return;
+    }
     if (values.currency === "USD" && (!quote || !quoteConfirmed)) {
       toast({
           title: "Quote confirmation required",
@@ -701,6 +779,34 @@ export default function Wallet() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
+
+  // Deep link from Dashboard's "Choose wallet to fund" picker — open the fund
+  // dialog preselected to the given wallet id, and clean the URL so refresh
+  // doesn't replay it. Runs after the wallet payload lands so the id can be
+  // matched to Personal/Business.
+  const [fundParamHandled, setFundParamHandled] = useState(false);
+  useEffect(() => {
+    if (loading || fundParamHandled) return;
+    const fundId = searchParams.get("fund");
+    if (!fundId) return;
+    setFundParamHandled(true);
+    const isUser = walletInfo?.user_wallet?.id === fundId;
+    const isBusiness = walletInfo?.business_wallet?.id === fundId;
+    if (isUser) setSelectedWalletType("user");
+    else if (isBusiness) setSelectedWalletType("business");
+    searchParams.delete("fund");
+    setSearchParams(searchParams, { replace: true });
+    if (isUser || isBusiness) {
+      setFundWalletOpen(true);
+    } else {
+      toast({
+        title: "Wallet not found",
+        description: "That wallet is no longer available to fund.",
+        variant: "destructive",
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [loading, walletInfo, searchParams]);
 
   // Prompt PIN setup before the first transfer instead of failing at submit.
   const openTransferDialog = (walletType: "user" | "business") => {
@@ -1069,6 +1175,32 @@ export default function Wallet() {
             </DialogHeader>
             <Form {...fundForm}>
               <form onSubmit={fundForm.handleSubmit(onFundWallet)} className="space-y-4">
+                {/* Wallet switcher — users who arrived from the Dashboard picker
+                    (or a card's "Fund via Card" button) can change their mind
+                    without closing the dialog. */}
+                <div className="space-y-2">
+                  <Label>Wallet</Label>
+                  <Select
+                    value={selectedWalletType}
+                    onValueChange={(v) => setSelectedWalletType(v as "user" | "business")}
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select wallet" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {walletInfo?.user_wallet && (
+                        <SelectItem value="user">
+                          Personal ({walletInfo.user_wallet.currency} {Number(walletInfo.user_wallet.balance).toLocaleString()})
+                        </SelectItem>
+                      )}
+                      {walletInfo?.business_wallet && canManageBusinessWallet && (
+                        <SelectItem value="business">
+                          Business ({walletInfo.business_wallet.currency} {Number(walletInfo.business_wallet.balance).toLocaleString()})
+                        </SelectItem>
+                      )}
+                    </SelectContent>
+                  </Select>
+                </div>
                 <FormField
                   control={fundForm.control}
                   name="amount"
@@ -1104,6 +1236,7 @@ export default function Wallet() {
               setQuote(null);
               setQuoteError(null);
               setQuoteConfirmed(false);
+              setQuoteExpiresAt(null);
             }
         }}>
           <DialogContent className="max-w-md max-h-[90vh] overflow-y-auto">
@@ -1131,6 +1264,7 @@ export default function Wallet() {
                             setQuote(null);
                             setQuoteError(null);
                             setQuoteConfirmed(false);
+                            setQuoteExpiresAt(null);
                             transferForm.setValue("bankCode", "");
                             transferForm.setValue("accountName", "");
                           }}>
@@ -1450,10 +1584,24 @@ export default function Wallet() {
 
                     {/* International payout quote (USD only) */}
                     {watchedCurrency === "USD" && (
-                      <div className="rounded-xl border bg-muted/30 p-3 space-y-2">
+                      <div className={cn("rounded-xl border bg-muted/30 p-3 space-y-2", quoteExpired && "opacity-80")}>
                         <div className="flex items-center justify-between">
                           <p className="text-sm font-medium">Payout quote</p>
-                          {quoteLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                          <div className="flex items-center gap-2">
+                            {quoteLoading && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
+                            {quote && !quoteExpired && quoteCountdown && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-primary/10 px-2 py-0.5 text-[11px] font-semibold text-primary">
+                                <Timer className="h-3 w-3" />
+                                Rate locks in {quoteCountdown}
+                              </span>
+                            )}
+                            {quoteExpired && (
+                              <span className="inline-flex items-center gap-1 rounded-full bg-destructive/10 px-2 py-0.5 text-[11px] font-semibold text-destructive">
+                                <ClockAlert className="h-3 w-3" />
+                                Quote expired
+                              </span>
+                            )}
+                          </div>
                         </div>
                         {quoteError && (
                           <p className="text-xs text-destructive">{quoteError}</p>
@@ -1480,16 +1628,37 @@ export default function Wallet() {
                                 ₦{Number(quote.total_debit).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                               </span>
                             </div>
-                            <label className="flex items-start gap-2 rounded-lg bg-background p-2 text-xs cursor-pointer">
-                              <Checkbox
-                                checked={quoteConfirmed}
-                                onCheckedChange={(v) => setQuoteConfirmed(v === true)}
-                                aria-label="Confirm exchange rate quote"
-                              />
-                              <span>
-                                I confirm the exchange rate and total debit above. Rates refresh if you change the amount.
-                              </span>
-                            </label>
+                            {quoteExpired ? (
+                              <div className="flex items-center justify-between gap-2 rounded-lg bg-background p-2">
+                                <span className="flex items-center gap-1.5 text-xs font-medium text-destructive">
+                                  <ClockAlert className="h-3.5 w-3.5 shrink-0" />
+                                  This quote has expired — refresh for the current rate.
+                                </span>
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={handleRefreshQuote}
+                                  disabled={quoteLoading}
+                                  className="shrink-0"
+                                >
+                                  {quoteLoading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                                  Refresh quote
+                                </Button>
+                              </div>
+                            ) : (
+                              <label className="flex items-start gap-2 rounded-lg bg-background p-2 text-xs cursor-pointer">
+                                <Checkbox
+                                  checked={quoteConfirmed}
+                                  onCheckedChange={(v) => setQuoteConfirmed(v === true)}
+                                  disabled={quoteExpired}
+                                  aria-label="Confirm exchange rate quote"
+                                />
+                                <span>
+                                  I confirm the exchange rate and total debit above. Rates refresh if you change the amount.
+                                </span>
+                              </label>
+                            )}
                           </>
                         )}
                       </div>
@@ -1552,7 +1721,7 @@ export default function Wallet() {
                       <Button
                         type="submit"
                         loading={otpLoading || transferLoading}
-                        disabled={!!lookupError || (watchedCurrency === "NGN" && !lookupName) || (watchedCurrency === "USD" && (!quote || !quoteConfirmed))}
+                        disabled={!!lookupError || (watchedCurrency === "NGN" && !lookupName) || (watchedCurrency === "USD" && (!quote || !quoteConfirmed || quoteExpired))}
                       >
                         {otpEnabled ? "Request OTP" : "Confirm Transfer"}
                       </Button>

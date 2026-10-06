@@ -1,4 +1,4 @@
-import React, { useRef, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import * as XLSX from "xlsx";
 import { api } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -139,6 +139,61 @@ function formatValue(value: any): string {
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
+/* ------------------------------------------------------------------ */
+/* Legacy bank codes                                                   */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Legacy 3-digit bank codes (old CBN sort-code style) still seen in older
+ * spreadsheets. Used to resolve the 6-digit NIP code from the live bank list
+ * (GET /transfers/banks) via a code-prefix match, with the bank name as a
+ * fallback. Unknown codes are left untouched.
+ */
+const LEGACY_BANK_MAP: Record<string, string[]> = {
+  "044": ["access"],
+  "058": ["guaranty", "gtbank"],
+  "011": ["unitedbankforafrica", "uba"],
+  "030": ["unity"],
+  "232": ["sterling"],
+  "089": ["fidelity"],
+  "012": ["firstbank"],
+  "215": ["unionbank"],
+  "035": ["wema"],
+  "050": ["ecobank"],
+  "082": ["keystone"],
+  "076": ["polaris"],
+  "101": ["providus"],
+  "221": ["stanbic"],
+  "070": ["fmb"],
+};
+
+function normalizeBankName(name: string): string {
+  return String(name || "").toLowerCase().replace(/[^a-z]/g, "");
+}
+
+/**
+ * Resolve a legacy 3-digit bank code to a bank entry from the live list.
+ * Priority: exact 6-digit code already known → unique code-prefix match →
+ * legacy-name fragment match. Returns null when nothing maps cleanly.
+ */
+function resolveLegacyBank(
+  code: string,
+  banks: { code: string; name: string }[]
+): { code: string; name: string } | null {
+  const trimmed = String(code || "").trim();
+  if (!/^\d{3}$/.test(trimmed)) return null;
+  const byPrefix = banks.filter((b) => String(b.code || "").startsWith(trimmed));
+  if (byPrefix.length === 1) return byPrefix[0];
+  const fragments = LEGACY_BANK_MAP[trimmed];
+  if (!fragments) return null;
+  return (
+    banks.find((b) => {
+      const n = normalizeBankName(b.name);
+      return fragments.some((f) => n.includes(f) || f.includes(n));
+    }) || null
+  );
+}
+
 function validateRow(row: ParsedEmployeeRow, seenEmails: Set<string>): string[] {
   const errors: string[] = [];
   if (!row.name) errors.push("Name is required");
@@ -169,7 +224,10 @@ function validateRow(row: ParsedEmployeeRow, seenEmails: Set<string>): string[] 
   return errors;
 }
 
-function parseWorkbook(file: File): Promise<ParsedEmployeeRow[]> {
+function parseWorkbook(
+  file: File,
+  banks: { code: string; name: string }[] = []
+): Promise<ParsedEmployeeRow[]> {
   return new Promise((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -209,6 +267,22 @@ function parseWorkbook(file: File): Promise<ParsedEmployeeRow[]> {
               beneficiaryCountry: formatValue(pickField(raw, "beneficiaryCountry")),
               errors: [],
             };
+            // Normalize legacy 3-digit bank codes to 6-digit NIP codes where
+            // the live bank list allows it, and prefill an empty Bank Name
+            // from the resolved bank. Unrecognized codes stay as-is.
+            const rawBankCode = String(parsed.bankCode || "").trim();
+            if (rawBankCode) {
+              const exact = banks.find((b) => String(b.code || "") === rawBankCode);
+              if (exact) {
+                if (!parsed.bankName) parsed.bankName = exact.name;
+              } else if (/^\d{3}$/.test(rawBankCode)) {
+                const mapped = resolveLegacyBank(rawBankCode, banks);
+                if (mapped) {
+                  parsed.bankCode = mapped.code;
+                  if (!parsed.bankName) parsed.bankName = mapped.name;
+                }
+              }
+            }
             return parsed;
           })
           .filter((r) =>
@@ -258,7 +332,33 @@ const TEMPLATE_HEADERS = [
   "Beneficiary Country",
 ];
 
-export function downloadEmployeeTemplate() {
+export async function downloadEmployeeTemplate(): Promise<void> {
+  try {
+    // Preferred path: the backend renders a real .xlsx with an "Employees"
+    // sheet, a "Banks" sheet, a Bank Name dropdown (data validation) and a
+    // VLOOKUP that auto-fills Bank Code from Bank Name.
+    const res = await api.get("/payroll/employees/template", { responseType: "blob" });
+    const blob = res.data instanceof Blob ? res.data : new Blob([res.data as any]);
+    if (blob.size === 0 || blob.type.includes("json")) {
+      throw new Error("Template endpoint returned no workbook");
+    }
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "payroll_employees_template.xlsx";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 4_000);
+  } catch {
+    // Graceful fallback — the button must never dead-end.
+    buildLocalEmployeeTemplate();
+  }
+}
+
+/** Client-side fallback template (same 16 headers) when the backend
+ * template endpoint is unavailable. */
+function buildLocalEmployeeTemplate() {
   const ngnExample = [
     "Ada Obi",
     "ada.obi@example.com",
@@ -316,6 +416,27 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
   const [summary, setSummary] = useState<ImportSummary | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [copiedRow, setCopiedRow] = useState<number | null>(null);
+  const [templateDownloading, setTemplateDownloading] = useState(false);
+  /** Live bank list — used to normalize legacy 3-digit bank codes on parse. */
+  const [banks, setBanks] = useState<{ code: string; name: string }[]>([]);
+
+  // Fetch the bank list once when the dialog opens so legacy 3-digit codes in
+  // uploaded spreadsheets can be mapped to their 6-digit NIP equivalents.
+  useEffect(() => {
+    if (!open) return;
+    let cancelled = false;
+    api
+      .get<{ success: boolean; data: { code: string; name: string }[] }>("/transfers/banks")
+      .then((res) => {
+        if (!cancelled && res.data?.success && Array.isArray(res.data.data)) {
+          setBanks(res.data.data);
+        }
+      })
+      .catch(() => undefined); // best-effort — rows keep their raw codes
+    return () => {
+      cancelled = true;
+    };
+  }, [open]);
 
   const validRows = parsedRows.filter((r) => r.errors.length === 0);
   const invalidCount = parsedRows.length - validRows.length;
@@ -346,7 +467,7 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
     setFile(selected);
     setIsParsing(true);
     try {
-      const rows = await parseWorkbook(selected);
+      const rows = await parseWorkbook(selected, banks);
       setParsedRows(rows);
       if (rows.length === 0) {
         setParseError("No data rows found in the file. Make sure the first sheet contains your employees.");
@@ -422,6 +543,15 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
     }
   };
 
+  const handleDownloadTemplate = async () => {
+    setTemplateDownloading(true);
+    try {
+      await downloadEmployeeTemplate();
+    } finally {
+      setTemplateDownloading(false);
+    }
+  };
+
   return (
     <Dialog open={open} onOpenChange={handleDialogChange}>
       <DialogContent className="w-[calc(100vw-2rem)] max-w-2xl max-h-[85vh] overflow-y-auto">
@@ -441,7 +571,9 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
             row per employee (Name, Email and Currency are required), then upload it below. Use
             <span className="font-medium"> NGN</span> rows for Nigerian bank fields (Bank Code,
             Account Number) and <span className="font-medium">USD</span> rows for international
-            fields (Bank Name, SWIFT, Routing Number, Beneficiary address). Existing employees
+            fields (Bank Name, SWIFT, Routing Number, Beneficiary address). The template's Bank
+            Name column has a dropdown of Nigerian banks (Banks sheet) and auto-fills the Bank
+            Code. Existing employees
             (matched by email) are updated instead of duplicated.
           </AlertDescription>
         </Alert>
@@ -569,8 +701,18 @@ export function ImportEmployeesDialog({ open, onOpenChange, onImported }: Import
           /* ---------------- Upload / preview view ---------------- */
           <div className="space-y-4">
             <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-              <Button variant="outline" size="sm" onClick={downloadEmployeeTemplate} className="gap-2">
-                <Download className="h-4 w-4" />
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleDownloadTemplate}
+                disabled={templateDownloading}
+                className="gap-2"
+              >
+                {templateDownloading ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Download className="h-4 w-4" />
+                )}
                 Download template
               </Button>
               <p className="text-xs text-muted-foreground">
