@@ -398,10 +398,17 @@ export default function MeetingDetail() {
  * Route adapter for /meetings/:meetingCode — the URL segment can be a meeting
  * UUID (detail page) or a join code (JoinMeeting flow).
  */
+import MobileMeetingInterstitial from "@/components/MobileMeetingInterstitial";
+
 export function MeetingDetailRoute() {
   const { meetingCode } = useParams<{ meetingCode: string }>();
-  if (meetingCode && UUID_RE.test(meetingCode)) {
-    return <MeetingDetail />;
-  }
-  return <JoinMeeting />;
+  const inner =
+    meetingCode && UUID_RE.test(meetingCode) ? <MeetingDetail /> : <JoinMeeting />;
+  // On phones the shared link opens the browser — show the app/web/download
+  // interstitial first (desktop goes straight to the web flow).
+  return (
+    <MobileMeetingInterstitial meetingCode={meetingCode || ""}>
+      {inner}
+    </MobileMeetingInterstitial>
+  );
 }

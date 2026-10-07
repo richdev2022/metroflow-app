@@ -26,6 +26,7 @@ import {
   Users,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { Textarea } from "@/components/ui/textarea";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { downloadCsvExport, csvFilename } from "@/lib/csv-download";
@@ -201,6 +202,49 @@ export default function TransferHistory() {
       toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to reverse transfer", variant: "destructive" });
     } finally {
       setReversingId(null);
+    }
+  };
+
+  // ---- Raise a dispute (parity with the mobile app) -----------------------
+  // Mirrors POST /disputes on mobile: category + message against a debit
+  // transaction reference. One OPEN dispute per reference is enforced by the
+  // backend (409 on duplicates).
+  const DISPUTE_CATEGORIES = [
+    { value: "failed_transfer", label: "Failed transfer" },
+    { value: "not_received", label: "Beneficiary did not receive" },
+    { value: "double_debit", label: "Double debit" },
+    { value: "unauthorized", label: "Unauthorized transaction" },
+    { value: "amount_mismatch", label: "Wrong amount" },
+    { value: "other", label: "Other" },
+  ];
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [disputeCategory, setDisputeCategory] = useState("failed_transfer");
+  const [disputeMessage, setDisputeMessage] = useState("");
+  const [disputeSubmitting, setDisputeSubmitting] = useState(false);
+  const [disputeFiledRefs, setDisputeFiledRefs] = useState<string[]>([]);
+
+  const submitDispute = async () => {
+    if (!selectedTransfer?.reference) return;
+    if (disputeMessage.trim().length < 10) {
+      toast({ title: "Error", description: "Please describe the issue in at least 10 characters.", variant: "destructive" });
+      return;
+    }
+    setDisputeSubmitting(true);
+    try {
+      await api.post("/disputes", {
+        reference: selectedTransfer.reference,
+        category: disputeCategory,
+        message: disputeMessage.trim(),
+      });
+      setDisputeFiledRefs((prev) => [...prev, selectedTransfer.reference!]);
+      setDisputeOpen(false);
+      setDisputeMessage("");
+      setDisputeCategory("failed_transfer");
+      toast({ title: "Dispute received", description: "Our team will review it and get back to you." });
+    } catch (error: any) {
+      toast({ title: "Error", description: error.response?.data?.error || error.response?.data?.message || "Failed to file the dispute", variant: "destructive" });
+    } finally {
+      setDisputeSubmitting(false);
     }
   };
 
@@ -676,7 +720,69 @@ export default function TransferHistory() {
                                     <p className="text-red-500">{selectedTransfer.failure_reason}</p>
                                 </div>
                             )}
+
+                            {(() => {
+                                const isCredit = selectedTransfer.direction === "credit" || (selectedTransfer.type === "transaction" && selectedTransfer.direction !== "debit");
+                                const t = (selectedTransfer.transaction_type || "").toLowerCase();
+                                const disputable = !isCredit && t !== "refund";
+                                if (!disputable || disputeFiledRefs.includes(selectedTransfer.reference || "")) return null;
+                                return (
+                                    <div className="border-t pt-4">
+                                        <Button
+                                            variant="outline"
+                                            className="w-full border-red-200 text-red-600 hover:bg-red-50 hover:text-red-700 dark:border-red-900 dark:hover:bg-red-950"
+                                            onClick={() => setDisputeOpen(true)}
+                                        >
+                                            Raise a dispute
+                                        </Button>
+                                    </div>
+                                );
+                            })()}
                         </div>
+
+                        {/* Raise-a-dispute dialog (nested) */}
+                        <Dialog open={disputeOpen} onOpenChange={setDisputeOpen}>
+                            <DialogContent className="max-w-md">
+                                <DialogHeader>
+                                    <DialogTitle>Raise a dispute</DialogTitle>
+                                    <DialogDescription>
+                                        Tell us what went wrong with {selectedTransfer.reference}. Our team will review and get back to you.
+                                    </DialogDescription>
+                                </DialogHeader>
+                                <div className="space-y-4">
+                                    <div className="space-y-1.5">
+                                        <label className="text-sm font-medium">Issue</label>
+                                        <Select value={disputeCategory} onValueChange={setDisputeCategory}>
+                                            <SelectTrigger>
+                                                <SelectValue placeholder="Select the issue" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                {DISPUTE_CATEGORIES.map((c) => (
+                                                    <SelectItem key={c.value} value={c.value}>{c.label}</SelectItem>
+                                                ))}
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                    <div className="space-y-1.5">
+                                        <label className="text-sm font-medium">Description</label>
+                                        <Textarea
+                                            rows={4}
+                                            placeholder="Describe what happened (minimum 10 characters)"
+                                            value={disputeMessage}
+                                            onChange={(e) => setDisputeMessage(e.target.value)}
+                                        />
+                                    </div>
+                                    <Button
+                                        className="w-full"
+                                        disabled={disputeSubmitting || disputeMessage.trim().length < 10}
+                                        onClick={submitDispute}
+                                    >
+                                        {disputeSubmitting && <Loader2 className="h-4 w-4 mr-2 animate-spin" />}
+                                        Submit dispute
+                                    </Button>
+                                </div>
+                            </DialogContent>
+                        </Dialog>
                     </>
                 )}
             </DialogContent>
