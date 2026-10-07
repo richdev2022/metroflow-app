@@ -60,7 +60,23 @@ export function useStoreLinks() {
 }
 
 export function DownloadAppButtons({ links, className }: { links: StoreLinks; className?: string }) {
-  if (!links.app_store_url && !links.play_store_url) return null;
+  const hasLinks = !!(links.app_store_url || links.play_store_url);
+  if (!hasLinks) {
+    // No store link configured yet — show Coming soon placeholders so the
+    // download option never just disappears.
+    return (
+      <div className={`flex flex-col gap-2 sm:flex-row ${className || ""}`}>
+        <span className="flex flex-1 items-center justify-center gap-2 rounded-xl border bg-white/10 px-5 py-3 text-sm font-semibold text-white/70">
+          <PlayCircle className="h-5 w-5" />
+          Google Play — coming soon
+        </span>
+        <span className="flex flex-1 items-center justify-center gap-2 rounded-xl border bg-white/10 px-5 py-3 text-sm font-semibold text-white/70">
+          <Apple className="h-5 w-5" />
+          App Store — coming soon
+        </span>
+      </div>
+    );
+  }
   return (
     <div className={`flex flex-col gap-2 sm:flex-row ${className || ""}`}>
       {links.play_store_url && (
