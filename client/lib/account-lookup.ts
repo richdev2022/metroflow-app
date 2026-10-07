@@ -3,10 +3,10 @@ import { api } from "@/lib/api-client";
 /**
  * Robustly extracts the resolved account name from an account-lookup response.
  *
- * The provider envelope differs per active transfer provider:
- *  - Flutterwave (nested): { success, data: { status, message, data: { account_number, account_name } } }
- *  - Squad:                { success, data: { responseBody: { accountName, ... } } }
- *  - Flat shapes:          { success, data: { account_name | accountName } }
+ * The provider envelope differs per active transfer processor:
+ *  - Nested envelope:  { success, data: { status, message, data: { account_number, account_name } } }
+ *  - Response-body:    { success, data: { responseBody: { accountName, ... } } }
+ *  - Flat shapes:      { success, data: { account_name | accountName } }
  *
  * Always defensive: returns "" when nothing resolvable is present.
  */
