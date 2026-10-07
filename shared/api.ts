@@ -646,6 +646,16 @@ export interface TransferBeneficiary {
   isIntl?: boolean;
   useCount?: number;
   lastUsedAt?: string;
+  /**
+   * Verification state from GET /transfers/beneficiaries:
+   *  - "resolved": provider confirmed the real account name
+   *  - "format":   corridor validation passed (routing checksum / sort code / SWIFT)
+   *  - "unverified": never checked (legacy rows, or verification not possible)
+   */
+  verificationStatus?: "resolved" | "format" | "unverified" | string;
+  verifiedAt?: string | null;
+  /** Legacy POST /beneficiaries response key ("verification") for back-compat. */
+  verification?: string | null;
 }
 
 export interface LoginInput {

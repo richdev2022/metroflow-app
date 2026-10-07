@@ -15,8 +15,8 @@ const MAX_VERIFY_ATTEMPTS = 4;
 const VERIFY_RETRY_DELAY_MS = 3000;
 const SUCCESS_REDIRECT_DELAY_MS = 2500;
 
-/** Extract the transaction reference from whichever query param the provider
- *  redirected with. Flutterwave appends `tx_ref`, Squad uses
+/** Extract the transaction reference from whichever query param the payment
+ *  processor redirected with: some append `tx_ref`, some use
  *  `transaction_ref`/`ref`, our own backend redirects use `reference`. */
 function extractReference(params: URLSearchParams): string | null {
   return (

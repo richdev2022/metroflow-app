@@ -123,11 +123,11 @@ const transferSchema = z.object({
   }
 });
 
-// Supported international payout currencies (Flutterwave rails)
+// Supported international payout currencies
 const INTL_CURRENCIES = ["USD", "GBP", "EUR"] as const;
 const isIntlCurrency = (c: string | undefined) => !!c && (INTL_CURRENCIES as readonly string[]).includes(c);
 
-// Common Flutterwave USD/GBP payout corridors (ISO-3166-1 alpha-2)
+// Common international USD/GBP payout corridors (ISO-3166-1 alpha-2)
 const INTL_PAYOUT_COUNTRIES: { code: string; name: string }[] = [
   { code: "US", name: "United States" },
   { code: "GB", name: "United Kingdom" },
@@ -296,7 +296,7 @@ export default function Wallet() {
     window.setTimeout(() => { addressPickLockRef.current = false; }, 500);
   };
 
-  // Flutterwave checkout outcome: the backend verify page redirects here with
+  // Checkout outcome: the backend verify page redirects here with
   // ?status=success|cancelled|pending_settlement&reference=...&token=...
   useEffect(() => {
     const status = searchParams.get("status");
@@ -375,6 +375,14 @@ export default function Wallet() {
   const watchedAccountNumber = transferForm.watch("accountNumber");
   const watchedBankCode = transferForm.watch("bankCode");
 
+  /**
+   * Exact bank+account pair just prefilled from a saved beneficiary (NGN).
+   * While it matches, the account-lookup effect skips the provider re-resolve
+   * so the prefilled (already verified) name can't be wiped by a transient
+   * lookup failure. Any manual edit to bank or account invalidates the key.
+   */
+  const beneficiaryPrefillRef = useRef<string | null>(null);
+
   // Keep the payout rail consistent with the selected currency: USD exposes
   // the ACH/SWIFT picker; GBP (sort codes) and EUR (SWIFT/IBAN) always ride
   // the SWIFT rail — the field is hidden for them and auto-set here.
@@ -396,6 +404,13 @@ export default function Wallet() {
       // International beneficiaries are entered manually (no local lookup).
       if (isIntlCurrency(watchedCurrency)) return;
       if (watchedAccountNumber?.length === 10 && watchedBankCode) {
+          // Skip the re-resolve for a just-prefilled saved beneficiary.
+          if (
+            beneficiaryPrefillRef.current === `${watchedBankCode}:${watchedAccountNumber}` &&
+            transferForm.getValues("accountName")
+          ) {
+            return;
+          }
           handleAccountLookup(watchedAccountNumber, watchedBankCode);
       } else {
           setLookupName(null);
@@ -534,11 +549,11 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
     return () => { cancelled = true; };
   }, [watchedCurrency]);
 
-  /** One-tap fill from a saved beneficiary. */
+  /** One-tap fill from a saved beneficiary — prefills EVERY payout field. */
   const applyBeneficiary = useCallback((b: TransferBeneficiary) => {
     transferForm.setValue("accountNumber", b.accountNumber || "");
     transferForm.setValue("accountName", b.accountName || "");
-    transferForm.setValue("bankName", (b as any).bankName || "");
+    transferForm.setValue("bankName", b.bankName || "");
     transferForm.setValue("routingNumber", b.routingNumber || "");
     transferForm.setValue("swiftCode", b.swiftCode || "");
     transferForm.setValue("accountType", b.accountType || "");
@@ -546,11 +561,34 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
     transferForm.setValue("recipientCity", b.city || "");
     transferForm.setValue("recipientState", b.state || "");
     transferForm.setValue("recipientPostalCode", b.postalCode || "");
-    if (b.recipientCountry) transferForm.setValue("recipientCountry", b.recipientCountry);
-    if (!isIntlCurrency(watchedCurrency)) {
+    if (isIntlCurrency(watchedCurrency)) {
+      // Country: saved value, else the corridor default (mirrors the
+      // beneficiary dialog defaults).
+      transferForm.setValue(
+        "recipientCountry",
+        b.recipientCountry || (watchedCurrency === "GBP" ? "GB" : watchedCurrency === "EUR" ? "DE" : "US"),
+      );
+      if (watchedCurrency === "USD") {
+        // USD rail auto-pick: a saved SWIFT code → SWIFT wire; else a 9-digit
+        // ABA routing number → ACH (the ACH form hides the SWIFT field, so
+        // leaving the rail wrong would silently drop the routing/WIRE data).
+        const rail = String(b.swiftCode || "").trim()
+          ? "SWIFT"
+          : /^\d{9}$/.test(String(b.routingNumber || "").replace(/[\s-]/g, ""))
+            ? "ACH"
+            : transferForm.getValues("bankCode") || "ACH";
+        transferForm.setValue("bankCode", rail);
+      }
+      // GBP/EUR keep the SWIFT rail the currency effect auto-sets.
+      beneficiaryPrefillRef.current = null;
+    } else {
       transferForm.setValue("bankCode", b.bankCode || "");
       setLookupName(b.accountName || null);
       setLookupError(null);
+      // Mark this exact bank+account as beneficiary-verified so the NGN
+      // account-lookup effect doesn't immediately re-resolve (and potentially
+      // wipe) the prefilled name on a transient lookup failure.
+      beneficiaryPrefillRef.current = `${b.bankCode || ""}:${b.accountNumber || ""}`;
     }
   }, [transferForm, watchedCurrency]);
 

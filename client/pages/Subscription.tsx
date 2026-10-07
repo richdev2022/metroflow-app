@@ -609,7 +609,7 @@ export default function Subscription() {
     try {
       setProcessingId(planId);
 
-      // Initiate payment via Squad
+      // Initiate payment through the checkout session
       const response = await api.post("/subscription/initiate-payment", 
         { 
           planId,
@@ -622,7 +622,7 @@ export default function Subscription() {
           title: "Redirecting",
           description: "Redirecting to payment gateway..."
         });
-        // Redirect to Squad checkout
+        // Redirect to the hosted checkout page
         window.location.href = response.data.checkout_url;
       } else {
         throw new Error("Invalid response from server");
