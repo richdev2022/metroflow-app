@@ -789,6 +789,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               icon={Wallet}
               items={[
                 { path: "/wallet", label: "Wallet", icon: <Wallet />, active: isActive("/wallet"), dataTour: "nav-wallet", kycChecking: kycCheckingPath === "/wallet", onClick: (e) => handleKycProtectedNavigation(e, "/wallet") },
+                { path: "/beneficiaries", label: "Beneficiaries", icon: <Users />, active: isActive("/beneficiaries"), dataTour: "nav-beneficiaries", kycChecking: kycCheckingPath === "/beneficiaries", onClick: (e) => handleKycProtectedNavigation(e, "/beneficiaries") },
                 { path: "/payroll", label: "Payroll", icon: <Banknote />, active: isActive("/payroll"), dataTour: "nav-payroll", kycChecking: kycCheckingPath === "/payroll", onClick: (e) => handleKycProtectedNavigation(e, "/payroll") },
                 { path: "/transfer-history", label: "Transfer History", icon: <History />, active: isActive("/transfer-history"), dataTour: "nav-transfer-history" },
               ]}

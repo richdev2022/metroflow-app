@@ -336,7 +336,7 @@ export default function EntityTransactionsDrawer({
                         )}
                         <p className="mt-0.5 text-xs text-muted-foreground">
                           {fmtDate(p.created_at)}
-                          {p.payment_provider ? ` · ${p.payment_provider}` : ""}
+                          {/* payment provider intentionally hidden from customers */}
                         </p>
                         {p.transaction_reference && (
                           <p className="mt-1 truncate font-mono text-[11px] text-muted-foreground">

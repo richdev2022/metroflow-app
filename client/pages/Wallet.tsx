@@ -2,7 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
-import { WalletInfo, FundWalletInput, CreateVirtualAccountInput, OtpEnabledResponse, TransferQuote } from "@shared/api";
+import { WalletInfo, FundWalletInput, CreateVirtualAccountInput, OtpEnabledResponse, TransferQuote, TransferBeneficiary } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -50,16 +50,17 @@ const fundWalletSchema = z.object({
 
 const transferSchema = z.object({
   wallet_id: z.string().min(1, "Source wallet is required"),
-  currency: z.enum(["NGN", "USD"]),
+  currency: z.enum(["NGN", "USD", "GBP", "EUR"]),
   bankCode: z.string().min(1, "Bank is required"),
   accountNumber: z.string().min(1, "Account number is required"),
   accountName: z.string().min(3, "Account name is required"),
   amount: z.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, "Amount must be greater than 0"),
   remark: z.string().optional(),
-  // International payout beneficiary details (Flutterwave rails)
+  // International payout beneficiary details (all supported rails)
   bankName: z.string().optional(),
   swiftCode: z.string().optional(),
   routingNumber: z.string().optional(),
+  accountType: z.string().optional(),
   recipientAddress: z.string().optional(),
   recipientCity: z.string().optional(),
   recipientState: z.string().optional(),
@@ -78,7 +79,6 @@ const transferSchema = z.object({
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
-      ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
     ];
     for (const [path, message] of required) {
@@ -86,8 +86,46 @@ const transferSchema = z.object({
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
       }
     }
+    if (data.routingNumber && !/^\d{9}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "US routing number must be 9 digits" });
+    }
+  }
+  if (data.currency === "GBP") {
+    const required: Array<[keyof typeof data, string]> = [
+      ["recipientCountry", "Recipient country is required for international payouts"],
+      ["bankName", "Bank name is required for international payouts"],
+      ["routingNumber", "UK sort code (6 digits) is required for GBP payouts"],
+    ];
+    for (const [path, message] of required) {
+      if (!String(data[path] || "").trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+      }
+    }
+    if (data.routingNumber && !/^\d{6}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463)" });
+    }
+  }
+  if (data.currency === "EUR") {
+    const required: Array<[keyof typeof data, string]> = [
+      ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientCity", "City is required for international payouts"],
+      ["bankName", "Bank name is required for international payouts"],
+      ["swiftCode", "SWIFT/BIC code is required for EUR payouts"],
+    ];
+    for (const [path, message] of required) {
+      if (!String(data[path] || "").trim()) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
+      }
+    }
+    if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
   }
 });
+
+// Supported international payout currencies (Flutterwave rails)
+const INTL_CURRENCIES = ["USD", "GBP", "EUR"] as const;
+const isIntlCurrency = (c: string | undefined) => !!c && (INTL_CURRENCIES as readonly string[]).includes(c);
 
 // Common Flutterwave USD/GBP payout corridors (ISO-3166-1 alpha-2)
 const INTL_PAYOUT_COUNTRIES: { code: string; name: string }[] = [
@@ -144,6 +182,12 @@ export default function Wallet() {
   const [quoteLoading, setQuoteLoading] = useState(false);
   const [quoteError, setQuoteError] = useState<string | null>(null);
   const [quoteConfirmed, setQuoteConfirmed] = useState(false);
+  // Admin-configured international payout limits (min/max per currency) —
+  // surfaced as a hint under the amount field BEFORE any quote exists.
+  const [payoutLimits, setPayoutLimits] = useState<Record<string, { min: number; max: number }>>({});
+  // Recent beneficiaries for the SELECTED currency (fetched when the currency
+  // tab changes) — one-tap fill for both local NGN and global USD/GBP/EUR.
+  const [beneficiaries, setBeneficiaries] = useState<TransferBeneficiary[]>([]);
   // Quote lock window: epoch-ms deadline from the backend's expires_at /
   // expires_in_seconds (null when the backend didn't stamp an expiry).
   const [quoteExpiresAt, setQuoteExpiresAt] = useState<number | null>(null);
@@ -183,6 +227,7 @@ export default function Wallet() {
       bankName: "",
       swiftCode: "",
       routingNumber: "",
+      accountType: "",
       recipientAddress: "",
       recipientCity: "",
       recipientState: "",
@@ -205,7 +250,7 @@ export default function Wallet() {
   const watchedRecipientCountry = transferForm.watch("recipientCountry");
 
   useEffect(() => {
-    if (watchedCurrency !== "USD") { setAddressSuggestOpen(false); return; }
+    if (!isIntlCurrency(watchedCurrency)) { setAddressSuggestOpen(false); return; }
     const q = (watchedRecipientAddress || "").trim();
     const cc = (watchedRecipientCountry || "").toLowerCase();
     // Skip lookups right after a suggestion was picked (value just changed).
@@ -329,11 +374,27 @@ export default function Wallet() {
   // Watch for account number and bank code changes
   const watchedAccountNumber = transferForm.watch("accountNumber");
   const watchedBankCode = transferForm.watch("bankCode");
+
+  // Keep the payout rail consistent with the selected currency: USD exposes
+  // the ACH/SWIFT picker; GBP (sort codes) and EUR (SWIFT/IBAN) always ride
+  // the SWIFT rail — the field is hidden for them and auto-set here.
+  useEffect(() => {
+    if (watchedCurrency === "GBP" || watchedCurrency === "EUR") {
+      if (transferForm.getValues("bankCode") !== "SWIFT") {
+        transferForm.setValue("bankCode", "SWIFT");
+      }
+    } else if (watchedCurrency === "USD") {
+      const cur = transferForm.getValues("bankCode");
+      if (cur !== "ACH" && cur !== "SWIFT") {
+        transferForm.setValue("bankCode", "ACH");
+      }
+    }
+  }, [watchedCurrency, transferForm]);
   
   useEffect(() => {
       // NGN-only: nigerian banks support provider account-name lookup.
-      // USD (international) beneficiaries are entered manually.
-      if (watchedCurrency === "USD") return;
+      // International beneficiaries are entered manually (no local lookup).
+      if (isIntlCurrency(watchedCurrency)) return;
       if (watchedAccountNumber?.length === 10 && watchedBankCode) {
           handleAccountLookup(watchedAccountNumber, watchedBankCode);
       } else {
@@ -345,13 +406,15 @@ export default function Wallet() {
       }
   }, [watchedAccountNumber, watchedBankCode, watchedCurrency]);
 
-  // International payout quote (USD transfers): live FX rate + markup + fees.
-  const loadQuote = useCallback(async (amountNum: number) => {
+// International payout quote (USD/GBP/EUR transfers): live FX rate with the
+// platform margin baked in, plus fees. Customers see Conversion rate / Fee /
+// Total only.
+const loadQuote = useCallback(async (amountNum: number, currency: string) => {
     try {
       setQuoteLoading(true);
       setQuoteError(null);
       const res = await api.get(
-        `/transfers/quote?amount=${amountNum}&source_currency=NGN&destination_currency=USD`
+        `/transfers/quote?amount=${amountNum}&source_currency=NGN&destination_currency=${currency}`
       );
       if (res.data?.success && res.data?.data) {
         const freshQuote: TransferQuote = res.data.data;
@@ -383,7 +446,7 @@ export default function Wallet() {
   }, []);
 
   useEffect(() => {
-    if (watchedCurrency !== "USD") {
+    if (!isIntlCurrency(watchedCurrency)) {
       setQuote(null);
       setQuoteError(null);
       setQuoteConfirmed(false);
@@ -399,7 +462,7 @@ export default function Wallet() {
       return;
     }
     const timer = setTimeout(() => {
-      loadQuote(amountNum);
+      loadQuote(amountNum, watchedCurrency);
     }, 500);
     return () => clearTimeout(timer);
   }, [watchedCurrency, watchedAmount, loadQuote]);
@@ -440,8 +503,56 @@ export default function Wallet() {
   const handleRefreshQuote = useCallback(() => {
     const amountNum = Number(watchedAmount);
     if (!amountNum || isNaN(amountNum) || amountNum <= 0) return;
-    loadQuote(amountNum);
-  }, [watchedAmount, loadQuote]);
+    loadQuote(amountNum, watchedCurrency);
+  }, [watchedAmount, watchedCurrency, loadQuote]);
+
+  // ---- Admin-configured payout limits (hint under the amount field) +
+  // ---- recent beneficiaries for the selected currency.
+  useEffect(() => {
+    let cancelled = false;
+    api.get("/transfers/payout-limits")
+      .then((res) => {
+        if (!cancelled && res.data?.success && res.data?.data?.limits) {
+          setPayoutLimits(res.data.data.limits);
+        }
+      })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get(`/transfers/beneficiaries?currency=${watchedCurrency}&limit=20`)
+      .then((res) => {
+        if (!cancelled && res.data?.success && Array.isArray(res.data?.data)) {
+          setBeneficiaries(res.data.data);
+        } else if (!cancelled) {
+          setBeneficiaries([]);
+        }
+      })
+      .catch(() => { if (!cancelled) setBeneficiaries([]); });
+    return () => { cancelled = true; };
+  }, [watchedCurrency]);
+
+  /** One-tap fill from a saved beneficiary. */
+  const applyBeneficiary = useCallback((b: TransferBeneficiary) => {
+    transferForm.setValue("accountNumber", b.accountNumber || "");
+    transferForm.setValue("accountName", b.accountName || "");
+    transferForm.setValue("bankName", (b as any).bankName || "");
+    transferForm.setValue("routingNumber", b.routingNumber || "");
+    transferForm.setValue("swiftCode", b.swiftCode || "");
+    transferForm.setValue("accountType", b.accountType || "");
+    transferForm.setValue("recipientAddress", b.address || "");
+    transferForm.setValue("recipientCity", b.city || "");
+    transferForm.setValue("recipientState", b.state || "");
+    transferForm.setValue("recipientPostalCode", b.postalCode || "");
+    if (b.recipientCountry) transferForm.setValue("recipientCountry", b.recipientCountry);
+    if (!isIntlCurrency(watchedCurrency)) {
+      transferForm.setValue("bankCode", b.bankCode || "");
+      setLookupName(b.accountName || null);
+      setLookupError(null);
+    }
+  }, [transferForm, watchedCurrency]);
 
   const onInitiateTransfer = async (values: z.infer<typeof transferSchema>) => {
      if (!pin || pin.length !== 4) {
@@ -501,7 +612,7 @@ export default function Wallet() {
           return;
       }
       const values = transferForm.getValues();
-      if (values.currency === "USD" && isQuoteExpiredNow()) {
+      if (isIntlCurrency(values.currency) && isQuoteExpiredNow()) {
           toast({
               title: "Quote expired",
               description: "Your exchange-rate quote has expired. Refresh the quote and confirm the new rate before sending.",
@@ -509,7 +620,7 @@ export default function Wallet() {
           });
           return;
       }
-      if (values.currency === "USD" && (!quote || !quoteConfirmed)) {
+      if (isIntlCurrency(values.currency) && (!quote || !quoteConfirmed)) {
           toast({
               title: "Quote confirmation required",
               description: "Please review and confirm the exchange rate quote before sending.",
@@ -531,11 +642,11 @@ export default function Wallet() {
               pin: pin,
               wallet_id: values.wallet_id
           };
-          if (values.currency === "USD" && quote) {
+          if (isIntlCurrency(values.currency) && quote) {
               payload.debitAmount = quote.total_debit;
               payload.debitCurrency = "NGN";
           }
-          if (values.currency === "USD") {
+          if (isIntlCurrency(values.currency)) {
               payload.recipientAddress = values.recipientAddress?.trim() || undefined;
               payload.recipientCity = values.recipientCity?.trim() || undefined;
               payload.recipientState = values.recipientState?.trim() || undefined;
@@ -544,6 +655,7 @@ export default function Wallet() {
               payload.bankName = values.bankName?.trim() || undefined;
               payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
               payload.routingNumber = values.routingNumber?.trim() || undefined;
+              payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
           }
           if (otpEnabled) {
               payload.otp = otp;
@@ -590,7 +702,7 @@ export default function Wallet() {
       return;
     }
     const values = transferForm.getValues();
-    if (values.currency === "USD" && isQuoteExpiredNow()) {
+    if (isIntlCurrency(values.currency) && isQuoteExpiredNow()) {
       toast({
           title: "Quote expired",
           description: "Your exchange-rate quote has expired. Refresh the quote and confirm the new rate before sending.",
@@ -598,7 +710,7 @@ export default function Wallet() {
       });
       return;
     }
-    if (values.currency === "USD" && (!quote || !quoteConfirmed)) {
+    if (isIntlCurrency(values.currency) && (!quote || !quoteConfirmed)) {
       toast({
           title: "Quote confirmation required",
           description: "Please review and confirm the exchange rate quote before sending.",
@@ -620,7 +732,7 @@ export default function Wallet() {
           pin: pin,
           wallet_id: values.wallet_id
       };
-      if (values.currency === "USD" && quote) {
+      if (isIntlCurrency(values.currency) && quote) {
           payload.debitAmount = quote.total_debit;
           payload.debitCurrency = "NGN";
       }
@@ -633,6 +745,7 @@ export default function Wallet() {
           payload.bankName = values.bankName?.trim() || undefined;
           payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
           payload.routingNumber = values.routingNumber?.trim() || undefined;
+          payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
       }
 
       const response = await api.post("/transfers/single", payload);
@@ -1276,12 +1389,36 @@ export default function Wallet() {
                             <SelectContent>
                               <SelectItem value="NGN">NGN — Nigeria (local bank)</SelectItem>
                               <SelectItem value="USD">USD — International payout</SelectItem>
+                              <SelectItem value="GBP">GBP — United Kingdom</SelectItem>
+                              <SelectItem value="EUR">EUR — Europe (SEPA)</SelectItem>
                             </SelectContent>
                           </Select>
                           <FormMessage />
                         </FormItem>
                       )}
                     />
+
+                    {/* Recent beneficiaries for the selected currency — one-tap fill. */}
+                    {beneficiaries.length > 0 && (
+                      <div className="space-y-1.5">
+                        <p className="text-xs font-medium text-muted-foreground">Recent beneficiaries</p>
+                        <div className="flex flex-wrap gap-1.5">
+                          {beneficiaries.slice(0, 8).map((b) => (
+                            <button
+                              key={b.id}
+                              type="button"
+                              onClick={() => applyBeneficiary(b)}
+                              className="inline-flex max-w-full items-center gap-1 rounded-full border bg-background px-2.5 py-1 text-xs hover:bg-accent hover:text-accent-foreground transition-colors"
+                              title={`${b.accountName} · ${b.accountNumber}${b.bankName ? ` · ${b.bankName}` : ""}`}
+                            >
+                              <span className="font-medium truncate max-w-[180px]">{b.accountName || b.accountNumber}</span>
+                              <span className="text-muted-foreground truncate max-w-[110px]">{b.accountNumber}</span>
+                            </button>
+                          ))}
+                        </div>
+                        <a href="/beneficiaries" className="text-xs text-primary hover:underline">Manage all beneficiaries →</a>
+                      </div>
+                    )}
 
                     {watchedCurrency === "NGN" ? (
                     <FormField
@@ -1336,6 +1473,9 @@ export default function Wallet() {
                     />
                     ) : (
                       <>
+                      {/* Rail only applies to USD — GBP uses sort codes, EUR uses
+                          SWIFT/IBAN. The value is auto-set for GBP/EUR. */}
+                      {watchedCurrency === "USD" && (
                       <FormField
                         control={transferForm.control}
                         name="bankCode"
@@ -1357,6 +1497,7 @@ export default function Wallet() {
                           </FormItem>
                         )}
                       />
+                      )}
                       <FormField
                         control={transferForm.control}
                         name="bankName"
@@ -1370,7 +1511,37 @@ export default function Wallet() {
                           </FormItem>
                         )}
                       />
-                      {watchedBankCode === "SWIFT" && (
+                      {watchedCurrency === "GBP" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="routingNumber"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Sort code</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. 308463" maxLength={8} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "EUR" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="swiftCode"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>SWIFT / BIC code</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. BECFDE7HKKX" maxLength={11} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && watchedBankCode === "SWIFT" && (
                         <FormField
                           control={transferForm.control}
                           name="swiftCode"
@@ -1385,7 +1556,7 @@ export default function Wallet() {
                           )}
                         />
                       )}
-                      {watchedBankCode === "ACH" && (
+                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
                         <FormField
                           control={transferForm.control}
                           name="routingNumber"
@@ -1400,6 +1571,52 @@ export default function Wallet() {
                           )}
                         />
                       )}
+                      {watchedCurrency === "GBP" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="accountType"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Account type</FormLabel>
+                              <Select value={field.value || "personal"} onValueChange={(v) => field.onChange(v)}>
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select account type" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="personal">Personal</SelectItem>
+                                  <SelectItem value="corporate">Corporate</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="accountType"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Account type</FormLabel>
+                              <Select value={field.value || "checking"} onValueChange={(v) => field.onChange(v)}>
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select account type" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  <SelectItem value="checking">Checking</SelectItem>
+                                  <SelectItem value="savings">Savings</SelectItem>
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
                       </>
                     )}
 
@@ -1408,12 +1625,12 @@ export default function Wallet() {
                       name="accountNumber"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>{watchedCurrency === "USD" ? "Account Number / IBAN" : "Account Number"}</FormLabel>
+                          <FormLabel>{isIntlCurrency(watchedCurrency) ? "Account Number / IBAN" : "Account Number"}</FormLabel>
                           <FormControl>
                             <Input
-                              placeholder={watchedCurrency === "USD" ? "International account number" : "0123456789"}
+                              placeholder={isIntlCurrency(watchedCurrency) ? "International account number or IBAN" : "0123456789"}
                               {...field}
-                              maxLength={watchedCurrency === "USD" ? undefined : 10}
+                              maxLength={isIntlCurrency(watchedCurrency) ? undefined : 10}
                             />
                           </FormControl>
                           <FormMessage />
@@ -1437,10 +1654,10 @@ export default function Wallet() {
                       name="accountName"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>{watchedCurrency === "USD" ? "Beneficiary Name" : "Account Name"}</FormLabel>
+                          <FormLabel>{isIntlCurrency(watchedCurrency) ? "Beneficiary Name" : "Account Name"}</FormLabel>
                           <FormControl>
                             <Input
-                                placeholder={watchedCurrency === "USD" ? "Enter beneficiary name" : "Verified account name will appear here"}
+                                placeholder={isIntlCurrency(watchedCurrency) ? "Enter beneficiary name" : "Verified account name will appear here"}
                                 {...field}
                                 readOnly={watchedCurrency === "NGN"}
                                 className={watchedCurrency === "NGN" ? "bg-muted" : ""}
@@ -1451,12 +1668,12 @@ export default function Wallet() {
                       )}
                     />
 
-                    {watchedCurrency === "USD" && (
+                    {isIntlCurrency(watchedCurrency) && (
                       <div className="rounded-xl border p-3 space-y-3 bg-muted/20">
                         <p className="text-sm font-medium">
                           Recipient address <span className="text-destructive">*</span>
                           <span className="ml-2 text-xs font-normal text-muted-foreground">
-                            used by Flutterwave for international payouts
+                            required for secure international payouts
                           </span>
                         </p>
 
@@ -1573,17 +1790,24 @@ export default function Wallet() {
                       name="amount"
                       render={({ field }) => (
                         <FormItem>
-                          <FormLabel>Amount ({watchedCurrency === "USD" ? "USD — amount recipient receives" : "NGN"})</FormLabel>
+                          <FormLabel>Amount ({isIntlCurrency(watchedCurrency) ? `${watchedCurrency} — amount recipient receives` : "NGN"})</FormLabel>
                           <FormControl>
                             <Input type="number" placeholder="100" {...field} />
                           </FormControl>
+                          {isIntlCurrency(watchedCurrency) && payoutLimits[watchedCurrency] && (
+                            <p className="text-xs text-muted-foreground">
+                              Minimum {watchedCurrency} {payoutLimits[watchedCurrency].min.toLocaleString()} · Maximum {watchedCurrency} {payoutLimits[watchedCurrency].max.toLocaleString()} per transfer
+                            </p>
+                          )}
                           <FormMessage />
                         </FormItem>
                       )}
                     />
 
-                    {/* International payout quote (USD only) */}
-                    {watchedCurrency === "USD" && (
+                    {/* International payout quote (USD/GBP/EUR): Conversion rate,
+                        Fee and Total only — the platform margin is baked into
+                        the conversion rate and never shown. */}
+                    {isIntlCurrency(watchedCurrency) && (
                       <div className={cn("rounded-xl border bg-muted/30 p-3 space-y-2", quoteExpired && "opacity-80")}>
                         <div className="flex items-center justify-between">
                           <p className="text-sm font-medium">Payout quote</p>
@@ -1609,21 +1833,15 @@ export default function Wallet() {
                         {quote && (
                           <>
                             <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-sm">
-                              <span className="text-muted-foreground">Live rate</span>
+                              <span className="text-muted-foreground">Conversion rate</span>
                               <span className="text-right font-medium">
-                                1 USD = ₦{Number(quote.live_rate).toLocaleString(undefined, { maximumFractionDigits: 2 })}
-                              </span>
-                              <span className="text-muted-foreground">Admin markup</span>
-                              <span className="text-right font-medium">{quote.markup_percent}%</span>
-                              <span className="text-muted-foreground">Your rate</span>
-                              <span className="text-right font-medium">
-                                1 USD = ₦{Number(quote.marked_up_rate).toLocaleString(undefined, { maximumFractionDigits: 4 })}
+                                1 {quote.destination_currency} = ₦{Number(quote.conversion_rate ?? quote.marked_up_rate ?? quote.live_rate).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                               </span>
                               <span className="text-muted-foreground">Fee</span>
                               <span className="text-right font-medium">
                                 ₦{Number(quote.fee).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                               </span>
-                              <span className="font-medium">Total debit (NGN)</span>
+                              <span className="font-medium">Total amount</span>
                               <span className="text-right font-bold text-primary">
                                 ₦{Number(quote.total_debit).toLocaleString(undefined, { maximumFractionDigits: 2 })}
                               </span>
@@ -1721,7 +1939,7 @@ export default function Wallet() {
                       <Button
                         type="submit"
                         loading={otpLoading || transferLoading}
-                        disabled={!!lookupError || (watchedCurrency === "NGN" && !lookupName) || (watchedCurrency === "USD" && (!quote || !quoteConfirmed || quoteExpired))}
+                        disabled={!!lookupError || (watchedCurrency === "NGN" && !lookupName) || (isIntlCurrency(watchedCurrency) && (!quote || !quoteConfirmed || quoteExpired))}
                       >
                         {otpEnabled ? "Request OTP" : "Confirm Transfer"}
                       </Button>
