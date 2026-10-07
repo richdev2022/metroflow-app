@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
+import { unwrapApiData } from "@/lib/api-response";
 import { WalletInfo, FundWalletInput, CreateVirtualAccountInput, OtpEnabledResponse, TransferQuote, TransferBeneficiary } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -261,11 +262,13 @@ export default function Wallet() {
     const timer = window.setTimeout(async () => {
       setAddressSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=${cc}&q=${encodeURIComponent(q)}`;
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
-        const data = res.ok ? await res.json() : [];
-        setAddressSuggestions(Array.isArray(data) ? data : []);
-        setAddressSuggestOpen(Array.isArray(data) && data.length > 0);
+        // Backend /geo/address-suggest proxy: direct browser fetches to
+        // Nominatim carry the browser UA and get 503 (empty results) — the
+        // proxy sends the identified app UA instead.
+        const res = await api.get("/geo/address-suggest", { params: { q, cc } });
+        const rows = unwrapApiData<any[]>(res.data, "") || [];
+        setAddressSuggestions(Array.isArray(rows) ? rows : []);
+        setAddressSuggestOpen(Array.isArray(rows) && rows.length > 0);
       } catch {
         setAddressSuggestions([]);
         setAddressSuggestOpen(false);
