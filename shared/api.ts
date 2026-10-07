@@ -601,17 +601,51 @@ export interface TransferQuote {
   source_currency: string;
   destination_currency: string;
   amount: number;
+  /** Customer-facing conversion rate — COLLOQUIAL (1 USD = ₦X) and already
+   *  includes the platform margin (markup + hidden spread). */
+  conversion_rate?: number;
+  /** Legacy fields (older backends): live_rate/marked_up_rate are now
+   *  colloquial too; markup_percent is no longer sent (never shown). */
   live_rate: number;
-  markup_percent: number;
+  markup_percent?: number | null;
   marked_up_rate: number;
   receiving_amount: number;
   fee: number;
   total_debit: number;
   provider?: string;
+  /** Admin-configurable payout limits for the destination currency. */
+  limits?: { min: number; max: number };
   /** Quote lock window — the rate/fee snapshot is only valid until this
    *  ISO timestamp (backend stamps it on every GET /transfers/quote). */
   expires_at?: string;
   expires_in_seconds?: number;
+}
+
+export interface PayoutLimitsResponse {
+  limits: Record<string, { min: number; max: number }>;
+  fee_percent?: number;
+  fee_flat?: number;
+}
+
+export interface TransferBeneficiary {
+  id: string;
+  bankCode: string;
+  bankName?: string | null;
+  accountNumber: string;
+  accountName: string;
+  currency: string;
+  recipientCountry?: string | null;
+  routingNumber?: string | null;
+  swiftCode?: string | null;
+  accountType?: string | null;
+  address?: string | null;
+  city?: string | null;
+  state?: string | null;
+  postalCode?: string | null;
+  email?: string | null;
+  isIntl?: boolean;
+  useCount?: number;
+  lastUsedAt?: string;
 }
 
 export interface LoginInput {

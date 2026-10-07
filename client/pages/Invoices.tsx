@@ -735,7 +735,8 @@ export default function Invoices() {
                       <div className="min-w-0">
                         <p className="truncate font-medium">{p.payer_name || p.payer_email || "Payment"}</p>
                         <p className="text-xs text-muted-foreground">
-                          {new Date(p.created_at).toLocaleString()} · {p.payment_provider || "unknown"}
+                          {new Date(p.created_at).toLocaleString()}
+                          {/* payment provider intentionally hidden from customers */}
                         </p>
                         {p.transaction_reference && (
                           <p className="mt-0.5 truncate font-mono text-[11px] text-muted-foreground">

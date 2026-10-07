@@ -82,7 +82,7 @@ const epicBulkTransferSchema = z.object({
 });
 
 type VerificationFilter = "all" | "verified" | "unverified" | "failed";
-type CurrencyFilter = "all" | "NGN" | "USD";
+type CurrencyFilter = "all" | "NGN" | "USD" | "GBP" | "EUR";
 
 interface PayrollStats {
   total: number;
@@ -196,6 +196,23 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
       isValidSwiftCode(item.swift_code || "") &&
       isValidAbaRoutingNumber(item.routing_number || "") &&
       !!item.recipient_account?.trim() &&
+      !!item.recipient_country
+    );
+  }
+  if (currency === "GBP") {
+    return (
+      !!item.bank_name?.trim() &&
+      /^\d{6}$/.test((item.routing_number || "").replace(/[\s-]/g, "")) &&
+      !!item.recipient_account?.trim() &&
+      !!item.recipient_country
+    );
+  }
+  if (currency === "EUR") {
+    return (
+      !!item.bank_name?.trim() &&
+      isValidSwiftCode(item.swift_code || "") &&
+      !!item.recipient_account?.trim() &&
+      !!item.recipient_city?.trim() &&
       !!item.recipient_country
     );
   }
@@ -596,8 +613,10 @@ export default function Payroll() {
     const skipped = withBank.filter((e) => (e.verification_status || "unverified") !== "verified");
     // Salary-earning actives without full bank details are dropped silently by the backend — flag them in the UI instead.
     const missingBank = payable.filter((e) => !(e.bank_code && e.account_number));
-    const ngn = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() !== "USD");
-    const usd = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() === "USD");
+    // Salary payouts ride ONE source wallet per currency (backend guard):
+    // NGN employees in one batch, all international (USD/GBP/EUR) in another.
+    const ngn = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() === "NGN");
+    const usd = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() !== "NGN");
     const ngnTotal = ngn.reduce((sum, e) => sum + Number(e.salary_amount), 0);
     const usdTotal = usd.reduce((sum, e) => sum + Number(e.salary_amount), 0);
     return { withBank, verified, skipped, missingBank, ngn, usd, ngnTotal, usdTotal };
@@ -834,17 +853,18 @@ export default function Payroll() {
   };
 
   /** Switch a row's currency — clears the fields + lookup state of the other corridor. */
-  const setRecipientCurrency = (index: number, currency: "NGN" | "USD") => {
+  const setRecipientCurrency = (index: number, currency: "NGN" | "USD" | "GBP" | "EUR") => {
     setEpicTransferItems(
       epicTransferItems.map((item, i) => {
         if (i !== index) return item;
         if ((item.currency || "NGN").toUpperCase() === currency) return item;
-        if (currency === "USD") {
+        if (currency !== "NGN") {
+          const defaultCountry = currency === "USD" ? "US" : currency === "GBP" ? "GB" : "DE";
           return {
             ...item,
             currency,
             recipient_bank: "",
-            recipient_country: item.recipient_country || "US",
+            recipient_country: item.recipient_country || defaultCountry,
           };
         }
         return {
@@ -890,8 +910,8 @@ export default function Payroll() {
       toast({ title: "Error", description: "Please select a bank and enter account number", variant: "destructive" });
       return;
     }
-    if ((recipient.currency || "NGN").toUpperCase() === "USD") {
-      // USD beneficiaries have no provider account-name lookup — nothing to verify.
+    if ((recipient.currency || "NGN").toUpperCase() !== "NGN") {
+      // International beneficiaries have no provider account-name lookup — nothing to verify.
       return;
     }
     try {
@@ -939,7 +959,7 @@ export default function Payroll() {
       for (let index = 0; index < epicTransferItems.length; index++) {
         const item = epicTransferItems[index];
         const currentStatus = recipientLookupStatus[index];
-        if ((item.currency || "NGN").toUpperCase() === "USD") continue;
+        if ((item.currency || "NGN").toUpperCase() !== "NGN") continue;
         if (item.recipient_bank && item.recipient_account && item.recipient_account.length === 10) {
           if (currentStatus?.success || currentStatus?.loading) continue;
           setRecipientLookupStatus((prev) => ({
@@ -1012,7 +1032,7 @@ export default function Payroll() {
           pin: pin,
           wallet_id: values.source_wallet_id,
         };
-        if (currency === "USD") {
+        if (currency !== "NGN") {
           // International beneficiary fields — /transfers/single handler names
           // (server/routes/transfers.ts: bankName/swiftCode/routingNumber +
           // recipient-prefixed address fields, ISO-2 country).
@@ -1021,7 +1041,7 @@ export default function Payroll() {
           payload.routingNumber = item.routing_number?.trim() || undefined;
           payload.recipientAddress = item.recipient_address?.trim() || undefined;
           payload.recipientCity = item.recipient_city?.trim() || undefined;
-          payload.recipientCountry = (item.recipient_country || "US").toUpperCase();
+          payload.recipientCountry = (item.recipient_country || (currency === "GBP" ? "GB" : currency === "EUR" ? "DE" : "US")).toUpperCase();
           payload.accountType = item.account_type || undefined;
           payload.beneficiaryEmail = item.beneficiary_email?.trim() || undefined;
         }
@@ -1402,6 +1422,8 @@ export default function Payroll() {
                   <SelectItem value="all">All currencies</SelectItem>
                   <SelectItem value="NGN">NGN</SelectItem>
                   <SelectItem value="USD">USD</SelectItem>
+                  <SelectItem value="GBP">GBP</SelectItem>
+                  <SelectItem value="EUR">EUR</SelectItem>
                 </SelectContent>
               </Select>
 
@@ -2234,9 +2256,11 @@ export default function Payroll() {
                     const id = `recipient_${index}`;
                     const status = recipientLookupStatus[index];
                     const rowCurrency = (item.currency || "NGN").toUpperCase();
-                    const isUsd = rowCurrency === "USD";
-                    const routingDigits = (item.routing_number || "").replace(/\D/g, "");
-                    const routingInvalid = routingDigits.length > 0 && !isValidAbaRoutingNumber(routingDigits);
+                    const isIntlRow = rowCurrency !== "NGN";
+                    const routingDigits = (item.routing_number || "").replace(/[^0-9]/g, "");
+                    const routingInvalid = rowCurrency === "USD"
+                      ? routingDigits.length > 0 && !isValidAbaRoutingNumber(routingDigits)
+                      : routingDigits.length > 0 && !/^\d{6}$/.test(routingDigits);
                     const swiftValue = (item.swift_code || "").trim();
                     const swiftInvalid = swiftValue.length > 0 && !isValidSwiftCode(swiftValue);
                     return (
@@ -2244,7 +2268,7 @@ export default function Payroll() {
                         <div className="flex items-center justify-between gap-2">
                           <div className="flex items-center gap-2">
                             <div className="flex rounded-lg border border-border bg-background p-0.5">
-                              {(["NGN", "USD"] as const).map((c) => (
+                              {(["NGN", "USD", "GBP", "EUR"] as const).map((c) => (
                                 <button
                                   key={c}
                                   type="button"
@@ -2276,7 +2300,7 @@ export default function Payroll() {
                         </div>
 
                         <div className="space-y-3">
-                          {isUsd ? (
+                          {isIntlRow ? (
                             <>
                               <div className="grid gap-3 sm:grid-cols-2">
                                 <div className="flex flex-col">
@@ -2288,8 +2312,23 @@ export default function Payroll() {
                                     maxLength={150}
                                   />
                                 </div>
+                                {rowCurrency === "EUR" ? (
                                 <div className="flex flex-col">
-                                  <Label>SWIFT Code *</Label>
+                                  <Label>SWIFT / BIC *</Label>
+                                  <Input
+                                    value={item.swift_code || ""}
+                                    onChange={(e) => updateRecipient(id, "swift_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
+                                    maxLength={11}
+                                    placeholder="e.g. BECFDE7HKKX"
+                                    className={cn(swiftInvalid && "border-destructive focus-visible:ring-destructive")}
+                                  />
+                                  {swiftInvalid && (
+                                    <p className="text-xs text-destructive">SWIFT must be 8 or 11 characters</p>
+                                  )}
+                                </div>
+                                ) : (
+                                <div className="flex flex-col">
+                                  <Label>{rowCurrency === "GBP" ? "SWIFT / BIC (optional)" : "SWIFT Code *"}</Label>
                                   <Input
                                     value={item.swift_code || ""}
                                     onChange={(e) => updateRecipient(id, "swift_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -2301,42 +2340,54 @@ export default function Payroll() {
                                     <p className="text-xs text-destructive">SWIFT must be 8 or 11 characters</p>
                                   )}
                                 </div>
+                                )}
+                                {rowCurrency !== "EUR" && (
                                 <div className="flex flex-col">
-                                  <Label>Routing Number (ABA)</Label>
+                                  <Label>{rowCurrency === "GBP" ? "Sort Code *" : "Routing Number (ABA)"}</Label>
                                   <Input
                                     value={item.routing_number || ""}
-                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.replace(/\D/g, ""))}
-                                    maxLength={9}
-                                    placeholder="9-digit ABA routing number"
+                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.replace(/[^0-9]/g, ""))}
+                                    maxLength={rowCurrency === "GBP" ? 8 : 9}
+                                    placeholder={rowCurrency === "GBP" ? "6-digit sort code, e.g. 308463" : "9-digit ABA routing number"}
                                     className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
                                   />
                                   {routingInvalid ? (
-                                    <p className="text-xs text-destructive">Invalid ABA checksum — check the 9-digit number</p>
+                                    <p className="text-xs text-destructive">{rowCurrency === "GBP" ? "Sort code must be 6 digits" : "Invalid ABA checksum — check the 9-digit number"}</p>
                                   ) : (
-                                    <p className="text-xs text-muted-foreground">Required for USD payouts</p>
+                                    <p className="text-xs text-muted-foreground">Required for {rowCurrency} payouts</p>
                                   )}
                                 </div>
+                                )}
                                 <div className="flex flex-col">
                                   <Label>Account Number *</Label>
                                   <Input
                                     value={item.recipient_account}
                                     onChange={(e) => updateRecipient(id, "recipient_account", e.target.value)}
-                                    placeholder="Beneficiary account number"
+                                    placeholder={rowCurrency === "EUR" ? "IBAN" : "Beneficiary account number"}
                                     maxLength={34}
                                   />
                                 </div>
                                 <div className="flex flex-col">
                                   <Label>Account Type</Label>
                                   <Select
-                                    value={(item as any).account_type || "checking"}
+                                    value={(item as any).account_type || (rowCurrency === "GBP" ? "personal" : "checking")}
                                     onValueChange={(v) => updateRecipient(id, "account_type", v)}
                                   >
                                     <SelectTrigger>
                                       <SelectValue />
                                     </SelectTrigger>
                                     <SelectContent>
-                                      <SelectItem value="checking">Checking</SelectItem>
-                                      <SelectItem value="savings">Savings</SelectItem>
+                                      {rowCurrency === "GBP" ? (
+                                        <>
+                                          <SelectItem value="personal">Personal</SelectItem>
+                                          <SelectItem value="corporate">Corporate</SelectItem>
+                                        </>
+                                      ) : (
+                                        <>
+                                          <SelectItem value="checking">Checking</SelectItem>
+                                          <SelectItem value="savings">Savings</SelectItem>
+                                        </>
+                                      )}
                                     </SelectContent>
                                   </Select>
                                 </div>
@@ -2465,17 +2516,17 @@ export default function Payroll() {
                           </div>
                         </div>
 
-                        {!isUsd && status?.loading && (
+                        {!isIntlRow && status?.loading && (
                           <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
                             <Loader2 className="h-3 w-3 animate-spin" /> Verifying account…
                           </p>
                         )}
-                        {!isUsd && !status?.loading && status?.success && status.name && (
+                        {!isIntlRow && !status?.loading && status?.success && status.name && (
                           <p className="flex items-center gap-1 text-xs font-medium text-emerald-600 dark:text-emerald-400">
                             <Check className="h-3.5 w-3.5" /> Account name: {status.name}
                           </p>
                         )}
-                        {!isUsd && !status?.loading && status?.error && (
+                        {!isIntlRow && !status?.loading && status?.error && (
                           <div className="flex items-center gap-2">
                             <p className="text-xs text-destructive">{status.error}</p>
                             <Button
@@ -2490,7 +2541,7 @@ export default function Payroll() {
                             </Button>
                           </div>
                         )}
-                        {!isUsd && !status && (
+                        {!isIntlRow && !status && (
                           <Button
                             type="button"
                             variant="outline"
@@ -2517,16 +2568,17 @@ export default function Payroll() {
                 <p className="font-semibold">Total</p>
                 <p className="font-bold text-primary text-lg">
                   {(() => {
-                    const ngnTotal = epicTransferItems
-                      .filter((item) => (item.currency || "NGN").toUpperCase() === "NGN")
-                      .reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
-                    const usdTotal = epicTransferItems
-                      .filter((item) => (item.currency || "NGN").toUpperCase() === "USD")
-                      .reduce((acc, item) => acc + (Number(item.amount) || 0), 0);
-                    const parts: string[] = [];
-                    if (ngnTotal > 0 || usdTotal === 0) parts.push(`NGN ${ngnTotal.toLocaleString()}`);
-                    if (usdTotal > 0) parts.push(`USD ${usdTotal.toLocaleString()}`);
-                    return parts.join("  ·  ");
+                    // Group totals by payout currency (NGN, USD, GBP, EUR).
+                    const byCurrency: Record<string, number> = {};
+                    for (const item of epicTransferItems) {
+                      const cur = (item.currency || "NGN").toUpperCase();
+                      byCurrency[cur] = (byCurrency[cur] || 0) + (Number(item.amount) || 0);
+                    }
+                    const order = ["NGN", "USD", "GBP", "EUR"];
+                    const parts = order
+                      .filter((cur) => (byCurrency[cur] || 0) > 0)
+                      .map((cur) => `${cur} ${(byCurrency[cur] || 0).toLocaleString()}`);
+                    return parts.length > 0 ? parts.join("  ·  ") : "NGN 0";
                   })()}
                 </p>
               </div>
@@ -2545,7 +2597,7 @@ export default function Payroll() {
                       // NGN rows additionally require a resolved (or at least
                       // not-failed) account-name lookup.
                       const lookupBad =
-                        (item.currency || "NGN").toUpperCase() !== "USD" &&
+                        (item.currency || "NGN").toUpperCase() === "NGN" &&
                         st && !st.success && !!st.error;
                       return !isEpicRecipientComplete(item) || lookupBad;
                     })
