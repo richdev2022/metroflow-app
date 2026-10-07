@@ -117,7 +117,64 @@ export default function Beneficiaries() {
   const [verifyingRowId, setVerifyingRowId] = useState<string | null>(null);
   const isEdit = !!editTarget;
 
+  // ---- Address autofill (OpenStreetMap Nominatim) — same engine the
+  // international transfer form uses. As the user picks the country and
+  // types the street address, debounced queries suggest matching addresses
+  // and fill street/city/state/postcode in one tap.
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [addressSuggestOpen, setAddressSuggestOpen] = useState(false);
+  const [addressSearching, setAddressSearching] = useState(false);
+  const addressPickLockRef = React.useRef(false);
+
   const isIntl = tab !== "NGN";
+
+  // Debounced Nominatim lookup (intl beneficiaries only, dialog open only).
+  useEffect(() => {
+    if (!addOpen || tab === "NGN") { setAddressSuggestOpen(false); return; }
+    const q = (form.address || "").trim();
+    const cc = (form.country || "").toLowerCase();
+    // Skip lookups right after a suggestion was picked (value just changed).
+    if (q.length < 3 || !cc || addressPickLockRef.current) {
+      setAddressSuggestOpen(false);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      setAddressSearching(true);
+      try {
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=${cc}&q=${encodeURIComponent(q)}`;
+        const res = await fetch(url, { headers: { Accept: "application/json" } });
+        const data = res.ok ? await res.json() : [];
+        setAddressSuggestions(Array.isArray(data) ? data : []);
+        setAddressSuggestOpen(Array.isArray(data) && data.length > 0);
+      } catch {
+        setAddressSuggestions([]);
+        setAddressSuggestOpen(false);
+      } finally {
+        setAddressSearching(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [form.address, form.country, addOpen, tab]);
+
+  // Fill street/city/state/postcode from a picked Nominatim result.
+  const pickAddressSuggestion = (item: any) => {
+    const a = item?.address || {};
+    addressPickLockRef.current = true;
+    const street =
+      [a.house_number, a.road].filter(Boolean).join(" ") ||
+      item?.name ||
+      String(item?.display_name || "").split(",")[0] ||
+      "";
+    setForm((f) => ({
+      ...f,
+      address: street,
+      city: a.city || a.town || a.village || a.suburb || a.county || "",
+      state: a.state || "",
+      postalCode: a.postcode || "",
+    }));
+    setAddressSuggestOpen(false);
+    window.setTimeout(() => { addressPickLockRef.current = false; }, 500);
+  };
 
   const load = useCallback(async (currency: string) => {
     setLoading(true);
@@ -657,9 +714,23 @@ export default function Beneficiaries() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Street address</Label>
-                    <Input value={form.address} onChange={(e) => setField("address", e.target.value)} placeholder="e.g. 1801 Main St" />
+                  <div className="relative space-y-1.5">
+                    <Label>Street address {addressSearching && <Loader2 className="inline h-3 w-3 animate-spin" />}</Label>
+                    <Input value={form.address} onChange={(e) => setField("address", e.target.value)} placeholder="Start typing the street address…" autoComplete="off" />
+                    {addressSuggestOpen && addressSuggestions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-md border bg-background shadow-lg">
+                        {addressSuggestions.map((item, idx) => (
+                          <button
+                            key={item.place_id ?? idx}
+                            type="button"
+                            className="block w-full border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                            onClick={() => pickAddressSuggestion(item)}
+                          >
+                            {item.display_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
