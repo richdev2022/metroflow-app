@@ -30,6 +30,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { format } from "date-fns";
 import { cn } from "@/lib/utils";
 import { downloadCsvExport, csvFilename } from "@/lib/csv-download";
+import { buildTransactionReceiptPdf, receiptFilename } from "@/lib/receipt-pdf";
+import { scrubProviderNames } from "@/lib/scrub";
 
 export default function TransferHistory() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -187,6 +189,39 @@ export default function TransferHistory() {
       setRetryingId(null);
     }
   };
+
+  // ---- Receipt download (list rows + detail modal) ------------------------
+  // PDF is generated fully client-side (jsPDF) — works for pending rows too
+  // (the status is printed as-is) and never leaks processor names (scrubbed).
+  const [receiptId, setReceiptId] = useState<string | null>(null);
+  const downloadReceipt = async (t: Transfer) => {
+    setReceiptId(t.id);
+    try {
+      const doc = await buildTransactionReceiptPdf({
+        transfer: t,
+        bankName: t.recipient_bank ? getBankName(t.recipient_bank) : null,
+      });
+      doc.save(receiptFilename(t));
+      toast({ title: "Receipt downloaded", description: `Receipt for ${t.reference || "transaction"} saved.` });
+    } catch (error: any) {
+      console.error("Failed to generate receipt", error);
+      toast({
+        title: "Receipt failed",
+        description: error?.message || "Could not generate the receipt PDF.",
+        variant: "destructive",
+      });
+    } finally {
+      setReceiptId(null);
+    }
+  };
+
+  /** Color-coded status chip class for the detail hero. */
+  const statusChipClass = (status: string) =>
+    status === "success"
+      ? "bg-emerald-500"
+      : status === "failed"
+        ? "bg-red-500"
+        : "bg-amber-500";
 
   // "Reverse now" — pull the money for a FAILED transfer straight back into
   // the wallet (POST /transfers/:id/reverse). The backend refuses
@@ -530,24 +565,31 @@ export default function TransferHistory() {
                         <Badge variant={t.status === 'success' ? 'default' : t.status === 'failed' ? 'destructive' : 'secondary'}>
                         {t.status}
                         </Badge>
-                        {t.failure_reason && <p className="text-xs text-red-500 mt-1 max-w-[160px] truncate">{t.failure_reason}</p>}
+                        {scrubProviderNames(t.failure_reason) && <p className="text-xs text-red-500 mt-1 max-w-[160px] truncate">{scrubProviderNames(t.failure_reason)}</p>}
                     </TableCell>
                     <TableCell className="text-right">
                         <AmountCell t={t} />
                     </TableCell>
                     <TableCell onClick={(e) => e.stopPropagation()}>
-                        {t.type !== "transaction" && t.status === 'failed' && (
                         <div className="flex items-center justify-end gap-2">
-                          <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)} disabled={retryingId === t.id}>
-                            {retryingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
-                            Retry
+                          {/* Download receipt — every row, any status. */}
+                          <Button variant="outline" size="sm" onClick={() => downloadReceipt(t)} disabled={receiptId === t.id} aria-label={`Download receipt for ${t.reference || t.id}`}>
+                            {receiptId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <Download className="h-4 w-4 mr-1" />}
+                            Receipt
                           </Button>
-                          <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-600" onClick={() => reverseTransfer(t.id)} disabled={reversingId === t.id}>
-                            {reversingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1" />}
-                            Reverse now
-                          </Button>
+                          {t.type !== "transaction" && t.status === 'failed' && (
+                            <>
+                              <Button variant="outline" size="sm" onClick={() => retryTransfer(t.id)} disabled={retryingId === t.id}>
+                                {retryingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+                                Retry
+                              </Button>
+                              <Button variant="ghost" size="sm" className="text-red-500 hover:text-red-600" onClick={() => reverseTransfer(t.id)} disabled={reversingId === t.id}>
+                                {reversingId === t.id ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4 mr-1" />}
+                                Reverse now
+                              </Button>
+                            </>
+                          )}
                         </div>
-                        )}
                     </TableCell>
                     </TableRow>
                 ))}
@@ -596,9 +638,21 @@ export default function TransferHistory() {
                 {selectedTransfer && (
                     <>
                         <DialogHeader>
-                            <DialogTitle className="text-xl">
-                              {selectedTransfer.type === "transaction" ? "Transaction Details" : "Transfer Details"}
-                            </DialogTitle>
+                            <div className="flex items-center justify-between gap-3 pr-8">
+                              <DialogTitle className="text-xl">
+                                {selectedTransfer.type === "transaction" ? "Transaction Details" : "Transfer Details"}
+                              </DialogTitle>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                className="shrink-0"
+                                onClick={() => downloadReceipt(selectedTransfer)}
+                                disabled={receiptId === selectedTransfer.id}
+                              >
+                                {receiptId === selectedTransfer.id ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Download className="mr-1.5 h-4 w-4" />}
+                                Download receipt
+                              </Button>
+                            </div>
                         </DialogHeader>
                         <div className="space-y-6 py-4">
                             {/* Receipt hero: gradient card with amount, type + status chips */}
@@ -623,8 +677,8 @@ export default function TransferHistory() {
                                                 return (isCredit || t === "refund") ? "Credit" : "Debit";
                                             })()}
                                         </span>
-                                        <span className="rounded-full bg-black/20 px-3 py-1 text-[11px] font-bold uppercase tracking-wide">
-                                            {selectedTransfer.status}
+                                        <span className={`rounded-full px-3 py-1 text-[11px] font-bold uppercase tracking-wide ${statusChipClass(selectedTransfer.status)}`}>
+                                            {scrubProviderNames(selectedTransfer.status)}
                                         </span>
                                     </div>
                                 </div>
@@ -717,7 +771,7 @@ export default function TransferHistory() {
                             {selectedTransfer.failure_reason && (
                                 <div className="border-t pt-4">
                                     <h4 className="font-medium mb-3 text-red-500">Failure Reason</h4>
-                                    <p className="text-red-500">{selectedTransfer.failure_reason}</p>
+                                    <p className="text-red-500">{scrubProviderNames(selectedTransfer.failure_reason)}</p>
                                 </div>
                             )}
 

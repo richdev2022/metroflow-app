@@ -39,6 +39,9 @@ import {
   Loader2,
   CheckCircle2,
   ShieldCheck,
+  ShieldAlert,
+  BadgeCheck,
+  Pencil,
   Globe,
   Home,
 } from "lucide-react";
@@ -48,6 +51,18 @@ const CURRENCY_TABS = ["NGN", "USD", "GBP", "EUR"] as const;
 type CurrencyTab = (typeof CURRENCY_TABS)[number];
 
 const CURRENCY_SYMBOLS: Record<string, string> = { NGN: "₦", USD: "$", GBP: "£", EUR: "€" };
+
+/**
+ * Normalized verification state for a beneficiary row. Reads the new
+ * `verificationStatus` field (GET /transfers/beneficiaries) with a fallback to
+ * the legacy `verification` key, defaulting to "unverified".
+ */
+const verificationOf = (
+  b: TransferBeneficiary,
+): "resolved" | "format" | "unverified" => {
+  const raw = String(b.verificationStatus || (b as any).verification || "").toLowerCase();
+  return raw === "resolved" ? "resolved" : raw === "format" ? "format" : "unverified";
+};
 
 // Same corridor list the transfer form uses (ISO-3166-1 alpha-2).
 const INTL_PAYOUT_COUNTRIES: { code: string; name: string }[] = [
@@ -96,6 +111,11 @@ export default function Beneficiaries() {
   const [form, setForm] = useState({ ...emptyForm });
   const [deleteTarget, setDeleteTarget] = useState<TransferBeneficiary | null>(null);
   const [banks, setBanks] = useState<{ code: string; name: string }[]>([]);
+  // Edit mode: the row being edited (dialog prefills + submits via PUT).
+  const [editTarget, setEditTarget] = useState<TransferBeneficiary | null>(null);
+  // Row-level "Verify" CTA in flight (spinner + disabled on that row only).
+  const [verifyingRowId, setVerifyingRowId] = useState<string | null>(null);
+  const isEdit = !!editTarget;
 
   const isIntl = tab !== "NGN";
 
@@ -126,12 +146,53 @@ export default function Beneficiaries() {
   }, [tab]);
 
   const resetForm = (currency: CurrencyTab) => {
-    setForm({ ...emptyForm, currency, country: currency === "GBP" ? "GB" : currency === "EUR" ? "DE" : "US" });
+    setForm({
+      ...emptyForm,
+      currency,
+      country: currency === "GBP" ? "GB" : currency === "EUR" ? "DE" : "US",
+      // bankCode doubles as the USD payout rail for international corridors
+      // (ACH/SWIFT); GBP/EUR always ride the SWIFT rail.
+      bankCode: currency === "USD" ? "ACH" : currency === "NGN" ? "" : "SWIFT",
+    });
     setVerifyState({ kind: null, name: null });
   };
 
   const openAdd = () => {
+    setEditTarget(null);
     resetForm(tab);
+    setAddOpen(true);
+  };
+
+  /** Open the dialog prefilled with EVERY saved field; submit becomes a PUT. */
+  const openEdit = (b: TransferBeneficiary) => {
+    const currency = ((b.currency || tab).toUpperCase() as CurrencyTab);
+    setEditTarget(b);
+    setForm({
+      currency,
+      // NGN keeps the saved bank code; USD derives the rail from the saved
+      // details (SWIFT code present → SWIFT, else ACH); GBP/EUR ride SWIFT.
+      bankCode:
+        currency === "NGN"
+          ? b.bankCode || ""
+          : currency === "USD"
+            ? String(b.swiftCode || "").trim()
+              ? "SWIFT"
+              : "ACH"
+            : "SWIFT",
+      accountNumber: b.accountNumber || "",
+      accountName: b.accountName || "",
+      bankName: b.bankName || "",
+      routingNumber: b.routingNumber || "",
+      swiftCode: b.swiftCode || "",
+      accountType: b.accountType || "",
+      address: b.address || "",
+      city: b.city || "",
+      state: b.state || "",
+      postalCode: b.postalCode || "",
+      country: b.recipientCountry || (currency === "GBP" ? "GB" : currency === "EUR" ? "DE" : "US"),
+      email: b.email || "",
+    });
+    setVerifyState({ kind: null, name: null });
     setAddOpen(true);
   };
 
@@ -193,9 +254,9 @@ export default function Beneficiaries() {
   const saveBeneficiary = async () => {
     setSaving(true);
     try {
-      const res = await api.post("/transfers/beneficiaries", {
+      const payload = {
         currency: form.currency,
-        bankCode: isIntl ? "SWIFT" : form.bankCode,
+        bankCode: isIntl ? (form.bankCode || "SWIFT") : form.bankCode,
         accountNumber: form.accountNumber.trim(),
         accountName: form.accountName.trim() || undefined,
         bankName: form.bankName.trim() || undefined,
@@ -208,18 +269,71 @@ export default function Beneficiaries() {
         postalCode: form.postalCode.trim() || undefined,
         country: form.country || undefined,
         email: form.email.trim() || undefined,
-      });
+      };
+      // Edit submits via PUT /transfers/beneficiaries/:id (server re-validates;
+      // NGN bank/account changes re-resolve the account name server-side).
+      const res = isEdit && editTarget
+        ? await api.put(`/transfers/beneficiaries/${editTarget.id}`, payload)
+        : await api.post("/transfers/beneficiaries", payload);
       if (res.data?.success) {
-        toast({ title: "Beneficiary saved" });
+        toast({ title: res.data?.message || (isEdit ? "Beneficiary updated" : "Beneficiary saved") });
         setAddOpen(false);
+        setEditTarget(null);
         load(tab);
       } else {
-        toast({ title: "Could not save beneficiary", description: res.data?.error, variant: "destructive" });
+        toast({ title: isEdit ? "Could not update beneficiary" : "Could not save beneficiary", description: res.data?.error, variant: "destructive" });
       }
     } catch (e: any) {
-      toast({ title: "Could not save beneficiary", description: e.response?.data?.error || "Please check the details and try again", variant: "destructive" });
+      toast({
+        title: isEdit ? "Could not update beneficiary" : "Could not save beneficiary",
+        description: e.response?.data?.error || e.response?.data?.message || "Please check the details and try again",
+        variant: "destructive",
+      });
     } finally {
       setSaving(false);
+    }
+  };
+
+  /**
+   * Row-level "Verify" CTA — POST /transfers/beneficiaries/:id/verify.
+   * On success the row is updated IN PLACE from the returned verification
+   * status; an empty saved name is filled from the resolved account name.
+   */
+  const verifyRow = async (b: TransferBeneficiary) => {
+    setVerifyingRowId(b.id);
+    try {
+      const res = await api.post(`/transfers/beneficiaries/${b.id}/verify`);
+      if (res.data?.success) {
+        const data = res.data.data || {};
+        const status = String(data.verificationStatus || "unverified");
+        setItems((prev) =>
+          prev.map((row) =>
+            row.id === b.id
+              ? {
+                  ...row,
+                  verificationStatus: status,
+                  verifiedAt: data.verifiedAt || new Date().toISOString(),
+                  // Only fill the name when the row had none saved.
+                  accountName: !row.accountName && data.accountName ? data.accountName : row.accountName,
+                }
+              : row,
+          ),
+        );
+        toast({
+          title: res.data?.message || (status === "resolved" ? "Beneficiary verified" : "Details passed validation for this corridor"),
+          description: data.resolvedName ? `Account name: ${data.resolvedName}` : undefined,
+        });
+      } else {
+        toast({ title: "Verification failed", description: res.data?.error || "Could not verify this beneficiary", variant: "destructive" });
+      }
+    } catch (e: any) {
+      toast({
+        title: "Verification failed",
+        description: e.response?.data?.error || e.response?.data?.message || "Could not verify this beneficiary",
+        variant: "destructive",
+      });
+    } finally {
+      setVerifyingRowId(null);
     }
   };
 
@@ -238,7 +352,33 @@ export default function Beneficiaries() {
   const localItems = items.filter((b) => !b.isIntl);
   const globalItems = items.filter((b) => b.isIntl);
 
-  const renderCard = (b: TransferBeneficiary) => (
+  /** Color-coded verification chip for a beneficiary row. */
+  const VerificationChip = ({ b }: { b: TransferBeneficiary }) => {
+    const v = verificationOf(b);
+    if (v === "resolved") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 px-2 py-0.5 text-[11px] font-medium text-emerald-700 dark:bg-emerald-950/50 dark:text-emerald-400">
+          <CheckCircle2 className="h-3 w-3" /> Verified
+        </span>
+      );
+    }
+    if (v === "format") {
+      return (
+        <span className="inline-flex items-center gap-1 rounded-full bg-blue-50 px-2 py-0.5 text-[11px] font-medium text-blue-700 dark:bg-blue-950/50 dark:text-blue-400">
+          <BadgeCheck className="h-3 w-3" /> Validated
+        </span>
+      );
+    }
+    return (
+      <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 px-2 py-0.5 text-[11px] font-medium text-amber-700 dark:bg-amber-950/50 dark:text-amber-400">
+        <ShieldAlert className="h-3 w-3" /> Unverified
+      </span>
+    );
+  };
+
+  const renderCard = (b: TransferBeneficiary) => {
+    const rowVerifying = verifyingRowId === b.id;
+    return (
     <Card key={b.id} className="overflow-hidden">
       <CardContent className="p-4 flex items-start justify-between gap-3">
         <div className="min-w-0">
@@ -247,11 +387,7 @@ export default function Beneficiaries() {
             <Badge variant="secondary" className="shrink-0">
               {CURRENCY_SYMBOLS[b.currency] || ""} {b.currency}
             </Badge>
-            {b.verification === "resolved" ? (
-              <span className="inline-flex items-center gap-1 text-[11px] text-emerald-600 dark:text-emerald-400">
-                <ShieldCheck className="h-3 w-3" /> Verified
-              </span>
-            ) : null}
+            <VerificationChip b={b} />
           </div>
           <p className="text-sm text-muted-foreground mt-0.5 font-mono">{b.accountNumber}</p>
           <p className="text-xs text-muted-foreground mt-1">
@@ -265,18 +401,42 @@ export default function Beneficiaries() {
             </p>
           ) : null}
         </div>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="text-destructive shrink-0"
-          onClick={() => setDeleteTarget(b)}
-          aria-label="Remove beneficiary"
-        >
-          <Trash2 className="h-4 w-4" />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1.5">
+          {verificationOf(b) !== "resolved" && (
+            <Button
+              variant="outline"
+              size="sm"
+              className="text-primary"
+              onClick={() => verifyRow(b)}
+              disabled={rowVerifying}
+              aria-label="Verify beneficiary"
+            >
+              {rowVerifying ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4 mr-1" />}
+              Verify
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon"
+            onClick={() => openEdit(b)}
+            aria-label="Edit beneficiary"
+          >
+            <Pencil className="h-4 w-4" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="text-destructive"
+            onClick={() => setDeleteTarget(b)}
+            aria-label="Remove beneficiary"
+          >
+            <Trash2 className="h-4 w-4" />
+          </Button>
+        </div>
       </CardContent>
     </Card>
-  );
+    );
+  };
 
   return (
     <Layout>
@@ -353,19 +513,31 @@ export default function Beneficiaries() {
           </div>
         )}
 
-        {/* Add beneficiary dialog */}
-        <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        {/* Add / Edit beneficiary dialog */}
+        <Dialog
+          open={addOpen}
+          onOpenChange={(open) => {
+            setAddOpen(open);
+            if (!open) setEditTarget(null);
+          }}
+        >
           <DialogContent className="sm:max-w-lg max-h-[85vh] overflow-y-auto">
             <DialogHeader>
-              <DialogTitle>Add beneficiary</DialogTitle>
+              <DialogTitle>{isEdit ? "Edit beneficiary" : "Add beneficiary"}</DialogTitle>
               <DialogDescription>
-                Accounts are verified before saving — NGN accounts resolve the real account name; international details are validated per corridor.
+                {isEdit
+                  ? "Update any saved detail and save — the corridor rules are re-checked, and changing an NGN bank/account re-resolves the account name."
+                  : "Accounts are verified before saving — NGN accounts resolve the real account name; international details are validated per corridor."}
               </DialogDescription>
             </DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <Label>Currency</Label>
-                <Select value={form.currency} onValueChange={(v) => resetForm(v as CurrencyTab)}>
+                <Select
+                  value={form.currency}
+                  onValueChange={(v) => resetForm(v as CurrencyTab)}
+                  disabled={isEdit}
+                >
                   <SelectTrigger>
                     <SelectValue />
                   </SelectTrigger>
@@ -375,6 +547,9 @@ export default function Beneficiaries() {
                     ))}
                   </SelectContent>
                 </Select>
+                {isEdit && (
+                  <p className="text-xs text-muted-foreground">Currency is fixed for an existing beneficiary.</p>
+                )}
               </div>
 
               {!isIntl && (
@@ -403,6 +578,20 @@ export default function Beneficiaries() {
                   </div>
                   {form.currency === "USD" && (
                     <div className="space-y-1.5">
+                      <Label>Payout rail</Label>
+                      <Select value={form.bankCode || "ACH"} onValueChange={(v) => setField("bankCode", v)}>
+                        <SelectTrigger>
+                          <SelectValue placeholder="Choose payout rail" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="ACH">ACH — U.S. bank account (local rails)</SelectItem>
+                          <SelectItem value="SWIFT">SWIFT — International wire transfer</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  )}
+                  {form.currency === "USD" && (
+                    <div className="space-y-1.5">
                       <Label>Routing number (ABA)</Label>
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="9 digits, e.g. 021000021" maxLength={12} />
                     </div>
@@ -417,6 +606,12 @@ export default function Beneficiaries() {
                     <div className="space-y-1.5">
                       <Label>SWIFT / BIC</Label>
                       <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="8 or 11 characters, e.g. BECFDE7HKKX" maxLength={11} />
+                    </div>
+                  )}
+                  {form.currency === "USD" && (form.bankCode || "ACH") === "SWIFT" && (
+                    <div className="space-y-1.5">
+                      <Label>SWIFT / BIC</Label>
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="e.g. CHASUS33" maxLength={11} />
                     </div>
                   )}
                   {form.currency === "USD" && (
@@ -512,13 +707,18 @@ export default function Beneficiaries() {
               )}
             </div>
             <DialogFooter className="gap-2">
-              <Button variant="outline" onClick={verifyBeneficiary} disabled={verifying || saving}>
-                {verifying ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-1 h-4 w-4" />}
-                Verify account
-              </Button>
+              {/* Pre-save verification is add-mode only — in edit mode the PUT
+                  re-validates server-side, and POSTing here with a changed
+                  account number would create a NEW row instead. */}
+              {!isEdit && (
+                <Button variant="outline" onClick={verifyBeneficiary} disabled={verifying || saving}>
+                  {verifying ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <ShieldCheck className="mr-1 h-4 w-4" />}
+                  Verify account
+                </Button>
+              )}
               <Button onClick={saveBeneficiary} disabled={saving || verifying}>
-                {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : <Plus className="mr-1 h-4 w-4" />}
-                Save beneficiary
+                {saving ? <Loader2 className="mr-1 h-4 w-4 animate-spin" /> : isEdit ? <CheckCircle2 className="mr-1 h-4 w-4" /> : <Plus className="mr-1 h-4 w-4" />}
+                {isEdit ? "Save changes" : "Save beneficiary"}
               </Button>
             </DialogFooter>
           </DialogContent>
