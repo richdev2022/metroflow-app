@@ -27,6 +27,7 @@ import Subscription from "./pages/Subscription";
 import PaymentCallback from "./pages/PaymentCallback";
 import AcceptInvite from "./pages/AcceptInvite";
 import Wallet from "./pages/Wallet";
+import Beneficiaries from "./pages/Beneficiaries";
 import Payroll from "./pages/Payroll";
 import TransferHistory from "./pages/TransferHistory";
 import Settings from "./pages/Settings";
@@ -223,6 +224,10 @@ const App = () => (
             <Route
               path="/transfer-history"
               element={<KycProtectedRoute element={<TransferHistory />} />}
+            />
+            <Route
+              path="/beneficiaries"
+              element={<KycProtectedRoute element={<Beneficiaries />} />}
             />
             <Route
               path="/settings"
