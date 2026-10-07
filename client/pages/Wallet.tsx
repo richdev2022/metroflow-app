@@ -261,7 +261,7 @@ export default function Wallet() {
     const timer = window.setTimeout(async () => {
       setAddressSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=\${cc}&q=\${encodeURIComponent(q)}`;
+        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=${cc}&q=${encodeURIComponent(q)}`;
         const res = await fetch(url, { headers: { Accept: "application/json" } });
         const data = res.ok ? await res.json() : [];
         setAddressSuggestions(Array.isArray(data) ? data : []);
