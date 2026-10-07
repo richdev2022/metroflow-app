@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
+import { unwrapApiData } from "@/lib/api-response";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -128,7 +129,11 @@ export default function Beneficiaries() {
 
   const isIntl = tab !== "NGN";
 
-  // Debounced Nominatim lookup (intl beneficiaries only, dialog open only).
+  // Debounced address lookup (intl beneficiaries only, dialog open only).
+  // Rides the backend /geo/address-suggest proxy — direct browser fetches to
+  // Nominatim carry the browser UA, which Nominatim's edge rejects with 503
+  // (the exact reason autocomplete returned empty results on web while the
+  // mobile app, which sends an identified UA, kept working).
   useEffect(() => {
     if (!addOpen || tab === "NGN") { setAddressSuggestOpen(false); return; }
     const q = (form.address || "").trim();
@@ -141,12 +146,13 @@ export default function Beneficiaries() {
     const timer = window.setTimeout(async () => {
       setAddressSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=${cc}&q=${encodeURIComponent(q)}`;
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
-        const data = res.ok ? await res.json() : [];
-        setAddressSuggestions(Array.isArray(data) ? data : []);
-        setAddressSuggestOpen(Array.isArray(data) && data.length > 0);
+        const res = await api.get("/geo/address-suggest", { params: { q, cc } });
+        const rows = unwrapApiData<any[]>(res.data, "") || [];
+        setAddressSuggestions(Array.isArray(rows) ? rows : []);
+        setAddressSuggestOpen(Array.isArray(rows) && rows.length > 0);
       } catch {
+        // Transient lookup failures keep the dialog usable — suggestions just
+        // stay hidden until the next keystroke retries.
         setAddressSuggestions([]);
         setAddressSuggestOpen(false);
       } finally {
