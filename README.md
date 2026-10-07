@@ -26,8 +26,10 @@ Metricorex web app (project: Metroflow) — the all-in-one business suite: works
 - **International transfers**: live FX quotes with a visible **rate-lock countdown**, server-enforced pricing, NGN + USD recipient corridors and **Epic transfers** (one-off payments to multiple recipients from an epic).
 - **Fund wallet, your choice**: the Fund action opens a **wallet picker** (personal vs business wallet) before jumping into funding.
 - **Checkout auto-verify**: the payment-callback page verifies on mount, polls while the payment settles, then auto-redirects (reference-prefix aware); payment links, invoices and subscriptions each have a **per-entity transactions drill-down**.
-- **Calls & chat**: LiveKit-powered call rooms with reactions/raise-hand, guest identity reuse on rejoin, WhatsApp-style chat with attachments, voice notes and typing indicators.
+- **Calls & chat**: LiveKit-powered call rooms with reactions/raise-hand, guest identity reuse on rejoin, WhatsApp-style chat with attachments, voice notes and typing indicators. Chat traffic is **socket-driven** — no background polling: the unread badge updates live over the socket and re-syncs only when the tab regains focus (endpoints are hit while the user is actively chatting or on refresh).
 - **Web Push (VAPID)**: incoming-call rings and chat notifications even when the tab is closed (service worker `public/sw.js`).
+- **Disputes**: raise a dispute (category + description) against any debit transfer from the transfer-details dialog — mirrors the mobile flow.
+- **Meeting link interstitial**: opening `/meetings/<code>` on a phone shows "Open in the app" (deep link with Android intent fallback) / "Continue with the web" plus App Store & Google Play download buttons fed by the admin-configured links (`GET /api/public/app-links`).
 
 ## 🛠️ Tech Stack
 

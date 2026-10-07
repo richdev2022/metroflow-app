@@ -70,7 +70,19 @@ import { KycStatus } from "@shared/api";
 import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { setTimezone, getTimezone, setTimeFormat } from "@/lib/datetime";
 
-const queryClient = new QueryClient();
+const queryClient = new QueryClient({
+  defaultOptions: {
+    queries: {
+      // Chat sockets + explicit invalidations keep data fresh; refetching on
+      // every window focus + zero staleTime made every page re-hit its
+      // endpoints constantly (the "endless" chat endpoint calls). Data is
+      // re-synced on remount and via invalidateQueries after mutations.
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+      retry: 1,
+    },
+  },
+});
 
 // Hydrate the app-wide business timezone + time format as early as possible
 // (the Settings page keeps them updated afterwards). Best-effort: failure
