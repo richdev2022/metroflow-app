@@ -353,12 +353,31 @@ export default function Layout({ children }: { children: React.ReactNode }) {
   }, [userId]);
 
   useEffect(() => {
-    if (userId && !fetchedUnreadRef.current) {
-      fetchedUnreadRef.current = true;
-      fetchTotalUnread();
-      const interval = window.setInterval(fetchTotalUnread, 15000);
-      return () => clearInterval(interval);
+    // Re-arm on logout so the next login refetches the badge for whoever
+    // signs in (the ref is once-per-session otherwise).
+    if (!userId) {
+      fetchedUnreadRef.current = false;
+      setTotalUnread(0);
+      return;
     }
+    if (fetchedUnreadRef.current) return;
+    fetchedUnreadRef.current = true;
+    // ONE fetch on login. The badge stays live through the socket listeners
+    // below (chat:new-message-notification / message:created increment it,
+    // conversation:read re-syncs it). Polling every 15s from EVERY page was
+    // hammering GET /chat/conversations around the clock — endpoints should
+    // only be called while the user is actively chatting or on a refresh.
+    fetchTotalUnread();
+    // Window refocus = the user coming back to the app: re-sync once.
+    const onVisible = () => {
+      if (document.visibilityState === 'visible') fetchTotalUnread();
+    };
+    document.addEventListener('visibilitychange', onVisible);
+    window.addEventListener('focus', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('focus', onVisible);
+    };
   }, [userId, fetchTotalUnread]);
 
   // Listen for new message notifications
