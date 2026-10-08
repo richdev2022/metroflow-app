@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Slot } from "@radix-ui/react-slot";
+import { Slot, Slottable } from "@radix-ui/react-slot";
 import { cva, type VariantProps } from "class-variance-authority";
 import { Loader2 } from "lucide-react";
 
@@ -52,7 +52,12 @@ const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
         {...props}
       >
         {loading && <Loader2 className={cn("h-4 w-4 animate-spin", size !== "icon" && "mr-2")} />}
-        {children}
+        {/*
+          asChild: Slot (radix-ui 1.3+) rejects multi-slot children — `[spinner, children]`
+          throws "Slot failed to slot onto its children" and crashes the whole page.
+          Slottable marks the real child so the spinner (if any) merges INTO the child.
+        */}
+        {asChild ? <Slottable>{children}</Slottable> : children}
       </Comp>
     );
   },

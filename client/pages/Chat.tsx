@@ -1266,13 +1266,6 @@ export default function Chat() {
     }
   }, [inviteEmail, loadGuestContacts, toast]);
 
-  /** A registered lookup selects that teammate for a normal direct chat. */
-  const selectRegisteredByEmail = useCallback((userId?: string, name?: string) => {
-    if (!userId) return;
-    if (conversationForm.participantIds.includes(userId)) return;
-    setConversationForm({ ...conversationForm, participantIds: [...conversationForm.participantIds, userId] });
-    toast({ title: name ? `${name} selected` : "Participant selected" });
-  }, [conversationForm, toast]);
   const [isProcessing, setIsProcessing] = useState(false);
   const [newMessage, setNewMessage] = useState("");
   const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
@@ -1285,6 +1278,14 @@ export default function Chat() {
     type: "direct",
     participantIds: [],
   });
+
+  /** A registered lookup selects that teammate for a normal direct chat. */
+  const selectRegisteredByEmail = useCallback((userId?: string, name?: string) => {
+    if (!userId) return;
+    if (conversationForm.participantIds.includes(userId)) return;
+    setConversationForm({ ...conversationForm, participantIds: [...conversationForm.participantIds, userId] });
+    toast({ title: name ? `${name} selected` : "Participant selected" });
+  }, [conversationForm, toast]);
   const [activeCallRingback, setActiveCallRingback] = useState<{ callId: string; stop: () => void } | null>(null);
   const [startingCall, setStartingCall] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
