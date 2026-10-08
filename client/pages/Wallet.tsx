@@ -76,11 +76,14 @@ const transferSchema = z.object({
     });
   }
   if (data.currency === "USD") {
+    // USD contract (Flutterwave intl docs): ABA routing number, bank name,
+    // street address, account_type checking|depository.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
+      ["routingNumber", "US routing number (ABA) is required for USD payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
@@ -90,26 +93,42 @@ const transferSchema = z.object({
     if (data.routingNumber && !/^\d{9}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "US routing number must be 9 digits" });
     }
+    const usdType = (data.accountType || "checking").toLowerCase();
+    if (!["checking", "depository"].includes(usdType)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accountType"], message: 'USD account type must be "checking" or "depository"' });
+    }
   }
   if (data.currency === "GBP") {
+    // GBP contract: routing_number = UK sort code (6 digits) OR BIC/SWIFT;
+    // the European address block (street, city, postcode) is required.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientAddress", "Street address is required for international payouts"],
+      ["recipientCity", "City is required for international payouts"],
+      ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
-      ["routingNumber", "UK sort code (6 digits) is required for GBP payouts"],
+      ["routingNumber", "UK sort code (6 digits) or BIC is required for GBP payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
       }
     }
-    if (data.routingNumber && !/^\d{6}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463)" });
+    const routingClean = (data.routingNumber || "").replace(/[\s-]/g, "");
+    const isSortCode = /^\d{6}$/.test(routingClean);
+    const isBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingClean) && /[A-Za-z]/.test(routingClean);
+    if (data.routingNumber && !isSortCode && !isBic) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463), or an 8/11-character BIC" });
     }
   }
   if (data.currency === "EUR") {
+    // EUR contract: account_number = IBAN, BIC routing, and the European
+    // address block (street, city REQUIRED, postcode).
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
+      ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
       ["swiftCode", "SWIFT/BIC code is required for EUR payouts"],
     ];
@@ -1597,7 +1616,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
+                      {watchedCurrency === "USD" && (
                         <FormField
                           control={transferForm.control}
                           name="routingNumber"
@@ -1635,7 +1654,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
+                      {watchedCurrency === "USD" && (
                         <FormField
                           control={transferForm.control}
                           name="accountType"
@@ -1650,7 +1669,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                                 </FormControl>
                                 <SelectContent>
                                   <SelectItem value="checking">Checking</SelectItem>
-                                  <SelectItem value="savings">Savings</SelectItem>
+                                  <SelectItem value="depository">Depository</SelectItem>
                                 </SelectContent>
                               </Select>
                               <FormMessage />
