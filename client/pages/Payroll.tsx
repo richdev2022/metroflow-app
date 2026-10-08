@@ -202,12 +202,15 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
   const routingClean = (item.routing_number || "").replace(/[\s-]/g, "");
   const routingIsBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingClean) && /[A-Za-z]/.test(routingClean);
   if (currency === "USD") {
+    const email = (item.beneficiary_email || "").trim();
     return (
       !!item.bank_name?.trim() &&
       isValidAbaRoutingNumber(item.routing_number || "") &&
       !!item.recipient_account?.trim() &&
       !!item.recipient_address?.trim() &&
-      !!item.recipient_country
+      !!item.recipient_country &&
+      // USD meta[0] contract: the beneficiary's email is a required field.
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     );
   }
   if (currency === "GBP") {
