@@ -266,7 +266,12 @@ export default function AskMetricAiWidget() {
     setSupportMessages([]);
     setSupportStatus(null);
     pollSupport();
-    const timer = window.setInterval(pollSupport, 5000);
+    const timer = window.setInterval(() => {
+      // Professional housekeeping: a background tab never needs live support
+      // updates — skip the tick (the poll resumes on the next visible tick).
+      if (typeof document !== "undefined" && document.hidden) return;
+      pollSupport();
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [mode, supportThread, pollSupport]);
 

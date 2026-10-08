@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
+import { unwrapApiData } from "@/lib/api-response";
 import { WalletInfo, FundWalletInput, CreateVirtualAccountInput, OtpEnabledResponse, TransferQuote, TransferBeneficiary } from "@shared/api";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -61,6 +62,7 @@ const transferSchema = z.object({
   swiftCode: z.string().optional(),
   routingNumber: z.string().optional(),
   accountType: z.string().optional(),
+  beneficiaryEmail: z.string().optional(),
   recipientAddress: z.string().optional(),
   recipientCity: z.string().optional(),
   recipientState: z.string().optional(),
@@ -75,11 +77,15 @@ const transferSchema = z.object({
     });
   }
   if (data.currency === "USD") {
+    // USD contract (Flutterwave intl docs): ABA routing number, SWIFT/BIC code,
+    // bank name, street address, account_type checking|depository, email.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
+      ["routingNumber", "US routing number (ABA) is required for USD payouts"],
+      ["swiftCode", "SWIFT/BIC code is required for USD payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
@@ -89,27 +95,64 @@ const transferSchema = z.object({
     if (data.routingNumber && !/^\d{9}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "US routing number must be 9 digits" });
     }
+    if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
+    const usdType = (data.accountType || "checking").toLowerCase();
+    if (!["checking", "depository"].includes(usdType)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accountType"], message: 'USD account type must be "checking" or "depository"' });
+    }
+    // USD meta[0] contract: the beneficiary's email is part of the payout payload.
+    if (!(data.beneficiaryEmail || "").trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["beneficiaryEmail"], message: "Beneficiary email is required for USD payouts" });
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.beneficiaryEmail!.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["beneficiaryEmail"], message: "Enter a valid email address" });
+    }
   }
   if (data.currency === "GBP") {
+    // GBP contract: routing_number = UK sort code (6 digits) OR BIC/SWIFT;
+    // swift_code is REQUIRED (meta mirrors EUR); account_type is
+    // personal|corporate; the European address block (street, city, postcode)
+    // is required.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientAddress", "Street address is required for international payouts"],
+      ["recipientCity", "City is required for international payouts"],
+      ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
-      ["routingNumber", "UK sort code (6 digits) is required for GBP payouts"],
+      ["routingNumber", "UK sort code (6 digits) or BIC is required for GBP payouts"],
+      ["swiftCode", "SWIFT/BIC code is required for GBP payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
       }
     }
-    if (data.routingNumber && !/^\d{6}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463)" });
+    const routingClean = (data.routingNumber || "").replace(/[\s-]/g, "");
+    const isSortCode = /^\d{6}$/.test(routingClean);
+    const isBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingClean) && /[A-Za-z]/.test(routingClean);
+    if (data.routingNumber && !isSortCode && !isBic) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463), or an 8/11-character BIC" });
+    }
+    if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
+    const gbpType = (data.accountType || "personal").toLowerCase();
+    if (!["personal", "corporate"].includes(gbpType)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accountType"], message: 'GBP account type must be "personal" or "corporate"' });
     }
   }
   if (data.currency === "EUR") {
+    // EUR contract: account_number = IBAN, routing_number AND swift_code both
+    // carry the BIC (both required), and the European address block (street,
+    // city REQUIRED, postcode).
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
+      ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
+      ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
+      ["routingNumber", "BIC/SWIFT code is required as the EUR routing number"],
       ["swiftCode", "SWIFT/BIC code is required for EUR payouts"],
     ];
     for (const [path, message] of required) {
@@ -119,6 +162,9 @@ const transferSchema = z.object({
     }
     if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
+    if (data.routingNumber && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.routingNumber.trim().replace(/[\s-]/g, ""))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "EUR routing number must be an 8 or 11-character BIC" });
     }
   }
 });
@@ -228,6 +274,7 @@ export default function Wallet() {
       swiftCode: "",
       routingNumber: "",
       accountType: "",
+      beneficiaryEmail: "",
       recipientAddress: "",
       recipientCity: "",
       recipientState: "",
@@ -261,11 +308,13 @@ export default function Wallet() {
     const timer = window.setTimeout(async () => {
       setAddressSearching(true);
       try {
-        const url = `https://nominatim.openstreetmap.org/search?format=jsonv2&addressdetails=1&limit=5&countrycodes=\${cc}&q=\${encodeURIComponent(q)}`;
-        const res = await fetch(url, { headers: { Accept: "application/json" } });
-        const data = res.ok ? await res.json() : [];
-        setAddressSuggestions(Array.isArray(data) ? data : []);
-        setAddressSuggestOpen(Array.isArray(data) && data.length > 0);
+        // Backend /geo/address-suggest proxy: direct browser fetches to
+        // Nominatim carry the browser UA and get 503 (empty results) — the
+        // proxy sends the identified app UA instead.
+        const res = await api.get("/geo/address-suggest", { params: { q, cc } });
+        const rows = unwrapApiData<any[]>(res.data, "") || [];
+        setAddressSuggestions(Array.isArray(rows) ? rows : []);
+        setAddressSuggestOpen(Array.isArray(rows) && rows.length > 0);
       } catch {
         setAddressSuggestions([]);
         setAddressSuggestOpen(false);
@@ -385,16 +434,24 @@ export default function Wallet() {
 
   // Keep the payout rail consistent with the selected currency: USD exposes
   // the ACH/SWIFT picker; GBP (sort codes) and EUR (SWIFT/IBAN) always ride
-  // the SWIFT rail — the field is hidden for them and auto-set here.
+  // the SWIFT rail — the field is hidden for them and auto-set here. The
+  // account-type default also follows the corridor (USD checking|depository,
+  // GBP personal|corporate) so the payload always carries a valid value.
   useEffect(() => {
     if (watchedCurrency === "GBP" || watchedCurrency === "EUR") {
       if (transferForm.getValues("bankCode") !== "SWIFT") {
         transferForm.setValue("bankCode", "SWIFT");
       }
+      if (watchedCurrency === "GBP" && !["personal", "corporate"].includes((transferForm.getValues("accountType") || "").toLowerCase())) {
+        transferForm.setValue("accountType", "personal");
+      }
     } else if (watchedCurrency === "USD") {
       const cur = transferForm.getValues("bankCode");
       if (cur !== "ACH" && cur !== "SWIFT") {
         transferForm.setValue("bankCode", "ACH");
+      }
+      if (!["checking", "depository"].includes((transferForm.getValues("accountType") || "").toLowerCase())) {
+        transferForm.setValue("accountType", "checking");
       }
     }
   }, [watchedCurrency, transferForm]);
@@ -557,6 +614,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
     transferForm.setValue("routingNumber", b.routingNumber || "");
     transferForm.setValue("swiftCode", b.swiftCode || "");
     transferForm.setValue("accountType", b.accountType || "");
+    transferForm.setValue("beneficiaryEmail", (b as any).email || "");
     transferForm.setValue("recipientAddress", b.address || "");
     transferForm.setValue("recipientCity", b.city || "");
     transferForm.setValue("recipientState", b.state || "");
@@ -570,8 +628,8 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
       );
       if (watchedCurrency === "USD") {
         // USD rail auto-pick: a saved SWIFT code → SWIFT wire; else a 9-digit
-        // ABA routing number → ACH (the ACH form hides the SWIFT field, so
-        // leaving the rail wrong would silently drop the routing/WIRE data).
+        // ABA routing number → ACH (the rail is informational routing context;
+        // the SWIFT/BIC field itself is always shown + required).
         const rail = String(b.swiftCode || "").trim()
           ? "SWIFT"
           : /^\d{9}$/.test(String(b.routingNumber || "").replace(/[\s-]/g, ""))
@@ -694,6 +752,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
               payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
               payload.routingNumber = values.routingNumber?.trim() || undefined;
               payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
+              payload.beneficiaryEmail = values.beneficiaryEmail?.trim() || undefined;
           }
           if (otpEnabled) {
               payload.otp = otp;
@@ -784,6 +843,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
           payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
           payload.routingNumber = values.routingNumber?.trim() || undefined;
           payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
+          payload.beneficiaryEmail = values.beneficiaryEmail?.trim() || undefined;
       }
 
       const response = await api.post("/transfers/single", payload);
@@ -1579,7 +1639,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "SWIFT" && (
+                      {watchedCurrency === "GBP" && (
                         <FormField
                           control={transferForm.control}
                           name="swiftCode"
@@ -1587,14 +1647,44 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                             <FormItem>
                               <FormLabel>SWIFT / BIC code</FormLabel>
                               <FormControl>
-                                <Input placeholder="e.g. CHASUS33" {...field} />
+                                <Input placeholder="e.g. BUKBGB22" maxLength={11} {...field} />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
+                      {watchedCurrency === "USD" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="swiftCode"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>SWIFT / BIC code</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. CHASUS33" maxLength={11} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "EUR" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="routingNumber"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Routing number (BIC)</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. BECFDE7HKKX" maxLength={11} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && (
                         <FormField
                           control={transferForm.control}
                           name="routingNumber"
@@ -1632,7 +1722,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "ACH" && (
+                      {watchedCurrency === "USD" && (
                         <FormField
                           control={transferForm.control}
                           name="accountType"
@@ -1647,9 +1737,29 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                                 </FormControl>
                                 <SelectContent>
                                   <SelectItem value="checking">Checking</SelectItem>
-                                  <SelectItem value="savings">Savings</SelectItem>
+                                  <SelectItem value="depository">Depository</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="beneficiaryEmail"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Beneficiary email</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="email"
+                                  placeholder="markcuban@example.com"
+                                  autoComplete="off"
+                                  {...field}
+                                />
+                              </FormControl>
                               <FormMessage />
                             </FormItem>
                           )}

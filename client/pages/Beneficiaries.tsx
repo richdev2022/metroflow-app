@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useState } from "react";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
+import { unwrapApiData } from "@/lib/api-response";
 import { Card, CardContent } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -117,7 +118,69 @@ export default function Beneficiaries() {
   const [verifyingRowId, setVerifyingRowId] = useState<string | null>(null);
   const isEdit = !!editTarget;
 
+  // ---- Address autofill (OpenStreetMap Nominatim) — same engine the
+  // international transfer form uses. As the user picks the country and
+  // types the street address, debounced queries suggest matching addresses
+  // and fill street/city/state/postcode in one tap.
+  const [addressSuggestions, setAddressSuggestions] = useState<any[]>([]);
+  const [addressSuggestOpen, setAddressSuggestOpen] = useState(false);
+  const [addressSearching, setAddressSearching] = useState(false);
+  const addressPickLockRef = React.useRef(false);
+
   const isIntl = tab !== "NGN";
+
+  // Debounced address lookup (intl beneficiaries only, dialog open only).
+  // Rides the backend /geo/address-suggest proxy — direct browser fetches to
+  // Nominatim carry the browser UA, which Nominatim's edge rejects with 503
+  // (the exact reason autocomplete returned empty results on web while the
+  // mobile app, which sends an identified UA, kept working).
+  useEffect(() => {
+    if (!addOpen || tab === "NGN") { setAddressSuggestOpen(false); return; }
+    const q = (form.address || "").trim();
+    const cc = (form.country || "").toLowerCase();
+    // Skip lookups right after a suggestion was picked (value just changed).
+    if (q.length < 3 || !cc || addressPickLockRef.current) {
+      setAddressSuggestOpen(false);
+      return;
+    }
+    const timer = window.setTimeout(async () => {
+      setAddressSearching(true);
+      try {
+        const res = await api.get("/geo/address-suggest", { params: { q, cc } });
+        const rows = unwrapApiData<any[]>(res.data, "") || [];
+        setAddressSuggestions(Array.isArray(rows) ? rows : []);
+        setAddressSuggestOpen(Array.isArray(rows) && rows.length > 0);
+      } catch {
+        // Transient lookup failures keep the dialog usable — suggestions just
+        // stay hidden until the next keystroke retries.
+        setAddressSuggestions([]);
+        setAddressSuggestOpen(false);
+      } finally {
+        setAddressSearching(false);
+      }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [form.address, form.country, addOpen, tab]);
+
+  // Fill street/city/state/postcode from a picked Nominatim result.
+  const pickAddressSuggestion = (item: any) => {
+    const a = item?.address || {};
+    addressPickLockRef.current = true;
+    const street =
+      [a.house_number, a.road].filter(Boolean).join(" ") ||
+      item?.name ||
+      String(item?.display_name || "").split(",")[0] ||
+      "";
+    setForm((f) => ({
+      ...f,
+      address: street,
+      city: a.city || a.town || a.village || a.suburb || a.county || "",
+      state: a.state || "",
+      postalCode: a.postcode || "",
+    }));
+    setAddressSuggestOpen(false);
+    window.setTimeout(() => { addressPickLockRef.current = false; }, 500);
+  };
 
   const load = useCallback(async (currency: string) => {
     setLoading(true);
@@ -402,7 +465,12 @@ export default function Beneficiaries() {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {verificationOf(b) !== "resolved" && (
+          {/* Verify CTA is NGN-only: foreign rails (ACH/SEPA/SWIFT) cannot
+              resolve account names through the provider, and Flutterwave has
+              no verify-beneficiary endpoint for international payouts. Intl
+              rows carry their corridor validation from the transfer that
+              created them. */}
+          {b.currency?.toUpperCase() === "NGN" && verificationOf(b) !== "resolved" && (
             <Button
               variant="outline"
               size="sm"
@@ -451,9 +519,15 @@ export default function Beneficiaries() {
               Saved transfer recipients — local Nigerian banks and international payouts (USD, GBP, EUR). New beneficiaries you transfer to are added here automatically.
             </p>
           </div>
-          <Button onClick={openAdd}>
-            <Plus className="mr-1.5 h-4 w-4" /> Add beneficiary
-          </Button>
+          {/* Global beneficiaries are NOT hand-added: Flutterwave exposes no
+              save-beneficiary API for USD/GBP/EUR payouts, so intl rows are
+              captured automatically after a first successful transfer and
+              only listed/edited/removed here. */}
+          {tab === "NGN" && (
+            <Button onClick={openAdd}>
+              <Plus className="mr-1.5 h-4 w-4" /> Add beneficiary
+            </Button>
+          )}
         </div>
 
         <div className="flex gap-1.5 flex-wrap">
@@ -484,12 +558,14 @@ export default function Beneficiaries() {
               <p className="font-medium">No {tab} beneficiaries yet</p>
               <p className="text-sm text-muted-foreground">
                 {isIntl
-                  ? "Add an international beneficiary once and reuse it for every payout."
+                  ? "International beneficiaries are added automatically after your first successful transfer — they'll appear here for reuse."
                   : "Transfer to a Nigerian bank account, or add one manually."}
               </p>
-              <Button variant="outline" size="sm" onClick={openAdd} className="mt-2">
-                <Plus className="mr-1 h-4 w-4" /> Add {tab} beneficiary
-              </Button>
+              {!isIntl && (
+                <Button variant="outline" size="sm" onClick={openAdd} className="mt-2">
+                  <Plus className="mr-1 h-4 w-4" /> Add NGN beneficiary
+                </Button>
+              )}
             </CardContent>
           </Card>
         ) : (
@@ -596,34 +672,48 @@ export default function Beneficiaries() {
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="9 digits, e.g. 021000021" maxLength={12} />
                     </div>
                   )}
+                  {form.currency === "USD" && (
+                    <div className="space-y-1.5">
+                      <Label>SWIFT / BIC code</Label>
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="e.g. CHASUS33" maxLength={11} />
+                    </div>
+                  )}
                   {form.currency === "GBP" && (
                     <div className="space-y-1.5">
                       <Label>Sort code</Label>
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="6 digits, e.g. 308463" maxLength={8} />
                     </div>
                   )}
+                  {form.currency === "GBP" && (
+                    <div className="space-y-1.5">
+                      <Label>SWIFT / BIC code</Label>
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="e.g. BUKBGB22" maxLength={11} />
+                    </div>
+                  )}
                   {form.currency === "EUR" && (
                     <div className="space-y-1.5">
                       <Label>SWIFT / BIC</Label>
-                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="8 or 11 characters, e.g. BECFDE7HKKX" maxLength={11} />
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="8 or 11 characters, e.g. BECFDE7HKKX" maxLength={11} />
                     </div>
                   )}
-                  {form.currency === "USD" && (form.bankCode || "ACH") === "SWIFT" && (
+                  {form.currency === "EUR" && (
                     <div className="space-y-1.5">
-                      <Label>SWIFT / BIC</Label>
-                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="e.g. CHASUS33" maxLength={11} />
+                      <Label>Routing number (BIC)</Label>
+                      <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value.toUpperCase())} placeholder="e.g. BECFDE7HKKX" maxLength={11} />
                     </div>
                   )}
                   {form.currency === "USD" && (
                     <div className="space-y-1.5">
                       <Label>Account type</Label>
+                      {/* Flutterwave USD accepts checking | depository ONLY —
+                          "savings" is not a valid value on the intl rails. */}
                       <Select value={form.accountType || "checking"} onValueChange={(v) => setField("accountType", v)}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="checking">Checking</SelectItem>
-                          <SelectItem value="savings">Savings</SelectItem>
+                          <SelectItem value="depository">Depository</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
@@ -657,9 +747,23 @@ export default function Beneficiaries() {
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="space-y-1.5">
-                    <Label>Street address</Label>
-                    <Input value={form.address} onChange={(e) => setField("address", e.target.value)} placeholder="e.g. 1801 Main St" />
+                  <div className="relative space-y-1.5">
+                    <Label>Street address {addressSearching && <Loader2 className="inline h-3 w-3 animate-spin" />}</Label>
+                    <Input value={form.address} onChange={(e) => setField("address", e.target.value)} placeholder="Start typing the street address…" autoComplete="off" />
+                    {addressSuggestOpen && addressSuggestions.length > 0 && (
+                      <div className="absolute left-0 right-0 top-full z-50 mt-1 max-h-56 overflow-y-auto rounded-md border bg-background shadow-lg">
+                        {addressSuggestions.map((item, idx) => (
+                          <button
+                            key={item.place_id ?? idx}
+                            type="button"
+                            className="block w-full border-b px-3 py-2 text-left text-sm last:border-b-0 hover:bg-muted"
+                            onClick={() => pickAddressSuggestion(item)}
+                          >
+                            {item.display_name}
+                          </button>
+                        ))}
+                      </div>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">

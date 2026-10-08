@@ -75,6 +75,7 @@ import {
   Code2,
   Download,
   ListChecks,
+  UserPlus,
 } from "lucide-react";
 import { useToast } from "@/components/ui/use-toast";
 import {
@@ -1205,6 +1206,66 @@ export default function Chat() {
   const [teamMembers, setTeamMembers] = useState<TeamMember[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<Conversation | null>(null);
   const [isCreateDialogOpen, setIsCreateDialogOpen] = useState(false);
+
+  // ---- Add anyone by email (guest invite flow) --------------------------
+  // Typing an email either resolves a registered workspace member (their
+  // team-member row gets selected for a normal DM) or — for an unknown
+  // email — offers an Invite action that stores a guest contact (Invited
+  // badge in the chat list) and emails the registration invitation.
+  const [inviteEmail, setInviteEmail] = useState("");
+  const [inviteLookup, setInviteLookup] = useState<null | { registered: boolean; name?: string; userId?: string; invited?: boolean }>(null);
+  const [inviteLookupLoading, setInviteLookupLoading] = useState(false);
+  const [inviteSending, setInviteSending] = useState(false);
+  const [guestContacts, setGuestContacts] = useState<Array<{ id: string; email: string; invitedAt?: string }>>([]);
+
+  const loadGuestContacts = useCallback(async () => {
+    try {
+      const res = await api.get("/chat/contacts");
+      const contacts = res.data?.data?.contacts;
+      setGuestContacts(Array.isArray(contacts) ? contacts : []);
+    } catch {
+      // Non-fatal: the invited-contacts strip simply stays hidden.
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadGuestContacts();
+  }, [loadGuestContacts]);
+
+  const lookupInviteEmail = useCallback(async (raw: string) => {
+    const email = raw.trim().toLowerCase();
+    if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      setInviteLookup(null);
+      return;
+    }
+    setInviteLookupLoading(true);
+    try {
+      const res = await api.get("/chat/contacts/lookup", { params: { email } });
+      setInviteLookup(res.data?.data || null);
+    } catch {
+      setInviteLookup(null);
+    } finally {
+      setInviteLookupLoading(false);
+    }
+  }, []);
+
+  const sendChatInvite = useCallback(async () => {
+    const email = inviteEmail.trim().toLowerCase();
+    if (!email) return;
+    setInviteSending(true);
+    try {
+      const res = await api.post("/chat/contacts/invite", { email });
+      toast({ title: res.data?.message || "Invitation sent", description: `${email} was added to your chat list as invited.` });
+      setInviteEmail("");
+      setInviteLookup(null);
+      void loadGuestContacts();
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Could not invite", description: e.response?.data?.error || "Please try again" });
+    } finally {
+      setInviteSending(false);
+    }
+  }, [inviteEmail, loadGuestContacts, toast]);
+
   const [isProcessing, setIsProcessing] = useState(false);
   const [newMessage, setNewMessage] = useState("");
   const [localMessages, setLocalMessages] = useState<ChatMessage[]>([]);
@@ -1217,6 +1278,14 @@ export default function Chat() {
     type: "direct",
     participantIds: [],
   });
+
+  /** A registered lookup selects that teammate for a normal direct chat. */
+  const selectRegisteredByEmail = useCallback((userId?: string, name?: string) => {
+    if (!userId) return;
+    if (conversationForm.participantIds.includes(userId)) return;
+    setConversationForm({ ...conversationForm, participantIds: [...conversationForm.participantIds, userId] });
+    toast({ title: name ? `${name} selected` : "Participant selected" });
+  }, [conversationForm, toast]);
   const [activeCallRingback, setActiveCallRingback] = useState<{ callId: string; stop: () => void } | null>(null);
   const [startingCall, setStartingCall] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
@@ -2911,6 +2980,50 @@ export default function Chat() {
                   <Label>Participants</Label>
                   <TeamMemberMultiSelect selected={conversationForm.participantIds} onChange={(ids) => setConversationForm({ ...conversationForm, participantIds: ids })} members={teamMembers} />
                 </div>
+                {/* Add anyone by email: registered members resolve to a normal
+                    participant; unknown emails get an invite + Invited badge. */}
+                <div className="grid gap-2 rounded-lg border bg-muted/30 p-3">
+                  <Label className="text-xs font-medium">Add someone by email</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      type="email"
+                      value={inviteEmail}
+                      onChange={(e) => {
+                        setInviteEmail(e.target.value);
+                        const v = e.target.value.trim();
+                        if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v)) void lookupInviteEmail(v);
+                        else setInviteLookup(null);
+                      }}
+                      onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); void lookupInviteEmail(inviteEmail); } }}
+                      placeholder="name@company.com"
+                      className="h-9"
+                    />
+                    {inviteLookupLoading && <Loader2 className="h-4 w-4 animate-spin self-center text-muted-foreground" />}
+                  </div>
+                  {inviteLookup && !inviteLookup.registered && !inviteLookup.invited && (
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span className="text-muted-foreground">Not on Metricorex yet — guest</span>
+                      <Button type="button" size="sm" variant="outline" onClick={() => void sendChatInvite()} disabled={inviteSending}>
+                        {inviteSending ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <UserPlus className="h-3.5 w-3.5" />}
+                        <span className="ml-1">Invite</span>
+                      </Button>
+                    </div>
+                  )}
+                  {inviteLookup?.registered && (
+                    <div className="flex items-center justify-between gap-2 text-sm">
+                      <span className="text-muted-foreground">
+                        Registered: <span className="font-medium text-foreground">{inviteLookup.name}</span>
+                      </span>
+                      <Button type="button" size="sm" variant="outline" onClick={() => selectRegisteredByEmail(inviteLookup.userId, inviteLookup.name)}>
+                        <Plus className="h-3.5 w-3.5" />
+                        <span className="ml-1">Select</span>
+                      </Button>
+                    </div>
+                  )}
+                  {inviteLookup?.invited && (
+                    <p className="text-xs text-muted-foreground">Already invited — they will appear in your chat list with an Invited badge.</p>
+                  )}
+                </div>
               </div>
               <DialogFooter>
                 <Button variant="outline" onClick={() => setIsCreateDialogOpen(false)} disabled={isProcessing}>Cancel</Button>
@@ -3000,21 +3113,57 @@ export default function Chat() {
                     </div>
                   </button>
                   {sortedConversations.length > 0 ? (
-                    sortedConversations.map((conv) => (
-                      <ConversationListItem
-                        key={conv.id}
-                        conversation={conv}
-                        isSelected={selectedConversation?.id === conv.id}
-                        members={teamMembers}
-                        presence={userPresence}
-                        searchQuery={searchQuery}
-                        onClick={() => {
-                          setSelectedConversation(conv);
-                          // Mobile: enter the conversation immediately.
-                          setMobileShowSidebar(false);
-                        }}
-                      />
-                    ))
+                    <>
+                      {sortedConversations.map((conv) => (
+                        <ConversationListItem
+                          key={conv.id}
+                          conversation={conv}
+                          isSelected={selectedConversation?.id === conv.id}
+                          members={teamMembers}
+                          presence={userPresence}
+                          searchQuery={searchQuery}
+                          onClick={() => {
+                            setSelectedConversation(conv);
+                            // Mobile: enter the conversation immediately.
+                            setMobileShowSidebar(false);
+                          }}
+                        />
+                      ))}
+                      {/* Invited (guest) contacts — people brought in by
+                          email who have not registered yet. They stay in the
+                          list with an Invited badge until they join. */}
+                      {guestContacts
+                        .filter((c) => !searchQuery || c.email.toLowerCase().includes(searchQuery.toLowerCase()))
+                        .map((c) => (
+                          <div key={c.id} className="flex items-center gap-3 rounded-lg px-2 py-2">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-muted">
+                              <UserPlus className="h-4 w-4 text-muted-foreground" />
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <div className="flex items-center gap-2">
+                                <p className="truncate text-sm font-medium text-foreground">{c.email}</p>
+                                <span className="shrink-0 rounded-full bg-amber-100 px-1.5 py-0.5 text-[10px] font-semibold text-amber-800 dark:bg-amber-950/60 dark:text-amber-300">
+                                  Invited
+                                </span>
+                              </div>
+                              <p className="truncate text-xs text-muted-foreground">Waiting for them to join Metricorex</p>
+                            </div>
+                            <button
+                              type="button"
+                              className="shrink-0 text-muted-foreground transition-colors hover:text-destructive"
+                              onClick={async () => {
+                                try {
+                                  await api.delete(`/chat/contacts/${c.id}`);
+                                  setGuestContacts((prev) => prev.filter((x) => x.id !== c.id));
+                                } catch {}
+                              }}
+                              aria-label="Remove invited contact"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                    </>
                   ) : (
                     <div className="flex flex-col items-center justify-center p-10 text-center">
                       <div className="h-14 w-14 rounded-2xl bg-muted flex items-center justify-center mb-3">
