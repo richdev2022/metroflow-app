@@ -1218,7 +1218,7 @@ export default function Chat() {
   const [inviteSending, setInviteSending] = useState(false);
   const [guestContacts, setGuestContacts] = useState<Array<{ id: string; email: string; invitedAt?: string }>>([]);
 
-  const loadGuestContacts = React.useCallback(async () => {
+  const loadGuestContacts = useCallback(async () => {
     try {
       const res = await api.get("/chat/contacts");
       const contacts = res.data?.data?.contacts;
@@ -1228,11 +1228,11 @@ export default function Chat() {
     }
   }, []);
 
-  React.useEffect(() => {
+  useEffect(() => {
     void loadGuestContacts();
   }, [loadGuestContacts]);
 
-  const lookupInviteEmail = React.useCallback(async (raw: string) => {
+  const lookupInviteEmail = useCallback(async (raw: string) => {
     const email = raw.trim().toLowerCase();
     if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       setInviteLookup(null);
@@ -1249,7 +1249,7 @@ export default function Chat() {
     }
   }, []);
 
-  const sendChatInvite = React.useCallback(async () => {
+  const sendChatInvite = useCallback(async () => {
     const email = inviteEmail.trim().toLowerCase();
     if (!email) return;
     setInviteSending(true);
@@ -1267,7 +1267,7 @@ export default function Chat() {
   }, [inviteEmail, loadGuestContacts, toast]);
 
   /** A registered lookup selects that teammate for a normal direct chat. */
-  const selectRegisteredByEmail = React.useCallback((userId?: string, name?: string) => {
+  const selectRegisteredByEmail = useCallback((userId?: string, name?: string) => {
     if (!userId) return;
     if (conversationForm.participantIds.includes(userId)) return;
     setConversationForm({ ...conversationForm, participantIds: [...conversationForm.participantIds, userId] });
