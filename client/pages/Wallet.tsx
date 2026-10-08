@@ -62,6 +62,7 @@ const transferSchema = z.object({
   swiftCode: z.string().optional(),
   routingNumber: z.string().optional(),
   accountType: z.string().optional(),
+  beneficiaryEmail: z.string().optional(),
   recipientAddress: z.string().optional(),
   recipientCity: z.string().optional(),
   recipientState: z.string().optional(),
@@ -96,6 +97,12 @@ const transferSchema = z.object({
     const usdType = (data.accountType || "checking").toLowerCase();
     if (!["checking", "depository"].includes(usdType)) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accountType"], message: 'USD account type must be "checking" or "depository"' });
+    }
+    // USD meta[0] contract: the beneficiary's email is part of the payout payload.
+    if (!(data.beneficiaryEmail || "").trim()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["beneficiaryEmail"], message: "Beneficiary email is required for USD payouts" });
+    } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(data.beneficiaryEmail!.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["beneficiaryEmail"], message: "Enter a valid email address" });
     }
   }
   if (data.currency === "GBP") {
@@ -248,6 +255,7 @@ export default function Wallet() {
       swiftCode: "",
       routingNumber: "",
       accountType: "",
+      beneficiaryEmail: "",
       recipientAddress: "",
       recipientCity: "",
       recipientState: "",
@@ -579,6 +587,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
     transferForm.setValue("routingNumber", b.routingNumber || "");
     transferForm.setValue("swiftCode", b.swiftCode || "");
     transferForm.setValue("accountType", b.accountType || "");
+    transferForm.setValue("beneficiaryEmail", (b as any).email || "");
     transferForm.setValue("recipientAddress", b.address || "");
     transferForm.setValue("recipientCity", b.city || "");
     transferForm.setValue("recipientState", b.state || "");
@@ -716,6 +725,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
               payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
               payload.routingNumber = values.routingNumber?.trim() || undefined;
               payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
+              payload.beneficiaryEmail = values.beneficiaryEmail?.trim() || undefined;
           }
           if (otpEnabled) {
               payload.otp = otp;
@@ -806,6 +816,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
           payload.swiftCode = values.swiftCode?.trim()?.toUpperCase() || undefined;
           payload.routingNumber = values.routingNumber?.trim() || undefined;
           payload.accountType = values.accountType?.trim()?.toLowerCase() || undefined;
+          payload.beneficiaryEmail = values.beneficiaryEmail?.trim() || undefined;
       }
 
       const response = await api.post("/transfers/single", payload);
@@ -1672,6 +1683,26 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                                   <SelectItem value="depository">Depository</SelectItem>
                                 </SelectContent>
                               </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="beneficiaryEmail"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Beneficiary email</FormLabel>
+                              <FormControl>
+                                <Input
+                                  type="email"
+                                  placeholder="markcuban@example.com"
+                                  autoComplete="off"
+                                  {...field}
+                                />
+                              </FormControl>
                               <FormMessage />
                             </FormItem>
                           )}
