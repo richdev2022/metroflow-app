@@ -1035,6 +1035,10 @@ function SupportConversation({
   const onGoneRef = useRef(onGone);
   onGoneRef.current = onGone;
 
+  // Mirror of `concluded` for the poll interval (keeps the effect deps clean).
+  const concludedRef = useRef(false);
+  concludedRef.current = status === "resolved" || status === "closed";
+
   const concluded = status === "resolved" || status === "closed";
 
   const poll = useCallback(async () => {
@@ -1061,7 +1065,14 @@ function SupportConversation({
     setMessages([]);
     setLoading(true);
     void poll();
-    const timer = window.setInterval(() => void poll(), 5000);
+    const timer = window.setInterval(() => {
+      // Standard polling hygiene: a background tab never needs live updates
+      // (the poll resumes on the next visible tick), and a concluded support
+      // conversation is terminal — polling it forever is wasted requests.
+      if (typeof document !== "undefined" && document.hidden) return;
+      if (concludedRef.current) return;
+      void poll();
+    }, 5000);
     return () => window.clearInterval(timer);
   }, [poll]);
 

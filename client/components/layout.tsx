@@ -340,8 +340,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     callNotificationRef.current = null;
   }, []);
 
+  const lastUnreadFetchRef = React.useRef(0);
   const fetchTotalUnread = useCallback(async () => {
     if (!userId) return;
+    // Coalesce bursts: focus + visibilitychange fire back-to-back on every
+    // tab switch (and focus can fire on a mere window click). One request
+    // per 5s window is plenty for a badge — the socket listeners keep it
+    // live in between.
+    const now = Date.now();
+    if (now - lastUnreadFetchRef.current < 5_000) return;
+    lastUnreadFetchRef.current = now;
     try {
       const res = await api.get('/chat/conversations');
       const convs = unwrapApiData<(Conversation & { unreadCount?: number })[]>(res.data, '') || [];
