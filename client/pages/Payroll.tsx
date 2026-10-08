@@ -26,6 +26,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Skeleton } from "@/components/ui/skeleton";
 import PinInput from "@/components/PinInput";
 import {
+  Clock,
   Loader2,
   Plus,
   Check,
@@ -93,6 +94,9 @@ interface PayrollStats {
   ngnCount: number;
   usdTotal: number;
   usdCount: number;
+  // Per-corridor payroll totals (USD/GBP/EUR) — the payroll is NOT NGN+USD
+  // only: GBP and EUR employees get their own cards.
+  intlTotals: Record<string, { total: number; count: number }>;
 }
 
 const EMPTY_STATS: PayrollStats = {
@@ -104,6 +108,7 @@ const EMPTY_STATS: PayrollStats = {
   ngnCount: 0,
   usdTotal: 0,
   usdCount: 0,
+  intlTotals: {},
 };
 
 /* ------------------------------------------------------------------ */
@@ -188,22 +193,31 @@ const EPIC_COUNTRIES: { code: string; name: string }[] = [
 
 /** Row-level currency readiness used to gate the "Send OTP / Continue" button. */
 function isEpicRecipientComplete(item: TransferItem): boolean {
+  // Flutterwave international payout docs (USD/GBP/EUR): per-corridor field
+  // contracts. USD needs an ABA routing number + street address; GBP accepts
+  // a 6-digit sort code OR a BIC; EUR requires a BIC and a city. Both GBP and
+  // EUR need the European address block (street, city, postcode).
   const currency = (item.currency || "NGN").toUpperCase();
   if (!item.amount || item.amount <= 0) return false;
+  const routingClean = (item.routing_number || "").replace(/[\s-]/g, "");
+  const routingIsBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingClean) && /[A-Za-z]/.test(routingClean);
   if (currency === "USD") {
     return (
       !!item.bank_name?.trim() &&
-      isValidSwiftCode(item.swift_code || "") &&
       isValidAbaRoutingNumber(item.routing_number || "") &&
       !!item.recipient_account?.trim() &&
+      !!item.recipient_address?.trim() &&
       !!item.recipient_country
     );
   }
   if (currency === "GBP") {
     return (
       !!item.bank_name?.trim() &&
-      /^\d{6}$/.test((item.routing_number || "").replace(/[\s-]/g, "")) &&
+      (/^\d{6}$/.test(routingClean) || routingIsBic) &&
       !!item.recipient_account?.trim() &&
+      !!item.recipient_address?.trim() &&
+      !!item.recipient_city?.trim() &&
+      !!item.recipient_postal_code?.trim() &&
       !!item.recipient_country
     );
   }
@@ -212,7 +226,9 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
       !!item.bank_name?.trim() &&
       isValidSwiftCode(item.swift_code || "") &&
       !!item.recipient_account?.trim() &&
+      !!item.recipient_address?.trim() &&
       !!item.recipient_city?.trim() &&
+      !!item.recipient_postal_code?.trim() &&
       !!item.recipient_country
     );
   }
@@ -268,6 +284,7 @@ export default function Payroll() {
 
   /* ---------------- Salary payout ---------------- */
   const [payoutStep, setPayoutStep] = useState<"review" | "otp" | "success">("review");
+
   const [payoutWalletId, setPayoutWalletId] = useState("");
   const [payoutOtp, setPayoutOtp] = useState("");
   const [payoutLoading, setPayoutLoading] = useState(false);
@@ -356,12 +373,18 @@ export default function Payroll() {
         else s.pending += 1;
         const salary = Number(emp.salary_amount);
         if (!isNaN(salary) && salary > 0) {
-          if ((emp.salary_currency || "NGN").toUpperCase() === "USD") {
+          const cur = (emp.salary_currency || "NGN").toUpperCase();
+          if (cur === "USD") {
             s.usdTotal += salary;
             s.usdCount += 1;
-          } else {
+          } else if (cur === "NGN") {
             s.ngnTotal += salary;
             s.ngnCount += 1;
+          }
+          if (cur !== "NGN") {
+            if (!s.intlTotals[cur]) s.intlTotals[cur] = { total: 0, count: 0 };
+            s.intlTotals[cur].total += salary;
+            s.intlTotals[cur].count += 1;
           }
         }
       }
@@ -614,17 +637,107 @@ export default function Payroll() {
     // Salary-earning actives without full bank details are dropped silently by the backend — flag them in the UI instead.
     const missingBank = payable.filter((e) => !(e.bank_code && e.account_number));
     // Salary payouts ride ONE source wallet per currency (backend guard):
-    // NGN employees in one batch, all international (USD/GBP/EUR) in another.
+    // NGN employees in one batch, each international corridor (USD/GBP/EUR)
+    // gets its own group so quotes, fees and limits render per currency.
     const ngn = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() === "NGN");
-    const usd = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() !== "NGN");
+    const intlByCurrency: Record<string, { employees: typeof verified; total: number }> = {};
+    for (const e of verified) {
+      const c = (e.salary_currency || "NGN").toUpperCase();
+      if (c === "NGN") continue;
+      if (!intlByCurrency[c]) intlByCurrency[c] = { employees: [], total: 0 };
+      intlByCurrency[c].employees.push(e);
+      intlByCurrency[c].total += Number(e.salary_amount);
+    }
+    const usd = verified.filter((e) => (e.salary_currency || "NGN").toUpperCase() === "USD");
     const ngnTotal = ngn.reduce((sum, e) => sum + Number(e.salary_amount), 0);
     const usdTotal = usd.reduce((sum, e) => sum + Number(e.salary_amount), 0);
-    return { withBank, verified, skipped, missingBank, ngn, usd, ngnTotal, usdTotal };
+    return { withBank, verified, skipped, missingBank, ngn, usd, intlByCurrency, ngnTotal, usdTotal };
   }, [payable]);
+
+  // ---- Payout quotes (D3): per-intl-currency locked rates for the final
+  // payout step, mirroring the single-transfer quote card — Conversion rate,
+  // Fee, Total debit (NGN), a live "Rate locks in M:SS" countdown and the
+  // admin-configured min/max limits. The quote endpoint already bakes the
+  // margin into the rate and returns limits.
+  const PAYOUT_CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", GBP: "\u00a3", EUR: "\u20ac", NGN: "\u20a6" };
+  const [payoutQuotes, setPayoutQuotes] = useState<Record<string, any>>({});
+  const [payoutQuotesLoading, setPayoutQuotesLoading] = useState(false);
+  const [payoutQuoteNow, setPayoutQuoteNow] = useState(Date.now());
+  const payoutQuotesFetchedAtRef = React.useRef(0);
+
+  const fetchPayoutQuotes = React.useCallback(async () => {
+    const ccys = Object.keys(payoutReview?.intlByCurrency || {});
+    if (ccys.length === 0) {
+      setPayoutQuotes({});
+      return;
+    }
+    setPayoutQuotesLoading(true);
+    try {
+      const results: Record<string, any> = {};
+      await Promise.all(ccys.map(async (ccy) => {
+        const group = payoutReview.intlByCurrency[ccy];
+        if (!group || !(group.total > 0)) return;
+        try {
+          const res = await api.get("/transfers/quote", {
+            params: { amount: group.total, source_currency: "NGN", destination_currency: ccy },
+          });
+          if (res.data?.data) results[ccy] = res.data.data;
+        } catch {
+          // A failed quote leaves that group unlocked — the panel shows a
+          // refresh action instead of silently blocking the payout.
+        }
+      }));
+      setPayoutQuotes(results);
+      payoutQuotesFetchedAtRef.current = Date.now();
+      setPayoutQuoteNow(Date.now());
+    } finally {
+      setPayoutQuotesLoading(false);
+    }
+  }, [payoutReview]);
+
+  // Live countdown while the review/OTP steps are visible.
+  React.useEffect(() => {
+    if (payoutStep !== "review" && payoutStep !== "otp") return;
+    if (Object.keys(payoutQuotes).length === 0) return;
+    const t = window.setInterval(() => setPayoutQuoteNow(Date.now()), 1000);
+    return () => window.clearInterval(t);
+  }, [payoutStep, payoutQuotes]);
+
+  // (Re)arm quotes when the payout flow opens or a currency group changes.
+  React.useEffect(() => {
+    if (activeTab !== "payout") return;
+    const ccys = Object.keys(payoutReview?.intlByCurrency || {}).join(",");
+    if (!ccys) return;
+    // Skip refetch when nothing material changed within the TTL window.
+    if (Date.now() - payoutQuotesFetchedAtRef.current < 30_000) return;
+    void fetchPayoutQuotes();
+  }, [activeTab, payoutReview, fetchPayoutQuotes]);
+
+  const payoutQuoteExpired = (ccy: string): boolean => {
+    const q = payoutQuotes[ccy];
+    if (!q?.expires_at) return false;
+    return new Date(q.expires_at).getTime() <= payoutQuoteNow;
+  };
+
+  const payoutCountdown = (ccy: string): string | null => {
+    const q = payoutQuotes[ccy];
+    if (!q?.expires_at) return null;
+    const remaining = Math.floor((new Date(q.expires_at).getTime() - payoutQuoteNow) / 1000);
+    if (remaining <= 0) return null;
+    return `${Math.floor(remaining / 60)}:${String(remaining % 60).padStart(2, "0")}`;
+  };
 
   const requestPayoutOtp = async () => {
     if (!pin || pin.length !== 4) {
       toast({ title: "Error", description: "Please enter your 4-digit transaction PIN", variant: "destructive" });
+      return;
+    }
+    // Quote-lock guard: an expired intl rate must not survive into the OTP
+    // step — refresh first so the user confirms against the CURRENT rate.
+    const expiredCcy = Object.keys(payoutReview.intlByCurrency).find((c) => payoutQuoteExpired(c));
+    if (expiredCcy) {
+      toast({ title: "Quote expired", description: `The ${expiredCcy} exchange rate quote expired — refresh the quote to continue.`, variant: "destructive" });
+      void fetchPayoutQuotes();
       return;
     }
     if (!payoutWalletId) {
@@ -657,6 +770,13 @@ export default function Payroll() {
   const runSalaryPayout = async () => {
     if (otpEnabled && (!payoutOtp || payoutOtp.length < 4)) {
       toast({ title: "Error", description: "Please enter a valid OTP", variant: "destructive" });
+      return;
+    }
+    // Submit-time re-check (the countdown chip can lag the wall clock by 1s).
+    const expiredNow = Object.keys(payoutReview.intlByCurrency).find((c) => payoutQuoteExpired(c));
+    if (expiredNow) {
+      toast({ title: "Quote expired", description: `The ${expiredNow} rate quote expired — refresh and confirm again.`, variant: "destructive" });
+      void fetchPayoutQuotes();
       return;
     }
     if (!pin || pin.length !== 4) {
@@ -1041,6 +1161,8 @@ export default function Payroll() {
           payload.routingNumber = item.routing_number?.trim() || undefined;
           payload.recipientAddress = item.recipient_address?.trim() || undefined;
           payload.recipientCity = item.recipient_city?.trim() || undefined;
+          payload.recipientState = item.recipient_state?.trim() || undefined;
+          payload.recipientPostalCode = item.recipient_postal_code?.trim() || undefined;
           payload.recipientCountry = (item.recipient_country || (currency === "GBP" ? "GB" : currency === "EUR" ? "DE" : "US")).toUpperCase();
           payload.accountType = item.account_type || undefined;
           payload.beneficiaryEmail = item.beneficiary_email?.trim() || undefined;
@@ -1086,6 +1208,8 @@ export default function Payroll() {
           mapped.recipientRoutingNumber = item.routing_number?.trim() || undefined;
           mapped.recipientAddress = item.recipient_address?.trim() || undefined;
           mapped.recipientCity = item.recipient_city?.trim() || undefined;
+          mapped.recipientState = item.recipient_state?.trim() || undefined;
+          mapped.recipientPostalCode = item.recipient_postal_code?.trim() || undefined;
           mapped.recipientCountry = (item.recipient_country || "US").toUpperCase();
           mapped.beneficiaryEmail = item.beneficiary_email?.trim() || undefined;
           mapped.accountType = item.account_type || undefined;
@@ -1305,20 +1429,22 @@ export default function Payroll() {
             </CardContent>
           </Card>
 
-          <Card className="rounded-xl shadow-sm">
-            <CardContent className="p-4 sm:p-6">
-              <div className="flex items-center justify-between">
-                <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monthly payroll · USD</p>
-                <Wallet className="h-4 w-4 text-muted-foreground" />
-              </div>
-              {directoryLoading ? (
-                <Skeleton className="mt-2 h-8 w-24" />
-              ) : (
-                <p className="mt-1.5 text-xl sm:text-2xl font-bold tabular-nums">${formatMoney(stats.usdTotal)}</p>
-              )}
-              <p className="mt-1 text-xs text-muted-foreground">{stats.usdCount} employee{stats.usdCount === 1 ? "" : "s"}</p>
-            </CardContent>
-          </Card>
+          {Object.entries(stats.intlTotals).map(([ccy, agg]) => (
+            <Card key={ccy} className="rounded-xl shadow-sm">
+              <CardContent className="p-4 sm:p-6">
+                <div className="flex items-center justify-between">
+                  <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Monthly payroll · {ccy}</p>
+                  <Wallet className="h-4 w-4 text-muted-foreground" />
+                </div>
+                {directoryLoading ? (
+                  <Skeleton className="mt-2 h-8 w-24" />
+                ) : (
+                  <p className="mt-1.5 text-xl sm:text-2xl font-bold tabular-nums">{PAYOUT_CURRENCY_SYMBOLS[ccy] || ""}{formatMoney(agg.total)}</p>
+                )}
+                <p className="mt-1 text-xs text-muted-foreground">{agg.count} employee{agg.count === 1 ? "" : "s"}</p>
+              </CardContent>
+            </Card>
+          ))}
 
           <Card className="rounded-xl shadow-sm">
             <CardContent className="p-4 sm:p-6">
@@ -1656,22 +1782,72 @@ export default function Payroll() {
                   </div>
                 ) : payoutStep === "review" ? (
                   <div className="space-y-5">
-                    {/* Confirmation screen: per-currency totals */}
+                    {/* Confirmation screen: one card per payout currency, with
+                        a locked-rate quote panel (rate/fee/total + countdown +
+                        limits) for each international corridor. */}
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border bg-muted/30 p-4">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Nigeria (NGN)</p>
-                        <p className="mt-1 text-2xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {payoutReview.ngn.length} verified employee{payoutReview.ngn.length === 1 ? "" : "s"} will be paid
-                        </p>
-                      </div>
-                      <div className="rounded-xl border bg-muted/30 p-4">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">International (USD)</p>
-                        <p className="mt-1 text-2xl font-bold tabular-nums">${formatMoney(payoutReview.usdTotal)}</p>
-                        <p className="mt-1 text-xs text-muted-foreground">
-                          {payoutReview.usd.length} verified employee{payoutReview.usd.length === 1 ? "" : "s"} will be paid
-                        </p>
-                      </div>
+                      {payoutReview.ngnTotal > 0 && (
+                        <div className="rounded-xl border bg-muted/30 p-4">
+                          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">Nigeria (NGN)</p>
+                          <p className="mt-1 text-2xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            {payoutReview.ngn.length} verified employee{payoutReview.ngn.length === 1 ? "" : "s"} will be paid
+                          </p>
+                        </div>
+                      )}
+                      {Object.entries(payoutReview.intlByCurrency).map(([ccy, group]) => {
+                        const sym = PAYOUT_CURRENCY_SYMBOLS[ccy] || "";
+                        const quote = payoutQuotes[ccy];
+                        const countdown = payoutCountdown(ccy);
+                        const expired = payoutQuoteExpired(ccy);
+                        return (
+                          <div key={ccy} className={expired ? "rounded-xl border border-destructive/40 bg-muted/30 p-4" : "rounded-xl border bg-muted/30 p-4"}>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">International ({ccy})</p>
+                              {payoutQuotesLoading && <Loader2 className="h-3.5 w-3.5 animate-spin text-muted-foreground" />}
+                            </div>
+                            <p className="mt-1 text-2xl font-bold tabular-nums">{sym}{formatMoney(group.total)}</p>
+                            <p className="mt-1 text-xs text-muted-foreground">
+                              {group.employees.length} verified employee{group.employees.length === 1 ? "" : "s"} will be paid
+                            </p>
+                            {quote && !expired && (
+                              <div className="mt-3 space-y-1 border-t pt-2 text-xs">
+                                <div className="flex items-center justify-between">
+                                  <span className="text-muted-foreground">Conversion rate</span>
+                                  <span className="font-semibold tabular-nums">1 {ccy} = ₦{formatMoney(Number(quote.conversion_rate))}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-muted-foreground">Fee</span>
+                                  <span className="font-semibold tabular-nums">₦{formatMoney(Number(quote.fee))}</span>
+                                </div>
+                                <div className="flex items-center justify-between">
+                                  <span className="text-muted-foreground">Total debit</span>
+                                  <span className="font-bold tabular-nums">₦{formatMoney(Number(quote.total_debit))}</span>
+                                </div>
+                                <div className="flex items-center justify-between pt-1 text-primary">
+                                  <span className="inline-flex items-center gap-1 font-semibold">
+                                    <Clock className="h-3 w-3" /> Rate locks in {countdown}
+                                  </span>
+                                  {quote.limits?.min != null && (
+                                    <span className="text-[11px] text-muted-foreground">
+                                      Min {sym}{quote.limits.min} / Max {sym}{quote.limits.max}
+                                    </span>
+                                  )}
+                                </div>
+                              </div>
+                            )}
+                            {quote && expired && (
+                              <div className="mt-3 space-y-2 border-t pt-2">
+                                <p className="text-xs font-medium text-destructive">Quote expired — refresh for the current rate.</p>
+                                <Button type="button" variant="outline" size="sm" onClick={() => void fetchPayoutQuotes()} disabled={payoutQuotesLoading}>
+                                  {payoutQuotesLoading ? <Loader2 className="mr-1 h-3.5 w-3.5 animate-spin" /> : <RefreshCw className="mr-1 h-3.5 w-3.5" />}
+                                  Refresh quote
+                                </Button>
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
 
                     {payoutReview.verified.length === 0 ? (
@@ -1767,14 +1943,39 @@ export default function Payroll() {
                 ) : payoutStep === "otp" ? (
                   <div className="space-y-4">
                     <div className="grid gap-3 sm:grid-cols-2">
-                      <div className="rounded-xl border bg-muted/30 p-4">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">NGN total</p>
-                        <p className="mt-1 text-xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
-                      </div>
-                      <div className="rounded-xl border bg-muted/30 p-4">
-                        <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">USD total</p>
-                        <p className="mt-1 text-xl font-bold tabular-nums">${formatMoney(payoutReview.usdTotal)}</p>
-                      </div>
+                      {payoutReview.ngnTotal > 0 && (
+                        <div className="rounded-xl border bg-muted/30 p-4">
+                          <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">NGN total</p>
+                          <p className="mt-1 text-xl font-bold tabular-nums">₦{formatMoney(payoutReview.ngnTotal)}</p>
+                        </div>
+                      )}
+                      {Object.entries(payoutReview.intlByCurrency).map(([ccy, group]) => {
+                        const sym = PAYOUT_CURRENCY_SYMBOLS[ccy] || "";
+                        const quote = payoutQuotes[ccy];
+                        const countdown = payoutCountdown(ccy);
+                        const expired = payoutQuoteExpired(ccy);
+                        return (
+                          <div key={ccy} className={expired ? "rounded-xl border border-destructive/40 bg-muted/30 p-4" : "rounded-xl border bg-muted/30 p-4"}>
+                            <div className="flex items-center justify-between gap-2">
+                              <p className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{ccy} total</p>
+                              {quote && !expired && countdown && (
+                                <span className="inline-flex items-center gap-1 text-[11px] font-semibold text-primary">
+                                  <Clock className="h-3 w-3" /> Rate locks in {countdown}
+                                </span>
+                              )}
+                            </div>
+                            <p className="mt-1 text-xl font-bold tabular-nums">{sym}{formatMoney(group.total)}</p>
+                            {quote && !expired && (
+                              <p className="mt-1 text-xs text-muted-foreground tabular-nums">
+                                ≈ ₦{formatMoney(Number(quote.total_debit))} total debit · 1 {ccy} = ₦{formatMoney(Number(quote.conversion_rate))}
+                              </p>
+                            )}
+                            {quote && expired && (
+                              <p className="mt-1 text-xs font-medium text-destructive">Quote expired — go back and refresh.</p>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
                     <div className="space-y-2">
                       <Label>Enter OTP</Label>
@@ -2257,10 +2458,14 @@ export default function Payroll() {
                     const status = recipientLookupStatus[index];
                     const rowCurrency = (item.currency || "NGN").toUpperCase();
                     const isIntlRow = rowCurrency !== "NGN";
-                    const routingDigits = (item.routing_number || "").replace(/[^0-9]/g, "");
+                    const routingRaw = (item.routing_number || "").replace(/[\s-]/g, "");
+                    const routingDigits = routingRaw.replace(/[^0-9]/g, "");
+                    const routingIsBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingRaw) && /[A-Za-z]/.test(routingRaw);
                     const routingInvalid = rowCurrency === "USD"
                       ? routingDigits.length > 0 && !isValidAbaRoutingNumber(routingDigits)
-                      : routingDigits.length > 0 && !/^\d{6}$/.test(routingDigits);
+                      : rowCurrency === "GBP"
+                        ? routingRaw.length > 0 && !/^\d{6}$/.test(routingDigits) && !routingIsBic
+                        : routingDigits.length > 0 && !/^\d{6}$/.test(routingDigits);
                     const swiftValue = (item.swift_code || "").trim();
                     const swiftInvalid = swiftValue.length > 0 && !isValidSwiftCode(swiftValue);
                     return (
@@ -2343,16 +2548,16 @@ export default function Payroll() {
                                 )}
                                 {rowCurrency !== "EUR" && (
                                 <div className="flex flex-col">
-                                  <Label>{rowCurrency === "GBP" ? "Sort Code *" : "Routing Number (ABA)"}</Label>
+                                  <Label>{rowCurrency === "GBP" ? "Sort Code or BIC *" : "Routing Number (ABA)"}</Label>
                                   <Input
                                     value={item.routing_number || ""}
-                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.replace(/[^0-9]/g, ""))}
-                                    maxLength={rowCurrency === "GBP" ? 8 : 9}
-                                    placeholder={rowCurrency === "GBP" ? "6-digit sort code, e.g. 308463" : "9-digit ABA routing number"}
+                                    onChange={(e) => updateRecipient(id, "routing_number", rowCurrency === "GBP" ? e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "") : e.target.value.replace(/[^0-9]/g, ""))}
+                                    maxLength={rowCurrency === "GBP" ? 11 : 9}
+                                    placeholder={rowCurrency === "GBP" ? "6-digit sort code (308463) or BIC" : "9-digit ABA routing number"}
                                     className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
                                   />
                                   {routingInvalid ? (
-                                    <p className="text-xs text-destructive">{rowCurrency === "GBP" ? "Sort code must be 6 digits" : "Invalid ABA checksum — check the 9-digit number"}</p>
+                                    <p className="text-xs text-destructive">{rowCurrency === "GBP" ? "Enter a 6-digit sort code or an 8/11-character BIC" : "Invalid ABA checksum — check the 9-digit number"}</p>
                                   ) : (
                                     <p className="text-xs text-muted-foreground">Required for {rowCurrency} payouts</p>
                                   )}
@@ -2385,7 +2590,7 @@ export default function Payroll() {
                                       ) : (
                                         <>
                                           <SelectItem value="checking">Checking</SelectItem>
-                                          <SelectItem value="savings">Savings</SelectItem>
+                                          <SelectItem value="depository">Depository</SelectItem>
                                         </>
                                       )}
                                     </SelectContent>
@@ -2437,8 +2642,8 @@ export default function Payroll() {
                                     maxLength={200}
                                   />
                                 </div>
-                                <div className="flex flex-col sm:col-span-2">
-                                  <Label>City</Label>
+                                <div className="flex flex-col">
+                                  <Label>City {rowCurrency !== "USD" ? "*" : ""}</Label>
                                   <Input
                                     value={item.recipient_city || ""}
                                     onChange={(e) => updateRecipient(id, "recipient_city", e.target.value)}
@@ -2446,6 +2651,17 @@ export default function Payroll() {
                                     maxLength={100}
                                   />
                                 </div>
+                                {rowCurrency !== "USD" && (
+                                  <div className="flex flex-col">
+                                    <Label>Postal code *</Label>
+                                    <Input
+                                      value={item.recipient_postal_code || ""}
+                                      onChange={(e) => updateRecipient(id, "recipient_postal_code", e.target.value)}
+                                      placeholder="ZIP / postcode"
+                                      maxLength={12}
+                                    />
+                                  </div>
+                                )}
                               </div>
                             </>
                           ) : (
