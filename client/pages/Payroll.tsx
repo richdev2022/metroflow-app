@@ -202,18 +202,25 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
   const routingClean = (item.routing_number || "").replace(/[\s-]/g, "");
   const routingIsBic = /^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(routingClean) && /[A-Za-z]/.test(routingClean);
   if (currency === "USD") {
+    const email = (item.beneficiary_email || "").trim();
     return (
       !!item.bank_name?.trim() &&
       isValidAbaRoutingNumber(item.routing_number || "") &&
+      // USD meta[0] contract: swift_code is required on every USD payout.
+      isValidSwiftCode(item.swift_code || "") &&
       !!item.recipient_account?.trim() &&
       !!item.recipient_address?.trim() &&
-      !!item.recipient_country
+      !!item.recipient_country &&
+      // USD meta[0] contract: the beneficiary's email is a required field.
+      /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
     );
   }
   if (currency === "GBP") {
     return (
       !!item.bank_name?.trim() &&
       (/^\d{6}$/.test(routingClean) || routingIsBic) &&
+      // GBP meta mirrors EUR: swift_code is required alongside the sort code.
+      isValidSwiftCode(item.swift_code || "") &&
       !!item.recipient_account?.trim() &&
       !!item.recipient_address?.trim() &&
       !!item.recipient_city?.trim() &&
@@ -225,6 +232,8 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
     return (
       !!item.bank_name?.trim() &&
       isValidSwiftCode(item.swift_code || "") &&
+      // EUR contract: routing_number AND swift_code both carry the BIC.
+      routingIsBic &&
       !!item.recipient_account?.trim() &&
       !!item.recipient_address?.trim() &&
       !!item.recipient_city?.trim() &&
@@ -2465,7 +2474,9 @@ export default function Payroll() {
                       ? routingDigits.length > 0 && !isValidAbaRoutingNumber(routingDigits)
                       : rowCurrency === "GBP"
                         ? routingRaw.length > 0 && !/^\d{6}$/.test(routingDigits) && !routingIsBic
-                        : routingDigits.length > 0 && !/^\d{6}$/.test(routingDigits);
+                        : rowCurrency === "EUR"
+                          ? routingRaw.length > 0 && !routingIsBic
+                          : routingDigits.length > 0 && !/^\d{6}$/.test(routingDigits);
                     const swiftValue = (item.swift_code || "").trim();
                     const swiftInvalid = swiftValue.length > 0 && !isValidSwiftCode(swiftValue);
                     return (
@@ -2533,12 +2544,12 @@ export default function Payroll() {
                                 </div>
                                 ) : (
                                 <div className="flex flex-col">
-                                  <Label>{rowCurrency === "GBP" ? "SWIFT / BIC (optional)" : "SWIFT Code *"}</Label>
+                                  <Label>SWIFT Code *</Label>
                                   <Input
                                     value={item.swift_code || ""}
                                     onChange={(e) => updateRecipient(id, "swift_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
                                     maxLength={11}
-                                    placeholder="e.g. CHASUS33"
+                                    placeholder={rowCurrency === "GBP" ? "e.g. BUKBGB22" : "e.g. CHASUS33"}
                                     className={cn(swiftInvalid && "border-destructive focus-visible:ring-destructive")}
                                   />
                                   {swiftInvalid && (
@@ -2546,20 +2557,54 @@ export default function Payroll() {
                                   )}
                                 </div>
                                 )}
-                                {rowCurrency !== "EUR" && (
+                                {rowCurrency === "USD" && (
                                 <div className="flex flex-col">
-                                  <Label>{rowCurrency === "GBP" ? "Sort Code or BIC *" : "Routing Number (ABA)"}</Label>
+                                  <Label>Routing Number (ABA)</Label>
                                   <Input
                                     value={item.routing_number || ""}
-                                    onChange={(e) => updateRecipient(id, "routing_number", rowCurrency === "GBP" ? e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, "") : e.target.value.replace(/[^0-9]/g, ""))}
-                                    maxLength={rowCurrency === "GBP" ? 11 : 9}
-                                    placeholder={rowCurrency === "GBP" ? "6-digit sort code (308463) or BIC" : "9-digit ABA routing number"}
+                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.replace(/[^0-9]/g, ""))}
+                                    maxLength={9}
+                                    placeholder="9-digit ABA routing number"
                                     className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
                                   />
                                   {routingInvalid ? (
-                                    <p className="text-xs text-destructive">{rowCurrency === "GBP" ? "Enter a 6-digit sort code or an 8/11-character BIC" : "Invalid ABA checksum — check the 9-digit number"}</p>
+                                    <p className="text-xs text-destructive">Invalid ABA checksum — check the 9-digit number</p>
                                   ) : (
-                                    <p className="text-xs text-muted-foreground">Required for {rowCurrency} payouts</p>
+                                    <p className="text-xs text-muted-foreground">Required for USD payouts</p>
+                                  )}
+                                </div>
+                                )}
+                                {rowCurrency === "GBP" && (
+                                <div className="flex flex-col">
+                                  <Label>Sort Code or BIC *</Label>
+                                  <Input
+                                    value={item.routing_number || ""}
+                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, ""))}
+                                    maxLength={11}
+                                    placeholder="6-digit sort code (308463) or BIC"
+                                    className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
+                                  />
+                                  {routingInvalid ? (
+                                    <p className="text-xs text-destructive">Enter a 6-digit sort code or an 8/11-character BIC</p>
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground">Required for GBP payouts</p>
+                                  )}
+                                </div>
+                                )}
+                                {rowCurrency === "EUR" && (
+                                <div className="flex flex-col">
+                                  <Label>Routing Number (BIC) *</Label>
+                                  <Input
+                                    value={item.routing_number || ""}
+                                    onChange={(e) => updateRecipient(id, "routing_number", e.target.value.toUpperCase().replace(/[^0-9A-Z]/g, ""))}
+                                    maxLength={11}
+                                    placeholder="e.g. BECFDE7HKKX"
+                                    className={cn(routingInvalid && "border-destructive focus-visible:ring-destructive")}
+                                  />
+                                  {routingInvalid ? (
+                                    <p className="text-xs text-destructive">Enter an 8/11-character BIC</p>
+                                  ) : (
+                                    <p className="text-xs text-muted-foreground">Required for EUR payouts</p>
                                   )}
                                 </div>
                                 )}
