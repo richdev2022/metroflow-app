@@ -672,34 +672,48 @@ export default function Beneficiaries() {
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="9 digits, e.g. 021000021" maxLength={12} />
                     </div>
                   )}
+                  {form.currency === "USD" && (
+                    <div className="space-y-1.5">
+                      <Label>SWIFT / BIC code</Label>
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="e.g. CHASUS33" maxLength={11} />
+                    </div>
+                  )}
                   {form.currency === "GBP" && (
                     <div className="space-y-1.5">
                       <Label>Sort code</Label>
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="6 digits, e.g. 308463" maxLength={8} />
                     </div>
                   )}
+                  {form.currency === "GBP" && (
+                    <div className="space-y-1.5">
+                      <Label>SWIFT / BIC code</Label>
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="e.g. BUKBGB22" maxLength={11} />
+                    </div>
+                  )}
                   {form.currency === "EUR" && (
                     <div className="space-y-1.5">
                       <Label>SWIFT / BIC</Label>
-                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="8 or 11 characters, e.g. BECFDE7HKKX" maxLength={11} />
+                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="8 or 11 characters, e.g. BECFDE7HKKX" maxLength={11} />
                     </div>
                   )}
-                  {form.currency === "USD" && (form.bankCode || "ACH") === "SWIFT" && (
+                  {form.currency === "EUR" && (
                     <div className="space-y-1.5">
-                      <Label>SWIFT / BIC</Label>
-                      <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value)} placeholder="e.g. CHASUS33" maxLength={11} />
+                      <Label>Routing number (BIC)</Label>
+                      <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value.toUpperCase())} placeholder="e.g. BECFDE7HKKX" maxLength={11} />
                     </div>
                   )}
                   {form.currency === "USD" && (
                     <div className="space-y-1.5">
                       <Label>Account type</Label>
+                      {/* Flutterwave USD accepts checking | depository ONLY —
+                          "savings" is not a valid value on the intl rails. */}
                       <Select value={form.accountType || "checking"} onValueChange={(v) => setField("accountType", v)}>
                         <SelectTrigger>
                           <SelectValue />
                         </SelectTrigger>
                         <SelectContent>
                           <SelectItem value="checking">Checking</SelectItem>
-                          <SelectItem value="savings">Savings</SelectItem>
+                          <SelectItem value="depository">Depository</SelectItem>
                         </SelectContent>
                       </Select>
                     </div>
