@@ -77,14 +77,15 @@ const transferSchema = z.object({
     });
   }
   if (data.currency === "USD") {
-    // USD contract (Flutterwave intl docs): ABA routing number, bank name,
-    // street address, account_type checking|depository.
+    // USD contract (Flutterwave intl docs): ABA routing number, SWIFT/BIC code,
+    // bank name, street address, account_type checking|depository, email.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
       ["routingNumber", "US routing number (ABA) is required for USD payouts"],
+      ["swiftCode", "SWIFT/BIC code is required for USD payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
@@ -93,6 +94,9 @@ const transferSchema = z.object({
     }
     if (data.routingNumber && !/^\d{9}$/.test(data.routingNumber.replace(/[\s-]/g, ""))) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "US routing number must be 9 digits" });
+    }
+    if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
     }
     const usdType = (data.accountType || "checking").toLowerCase();
     if (!["checking", "depository"].includes(usdType)) {
@@ -107,7 +111,9 @@ const transferSchema = z.object({
   }
   if (data.currency === "GBP") {
     // GBP contract: routing_number = UK sort code (6 digits) OR BIC/SWIFT;
-    // the European address block (street, city, postcode) is required.
+    // swift_code is REQUIRED (meta mirrors EUR); account_type is
+    // personal|corporate; the European address block (street, city, postcode)
+    // is required.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
@@ -115,6 +121,7 @@ const transferSchema = z.object({
       ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
       ["routingNumber", "UK sort code (6 digits) or BIC is required for GBP payouts"],
+      ["swiftCode", "SWIFT/BIC code is required for GBP payouts"],
     ];
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
@@ -127,16 +134,25 @@ const transferSchema = z.object({
     if (data.routingNumber && !isSortCode && !isBic) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "UK sort code must be 6 digits (e.g. 308463), or an 8/11-character BIC" });
     }
+    if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
+    const gbpType = (data.accountType || "personal").toLowerCase();
+    if (!["personal", "corporate"].includes(gbpType)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["accountType"], message: 'GBP account type must be "personal" or "corporate"' });
+    }
   }
   if (data.currency === "EUR") {
-    // EUR contract: account_number = IBAN, BIC routing, and the European
-    // address block (street, city REQUIRED, postcode).
+    // EUR contract: account_number = IBAN, routing_number AND swift_code both
+    // carry the BIC (both required), and the European address block (street,
+    // city REQUIRED, postcode).
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
       ["recipientPostalCode", "Postal code is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
+      ["routingNumber", "BIC/SWIFT code is required as the EUR routing number"],
       ["swiftCode", "SWIFT/BIC code is required for EUR payouts"],
     ];
     for (const [path, message] of required) {
@@ -146,6 +162,9 @@ const transferSchema = z.object({
     }
     if (data.swiftCode && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.swiftCode.trim())) {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["swiftCode"], message: "SWIFT/BIC must be 8 or 11 characters" });
+    }
+    if (data.routingNumber && !/^[A-Za-z0-9]{8}(?:[A-Za-z0-9]{3})?$/.test(data.routingNumber.trim().replace(/[\s-]/g, ""))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["routingNumber"], message: "EUR routing number must be an 8 or 11-character BIC" });
     }
   }
 });
@@ -415,16 +434,24 @@ export default function Wallet() {
 
   // Keep the payout rail consistent with the selected currency: USD exposes
   // the ACH/SWIFT picker; GBP (sort codes) and EUR (SWIFT/IBAN) always ride
-  // the SWIFT rail — the field is hidden for them and auto-set here.
+  // the SWIFT rail — the field is hidden for them and auto-set here. The
+  // account-type default also follows the corridor (USD checking|depository,
+  // GBP personal|corporate) so the payload always carries a valid value.
   useEffect(() => {
     if (watchedCurrency === "GBP" || watchedCurrency === "EUR") {
       if (transferForm.getValues("bankCode") !== "SWIFT") {
         transferForm.setValue("bankCode", "SWIFT");
       }
+      if (watchedCurrency === "GBP" && !["personal", "corporate"].includes((transferForm.getValues("accountType") || "").toLowerCase())) {
+        transferForm.setValue("accountType", "personal");
+      }
     } else if (watchedCurrency === "USD") {
       const cur = transferForm.getValues("bankCode");
       if (cur !== "ACH" && cur !== "SWIFT") {
         transferForm.setValue("bankCode", "ACH");
+      }
+      if (!["checking", "depository"].includes((transferForm.getValues("accountType") || "").toLowerCase())) {
+        transferForm.setValue("accountType", "checking");
       }
     }
   }, [watchedCurrency, transferForm]);
@@ -601,8 +628,8 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
       );
       if (watchedCurrency === "USD") {
         // USD rail auto-pick: a saved SWIFT code → SWIFT wire; else a 9-digit
-        // ABA routing number → ACH (the ACH form hides the SWIFT field, so
-        // leaving the rail wrong would silently drop the routing/WIRE data).
+        // ABA routing number → ACH (the rail is informational routing context;
+        // the SWIFT/BIC field itself is always shown + required).
         const rail = String(b.swiftCode || "").trim()
           ? "SWIFT"
           : /^\d{9}$/.test(String(b.routingNumber || "").replace(/[\s-]/g, ""))
@@ -1612,7 +1639,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && watchedBankCode === "SWIFT" && (
+                      {watchedCurrency === "GBP" && (
                         <FormField
                           control={transferForm.control}
                           name="swiftCode"
@@ -1620,7 +1647,37 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                             <FormItem>
                               <FormLabel>SWIFT / BIC code</FormLabel>
                               <FormControl>
-                                <Input placeholder="e.g. CHASUS33" {...field} />
+                                <Input placeholder="e.g. BUKBGB22" maxLength={11} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "USD" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="swiftCode"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>SWIFT / BIC code</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. CHASUS33" maxLength={11} {...field} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      )}
+                      {watchedCurrency === "EUR" && (
+                        <FormField
+                          control={transferForm.control}
+                          name="routingNumber"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Routing number (BIC)</FormLabel>
+                              <FormControl>
+                                <Input placeholder="e.g. BECFDE7HKKX" maxLength={11} {...field} />
                               </FormControl>
                               <FormMessage />
                             </FormItem>
