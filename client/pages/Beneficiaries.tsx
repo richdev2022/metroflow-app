@@ -465,7 +465,12 @@ export default function Beneficiaries() {
           ) : null}
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          {verificationOf(b) !== "resolved" && (
+          {/* Verify CTA is NGN-only: foreign rails (ACH/SEPA/SWIFT) cannot
+              resolve account names through the provider, and Flutterwave has
+              no verify-beneficiary endpoint for international payouts. Intl
+              rows carry their corridor validation from the transfer that
+              created them. */}
+          {b.currency?.toUpperCase() === "NGN" && verificationOf(b) !== "resolved" && (
             <Button
               variant="outline"
               size="sm"
@@ -514,9 +519,15 @@ export default function Beneficiaries() {
               Saved transfer recipients — local Nigerian banks and international payouts (USD, GBP, EUR). New beneficiaries you transfer to are added here automatically.
             </p>
           </div>
-          <Button onClick={openAdd}>
-            <Plus className="mr-1.5 h-4 w-4" /> Add beneficiary
-          </Button>
+          {/* Global beneficiaries are NOT hand-added: Flutterwave exposes no
+              save-beneficiary API for USD/GBP/EUR payouts, so intl rows are
+              captured automatically after a first successful transfer and
+              only listed/edited/removed here. */}
+          {tab === "NGN" && (
+            <Button onClick={openAdd}>
+              <Plus className="mr-1.5 h-4 w-4" /> Add beneficiary
+            </Button>
+          )}
         </div>
 
         <div className="flex gap-1.5 flex-wrap">
@@ -547,12 +558,14 @@ export default function Beneficiaries() {
               <p className="font-medium">No {tab} beneficiaries yet</p>
               <p className="text-sm text-muted-foreground">
                 {isIntl
-                  ? "Add an international beneficiary once and reuse it for every payout."
+                  ? "International beneficiaries are added automatically after your first successful transfer — they'll appear here for reuse."
                   : "Transfer to a Nigerian bank account, or add one manually."}
               </p>
-              <Button variant="outline" size="sm" onClick={openAdd} className="mt-2">
-                <Plus className="mr-1 h-4 w-4" /> Add {tab} beneficiary
-              </Button>
+              {!isIntl && (
+                <Button variant="outline" size="sm" onClick={openAdd} className="mt-2">
+                  <Plus className="mr-1 h-4 w-4" /> Add NGN beneficiary
+                </Button>
+              )}
             </CardContent>
           </Card>
         ) : (
