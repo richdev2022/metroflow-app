@@ -312,6 +312,8 @@ export interface TransferItem {
   beneficiary_email?: string;
   recipient_address?: string;
   recipient_city?: string;
+  recipient_state?: string;
+  recipient_postal_code?: string;
   recipient_country?: string;
 }
 
