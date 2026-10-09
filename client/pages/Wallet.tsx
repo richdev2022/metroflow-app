@@ -45,10 +45,98 @@ import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Checkbox } from "@/components/ui/checkbox";
 import { useCountdown } from "@/hooks/useCountdown";
 import PinInput from "@/components/PinInput";
+import { Gauge, TrendingDown, TrendingUp } from "lucide-react";
 
 const fundWalletSchema = z.object({
   amount: z.string().min(1, "Amount is required").refine((val) => !isNaN(Number(val)) && Number(val) > 0, "Amount must be greater than 0"),
 });
+
+// Shape of GET /wallet/limits -> data (inflow + outflow tier limits with
+// live usage). Defensive typing: the server enriches this over time.
+interface WalletLimitsInfo {
+  category?: "non_registered" | "registered";
+  isRegistered?: boolean;
+  currency?: string;
+  limits?: { singleTransactionLimit?: number; dailyLimit?: number; monthlyLimit?: number };
+  usage?: { usedToday?: number; usedThisMonth?: number; remainingToday?: number; remainingThisMonth?: number };
+  inflow?: { usedToday?: number; usedThisMonth?: number; remainingToday?: number; remainingThisMonth?: number };
+  registeredLimits?: { singleTransactionLimit?: number; dailyLimit?: number; monthlyLimit?: number };
+}
+
+const formatLimitAmount = (n: number | undefined | null, currency = "NGN") => {
+  const value = Number(n || 0);
+  return `${currency} ${value.toLocaleString(undefined, { maximumFractionDigits: 2 })}`;
+};
+
+/**
+ * Compact inflow/outflow transaction-limit card shown during funding (both
+ * the checkout dialog and the virtual-account panels) so users always see
+ * what their tier allows BEFORE money moves. Limits are the same values for
+ * both directions — the tier applies to inflow (funding) and outflow
+ * (transfers) alike.
+ */
+const WalletLimitCard = ({
+  limits,
+  variant = "page",
+}: {
+  limits: WalletLimitsInfo | null;
+  variant?: "page" | "dialog";
+}) => {
+  if (!limits?.limits?.singleTransactionLimit) return null;
+  const currency = limits.currency || "NGN";
+  const tierLabel = limits.isRegistered ? "Registered Business" : "Non-Registered Business";
+  const remainingToday = limits.inflow?.remainingToday;
+  const registered = limits.registeredLimits?.singleTransactionLimit;
+  const rows = [
+    {
+      icon: <TrendingUp className="h-3.5 w-3.5" />,
+      label: "Funding limit / transaction",
+      value: formatLimitAmount(limits.limits.singleTransactionLimit, currency),
+    },
+    {
+      icon: <TrendingUp className="h-3.5 w-3.5" />,
+      label: "Daily funding limit",
+      value:
+        formatLimitAmount(limits.limits.dailyLimit, currency) +
+        (typeof remainingToday === "number"
+          ? ` · ${formatLimitAmount(remainingToday, currency)} left today`
+          : ""),
+    },
+    {
+      icon: <TrendingDown className="h-3.5 w-3.5" />,
+      label: "Transfer limit / transaction",
+      value: `${formatLimitAmount(limits.limits.singleTransactionLimit, currency)} (same tier applies)`,
+    },
+  ];
+  return (
+    <div
+      className={cn(
+        "rounded-lg border border-amber-500/30 bg-amber-500/5 p-3 space-y-1.5",
+        variant === "dialog" && "text-xs",
+      )}
+    >
+      <div className="flex items-center gap-1.5 text-amber-700 dark:text-amber-400 font-semibold text-xs">
+        <Gauge className="h-3.5 w-3.5" />
+        Transaction limits — {tierLabel}
+      </div>
+      {rows.map((r) => (
+        <div key={r.label} className="flex items-center justify-between gap-2 text-xs">
+          <span className="flex items-center gap-1.5 text-muted-foreground">
+            {r.icon}
+            {r.label}
+          </span>
+          <span className="font-medium text-foreground text-right">{r.value}</span>
+        </div>
+      ))}
+      {!limits.isRegistered && registered ? (
+        <p className="text-[11px] text-muted-foreground pt-1">
+          Upgrade to a Registered Business to unlock up to {formatLimitAmount(registered, currency)} per
+          transaction — limits apply to both funding and transfers.
+        </p>
+      ) : null}
+    </div>
+  );
+};
 
 const transferSchema = z.object({
   wallet_id: z.string().min(1, "Source wallet is required"),
@@ -222,6 +310,7 @@ export default function Wallet() {
   const [loading, setLoading] = useState(true);
   const [fundingLoading, setFundingLoading] = useState(false);
   const [creatingVaLoading, setCreatingVaLoading] = useState<string | null>(null); // Track which wallet we're creating VA for
+  const [walletLimits, setWalletLimits] = useState<WalletLimitsInfo | null>(null);
   const { toast } = useToast();
   const [fundWalletOpen, setFundWalletOpen] = useState(false);
   const [transferOpen, setTransferOpen] = useState(false);
@@ -1001,6 +1090,15 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
 
   useEffect(() => {
     fetchWalletInfo();
+    // Transaction limits (inflow + outflow) for the funding UIs. Best-effort:
+    // the server still enforces authoritative limits at payment time.
+    api
+      .get("/wallet/limits")
+      .then((res: any) => {
+        const data = res.data?.data || res.data;
+        if (data && typeof data === "object") setWalletLimits(data as WalletLimitsInfo);
+      })
+      .catch(() => {});
   }, []);
 
   // Re-fetch the OTP-for-transactions setting without reloading the whole
@@ -1098,6 +1196,29 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
         return;
       }
 
+      // Client-side pre-check against the tier limits (authoritative check
+      // still runs server-side at initiation AND at credit time).
+      const singleLimit = walletLimits?.limits?.singleTransactionLimit;
+      if (
+        Number.isFinite(singleLimit) &&
+        Number(values.amount) > (singleLimit as number)
+      ) {
+        toast({
+          title: "Transaction limit reached",
+          description:
+            walletLimits?.limits?.dailyLimit
+              ? `Your ${walletLimits.isRegistered ? "Registered" : "Non-Registered"} Business funding limit is ${formatLimitAmount(singleLimit, walletLimits.currency || "NGN")} per transaction. Enter a smaller amount or upgrade your business.`
+              : "This amount exceeds your per-transaction funding limit. Enter a smaller amount or upgrade your business.",
+          variant: "destructive",
+          action: !walletLimits?.isRegistered ? (
+            <ToastAction altText="Upgrade your business" onClick={() => navigate("/business-kyc")}>
+              Upgrade your business
+            </ToastAction>
+          ) : undefined,
+        });
+        return;
+      }
+
       const response = await api.post("/wallet/fund/card", {
         amount: Number(values.amount),
         wallet_id: wallet.id,
@@ -1114,9 +1235,27 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
         });
       }
     } catch (error: any) {
+      const serverError =
+        error.response?.data?.error || error.response?.data?.message || "Failed to initiate payment";
+      // Over-limit funding arrives as 403 + *_LIMIT_EXCEEDED — surface the
+      // server message with the upgrade path (the server has NOT collected
+      // any money in this case; the payment session was never created).
+      if (isTransferLimitError(error)) {
+        toast({
+          title: "Transaction limit reached",
+          description: serverError,
+          variant: "destructive",
+          action: (
+            <ToastAction altText="Upgrade your business" onClick={() => navigate("/business-kyc")}>
+              Upgrade your business
+            </ToastAction>
+          ),
+        });
+        return;
+      }
       toast({
         title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Failed to initiate payment",
+        description: serverError,
         variant: "destructive",
       });
     } finally {
@@ -1226,13 +1365,16 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                     </div>
                     <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
-                  
+
+                  {/* Funding + transfer tier limits (inflow = outflow). */}
+                  <WalletLimitCard limits={walletLimits} />
+
                   {/* Virtual Accounts */}
                   <div className="space-y-3 pt-3 border-t">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium">Virtual Accounts</p>
                     </div>
-                    
+
                     {walletInfo.user_wallet.virtual_accounts.length === 0 ? (
                       <div className="text-sm text-muted-foreground py-4 text-center">
                         No virtual accounts yet. Click "Create VA" to create one.
@@ -1333,13 +1475,16 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                     </div>
                     <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
-                  
+
+                  {/* Funding + transfer tier limits (inflow = outflow). */}
+                  <WalletLimitCard limits={walletLimits} />
+
                   {/* Virtual Accounts */}
                   <div className="space-y-3 pt-3 border-t">
                     <div className="flex items-center justify-between">
                       <p className="text-sm font-medium">Virtual Accounts</p>
                     </div>
-                    
+
                     {walletInfo.business_wallet.virtual_accounts.length === 0 ? (
                       <div className="text-sm text-muted-foreground py-4 text-center">
                         No virtual accounts yet. Click "Create VA" to create one.
@@ -1465,6 +1610,10 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                     </FormItem>
                   )}
                 />
+                {/* Always show the tier limits during funding — inflow and
+                    outflow are governed by the same tier. Amounts above the
+                    per-transaction limit are rejected before checkout. */}
+                <WalletLimitCard limits={walletLimits} variant="dialog" />
                 <DialogFooter>
                   <Button type="submit" loading={fundingLoading}>
                     Proceed to Payment

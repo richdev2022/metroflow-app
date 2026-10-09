@@ -135,6 +135,100 @@ export async function downloadChatAttachment(url: string, filename: string): Pro
 }
 
 // ==========================================
+// Web-Share API (share media / text to other apps)
+// ==========================================
+
+/**
+ * Fetches a chat attachment as a `File` so it can be handed to the Web-Share
+ * API (navigator.share({ files })). Auth-aware, mirroring
+ * downloadChatAttachment: our API origin is fetched through the shared axios
+ * instance (Authorization header), external/cloud URLs through plain fetch.
+ * Returns null on ANY failure — callers fall back to a download.
+ */
+export async function fetchChatAttachmentAsFile(url: string, filename: string): Promise<File | null> {
+  if (!url) return null;
+  try {
+    const isExternal = (() => {
+      if (!/^https?:\/\//i.test(url)) return false;
+      try {
+        const parsed = new URL(url);
+        const apiOrigin = getApiOrigin();
+        return parsed.origin !== apiOrigin && parsed.origin !== window.location.origin;
+      } catch {
+        return false;
+      }
+    })();
+
+    if (isExternal) {
+      const resp = await fetch(url, { mode: "cors" });
+      if (!resp.ok) return null;
+      const blob = await resp.blob();
+      return new File([blob], filename, { type: blob.type || "application/octet-stream" });
+    }
+
+    const response = await api.get(url, { responseType: "blob" });
+    const contentType = (response.headers?.["content-type"] as string) || "application/octet-stream";
+    const blob = new Blob([response.data as BlobPart], { type: contentType });
+    return new File([blob], filename, { type: contentType });
+  } catch {
+    return null;
+  }
+}
+
+export type ShareAttachmentResult = "shared" | "downloaded" | "failed";
+
+/**
+ * Share a chat attachment through the Web-Share API (mobile share sheets,
+ * "send to other apps"). Falls back to the existing download flow when the
+ * browser cannot share files. User-cancelled share sheets (AbortError) count
+ * as "shared" — nothing failed, so no error toast should show.
+ */
+export async function shareChatAttachment(
+  url: string,
+  filename: string,
+  title?: string
+): Promise<ShareAttachmentResult> {
+  try {
+    const file = await fetchChatAttachmentAsFile(url, filename);
+    if (!file) return "failed";
+    const nav = navigator as Navigator & { canShare?: (data: ShareData) => boolean };
+    if (typeof nav.share === "function" && nav.canShare?.({ files: [file] })) {
+      await nav.share({ files: [file], title: title || filename });
+      return "shared";
+    }
+    // Web Share with files unsupported -> graceful fallback.
+    await downloadChatAttachment(url, filename);
+    return "downloaded";
+  } catch (err: any) {
+    if (err?.name === "AbortError") return "shared";
+    return "failed";
+  }
+}
+
+export type ShareTextResult = "shared" | "copied" | "failed";
+
+/** Share plain text via the Web-Share API with a clipboard fallback. */
+export async function shareTextViaNavigator(text: string, title?: string): Promise<ShareTextResult> {
+  try {
+    const nav = navigator as Navigator;
+    if (typeof nav.share === "function") {
+      await nav.share({ title: title || "Metricorex", text });
+      return "shared";
+    }
+    await navigator.clipboard.writeText(text);
+    return "copied";
+  } catch (err: any) {
+    if (err?.name === "AbortError") return "shared";
+    try {
+      await navigator.clipboard.writeText(text);
+      return "copied";
+    } catch {
+      return "failed";
+    }
+  }
+}
+
+// ==========================================
 // Document-card icon metadata (colored by extension)
 // ==========================================
 

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Download, ExternalLink, Loader2 } from "lucide-react";
+import { Download, ExternalLink, Loader2, Share2 } from "lucide-react";
 import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { useToast } from "@/components/ui/use-toast";
 import { getApiMessage } from "@/lib/api-response";
@@ -9,6 +9,7 @@ import {
   downloadChatAttachment,
   formatFileSize,
   getFileIconMeta,
+  shareChatAttachment,
 } from "@/lib/chat-media";
 
 /**
@@ -87,6 +88,72 @@ export function AttachmentDownloadButton({
 }
 
 // ------------------------------------------
+// Shared share button (Web-Share API)
+// ------------------------------------------
+
+/**
+ * "Share to other apps" button (Web-Share API). When the browser can't share
+ * files the helper silently falls back to a download and we toast that.
+ */
+export function AttachmentShareButton({
+  url,
+  filename,
+  isOwn,
+  className,
+}: {
+  url: string;
+  filename: string;
+  isOwn?: boolean;
+  className?: string;
+}) {
+  const { toast } = useToast();
+  const [busy, setBusy] = useState(false);
+
+  const handleShare = async () => {
+    if (busy || !url) return;
+    setBusy(true);
+    try {
+      const result = await shareChatAttachment(url, filename);
+      if (result === "failed") {
+        toast({
+          variant: "destructive",
+          title: "Share failed",
+          description: "Could not share this attachment.",
+        });
+      } else if (result === "downloaded") {
+        toast({ title: "Sharing not supported — file downloaded" });
+      }
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <button
+      type="button"
+      onClick={(e) => {
+        e.stopPropagation();
+        e.preventDefault();
+        handleShare();
+      }}
+      disabled={busy}
+      title={`Share ${filename}`}
+      aria-label={`Share ${filename}`}
+      className={cn(
+        "inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-medium transition-colors disabled:opacity-60",
+        isOwn
+          ? "bg-white/20 text-white hover:bg-white/30"
+          : "bg-muted text-muted-foreground hover:bg-accent hover:text-foreground",
+        className
+      )}
+    >
+      {busy ? <Loader2 className="h-3 w-3 animate-spin" /> : <Share2 className="h-3 w-3" />}
+      {busy ? "Sharing…" : "Share"}
+    </button>
+  );
+}
+
+// ------------------------------------------
 // Full-screen lightbox
 // ------------------------------------------
 
@@ -126,6 +193,12 @@ export function Lightbox({
               <ExternalLink className="h-3.5 w-3.5" />
               Open in new tab
             </a>
+            <AttachmentShareButton
+              url={url}
+              filename={filename}
+              isOwn
+              className="bg-white/10 px-3 py-1.5 text-xs hover:bg-white/20"
+            />
             <AttachmentDownloadButton
               url={url}
               filename={filename}
