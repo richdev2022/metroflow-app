@@ -768,6 +768,10 @@ export interface Plan {
   discount?: string; // Discount Amount
   duration?: "monthly" | "yearly";
   currency?: string;
+  // PER-CURRENCY PRICING: admin-set exact price per charge currency
+  // ({ USD: 29, NGN: 49000, GBP: 25, EUR: 27 }). Preferred over FX
+  // conversion when present so displayed == charged, always.
+  prices_by_currency?: Record<string, number> | null;
   description: string;
   features: string[];
   max_team_members: number;
