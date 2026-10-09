@@ -246,6 +246,9 @@ importers:
       concurrently:
         specifier: ^9.2.1
         version: 9.2.1
+      esbuild:
+        specifier: ^0.25.0
+        version: 0.25.12
       globals:
         specifier: ^16.3.0
         version: 16.5.0
