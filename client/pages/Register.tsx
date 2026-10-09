@@ -9,11 +9,13 @@ import { Label } from "@/components/ui/label";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import {
   AlertCircle,
+  Building,
   Building2,
   CheckCircle,
   FileText,
   Lock,
   Mail,
+  Store,
   User,
   XCircle,
 } from "lucide-react";
@@ -24,6 +26,31 @@ import GoogleSignInButton from "@/components/GoogleSignInButton";
 import AuthShell from "@/components/auth/AuthShell";
 
 type Step = "business" | "otp";
+type BusinessType = "registered" | "non_registered";
+
+// Signup-time business-type preference — sent with POST /auth/register. All
+// accounts still start on Non-Registered limits; "registered" just signals
+// intent so we can nudge the KYC upgrade after onboarding.
+const BUSINESS_TYPE_OPTIONS: {
+  value: BusinessType;
+  label: string;
+  icon: typeof Building2;
+  description: string;
+}[] = [
+  {
+    value: "registered",
+    label: "Registered Business",
+    icon: Building,
+    description:
+      "Company registered with CAC or equivalent. Unlocks higher limits after quick verification.",
+  },
+  {
+    value: "non_registered",
+    label: "Non-Registered Business",
+    icon: Store,
+    description: "Start right away with standard limits. Upgrade anytime.",
+  },
+];
 
 const inputClass =
   "h-11 rounded-xl border-border/70 bg-background/60 pl-10 shadow-sm backdrop-blur transition-colors focus-visible:ring-2 focus-visible:ring-primary/60";
@@ -32,6 +59,7 @@ export default function Register() {
   const navigate = useNavigate();
   const { seconds, isActive, startCountdown } = useCountdown();
   const [step, setStep] = useState<Step>("business");
+  const [businessType, setBusinessType] = useState<BusinessType>("non_registered");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -90,6 +118,7 @@ export default function Register() {
         adminName: businessData.adminName,
         adminEmail: businessData.adminEmail,
         password: businessData.password,
+        businessType,
       });
 
       const data = response.data as AuthResponse;
@@ -219,6 +248,54 @@ export default function Register() {
               <Building2 className="h-3.5 w-3.5 text-primary" /> Company
             </p>
             <div className="space-y-4">
+              <div className="space-y-1.5">
+                <Label className="text-sm font-medium">Business type</Label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  {BUSINESS_TYPE_OPTIONS.map((option) => {
+                    const Icon = option.icon;
+                    const selected = businessType === option.value;
+                    return (
+                      <button
+                        key={option.value}
+                        type="button"
+                        aria-pressed={selected}
+                        onClick={() => setBusinessType(option.value)}
+                        className={`rounded-2xl border p-4 text-left shadow-sm backdrop-blur transition-colors ${
+                          selected
+                            ? "border-primary bg-primary/5 ring-1 ring-primary/40"
+                            : "border-border/70 bg-background/60 hover:border-primary/40 hover:bg-accent/40"
+                        }`}
+                      >
+                        <span className="flex items-center gap-2">
+                          <span
+                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${
+                              selected
+                                ? "bg-primary/10 text-primary"
+                                : "bg-muted text-muted-foreground"
+                            }`}
+                          >
+                            <Icon className="h-4 w-4" />
+                          </span>
+                          <span className="text-sm font-semibold text-foreground">
+                            {option.label}
+                          </span>
+                          {selected && (
+                            <CheckCircle className="ml-auto h-4 w-4 shrink-0 text-primary" />
+                          )}
+                        </span>
+                        <span className="mt-2 block text-xs leading-relaxed text-muted-foreground">
+                          {option.description}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <p className="pt-1 text-xs text-muted-foreground">
+                  All accounts start with Non-Registered limits — upgrade to
+                  Registered (Verified) anytime from your dashboard.
+                </p>
+              </div>
+
               <div className="space-y-1.5">
                 <Label htmlFor="businessName" className="text-sm font-medium">
                   Business name

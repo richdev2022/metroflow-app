@@ -15,6 +15,7 @@ import Kyc from "./pages/Kyc";
 import KycPrompt from "./pages/KycPrompt";
 import ProfileComplete from "./pages/ProfileComplete";
 import KycBusiness from "./pages/KycBusiness";
+import BusinessKycUpgrade from "./pages/BusinessKycUpgrade";
 import Dashboard from "./pages/Dashboard";
 import Tasks from "./pages/Tasks";
 import Ranking from "./pages/Ranking";
@@ -173,6 +174,11 @@ const App = () => (
                             <Route path="/kyc/prompt" element={<TokenProtectedRoute element={<KycPrompt />} />} />
             <Route path="/profile-complete" element={<TokenProtectedRoute element={<ProfileComplete />} />} />
                             <Route path="/kyc/business" element={<TokenProtectedRoute element={<KycBusiness />} />} />
+            {/* Authed: business KYC upgrade wizard (Non-Registered -> Registered (Verified)) */}
+            <Route
+              path="/business-kyc"
+              element={<TokenProtectedRoute element={<BusinessKycUpgrade />} />}
+            />
             <Route
               path="/dashboard"
               element={<TokenProtectedRoute element={<Dashboard />} />}
