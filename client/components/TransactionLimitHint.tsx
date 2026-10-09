@@ -123,9 +123,10 @@ export default function TransactionLimitHint() {
             Transaction limit: {ngn(limits.singleTransactionLimit)} per transaction
           </p>
           <p className="text-sm text-amber-800/90 dark:text-amber-300/90">
-            You're on the Non-Registered Business tier
+            You're on the Non-Registered Business tier — this applies to BOTH funding (inflow) and
+            transfers (outflow)
             {usage && typeof usage.remainingToday === "number"
-              ? ` — ${ngn(usage.remainingToday)} left today`
+              ? ` — ${ngn(usage.remainingToday)} left to send today`
               : ""}
             . Upgrade to Registered Business (Verified) to unlock up to{" "}
             {registeredLimits ? ngn(registeredLimits.singleTransactionLimit) : "higher limits"} per

@@ -293,7 +293,35 @@ const getMsgSenderName = (members: TeamMember[], m: ChatMessage) =>
 
 const getMsgTime = (m: ChatMessage) => m.createdAt || m.created_at || new Date().toISOString();
 
-const getLastMsg = (c: ConversationView) => c.lastMessage || c.last_message || c.lastmessage || "";
+const getLastMsg = (c: ConversationView) => {
+  const raw = c.lastMessage || c.last_message || c.lastmessage || "";
+  // DEFENSIVE (older servers): call-log system messages store a JSON blob in
+  // `content`. The thread renders them as a rich call row, but the raw JSON
+  // must never leak into the chat list preview — format it exactly like the
+  // server-side formatter does (📞 Voice call · 1m 5s / Missed / Declined).
+  const trimmed = String(raw).trim();
+  if (trimmed.startsWith("{")) {
+    const meta = parseCallLogContent(trimmed);
+    if (meta) {
+      const isVideo = String(meta.callType || "") === "video";
+      const icon = isVideo ? "📹" : "📞";
+      const label = isVideo ? "Video call" : "Voice call";
+      const status = String((meta as any).status || "").toLowerCase();
+      const duration = Number((meta as any).durationSeconds || 0);
+      let detail = "";
+      if (status === "missed") detail = " · Missed";
+      else if (status === "declined") detail = " · Declined";
+      else if (status === "cancelled" || status === "canceled") detail = " · Cancelled";
+      else if (duration > 0) {
+        const m = Math.floor(duration / 60);
+        const s = duration % 60;
+        detail = ` · ${m}m ${s}s`;
+      }
+      return `${icon} ${label}${detail}`;
+    }
+  }
+  return raw;
+};
 
 const getLastMsgTime = (c: ConversationView) =>
   c.lastMessageAt || c.last_message_at || c.lastmessageat || "";
