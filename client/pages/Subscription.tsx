@@ -170,6 +170,35 @@ interface CreditPurchase {
   created_at: string;
 }
 
+const CURRENCY_SYMBOLS: Record<string, string> = { USD: "$", NGN: "\u20A6", GBP: "\u00A3", EUR: "\u20AC" };
+
+/**
+ * PER-CURRENCY price resolution (mirrors the backend charge logic):
+ *  1. plan.prices_by_currency[currency] — exact admin-set price
+ *  2. plan base price when the plan is denominated in `currency`
+ *  3. FX-converted estimate (display only — the backend re-resolves at charge time)
+ */
+function resolvePlanPrice(
+  plan: { price: number; discount?: string; currency?: string; prices_by_currency?: Record<string, number> | null },
+  currency: "USD" | "NGN" | "GBP" | "EUR",
+  fxRate: number,
+): { original: number; discount: number; final: number; exact: boolean } {
+  const discountVal = parseFloat(plan.discount || "0");
+  const base = Math.max(0, Number(plan.price) - discountVal);
+  const explicit = plan.prices_by_currency ? Number(plan.prices_by_currency[currency]) : NaN;
+  if (Number.isFinite(explicit) && explicit > 0) {
+    // The explicit map price INCLUDES the discount already (admin-set final).
+    return { original: explicit, discount: 0, final: explicit, exact: true };
+  }
+  const planCurrency = (plan.currency || "USD").toUpperCase();
+  if (planCurrency === currency) {
+    return { original: Number(plan.price), discount: discountVal, final: base, exact: true };
+  }
+  const rate = Number(fxRate);
+  const converted = rate > 0 ? base * rate : base;
+  return { original: converted, discount: 0, final: converted, exact: false };
+}
+
 /** MetricAi Credit Packs — one-time top-ups charged from the wallet. */
 function AiCreditPacksSection() {
   const { toast } = useToast();
@@ -369,8 +398,12 @@ export default function Subscription() {
   const [selectedTransaction, setSelectedTransaction] = useState<PaymentTransaction | null>(null);
   const [loading, setLoading] = useState(true);
   const [processingId, setProcessingId] = useState<string | null>(null);
-  const [currency, setCurrency] = useState('USD');
+  const [currency, setCurrency] = useState<'USD' | 'NGN' | 'GBP' | 'EUR'>('USD');
   const [exchangeRate, setExchangeRate] = useState(1);
+  // PER-CURRENCY display rates (FX fallback when a plan has no explicit
+  // prices_by_currency entry for the selected currency).
+  const [exchangeRateGbp, setExchangeRateGbp] = useState(1);
+  const [exchangeRateEur, setExchangeRateEur] = useState(1);
   
   // Pagination & Filters
   const [page, setPage] = useState(1);
@@ -430,6 +463,12 @@ export default function Subscription() {
       .then(data => {
         if (data.rates && data.rates.NGN) {
           setExchangeRate(data.rates.NGN);
+        }
+        if (data.rates && data.rates.GBP) {
+          setExchangeRateGbp(data.rates.GBP);
+        }
+        if (data.rates && data.rates.EUR) {
+          setExchangeRateEur(data.rates.EUR);
         }
       })
       .catch(err => console.error("Failed to fetch rates", err));
@@ -900,14 +939,21 @@ export default function Subscription() {
                 </TabsList>
               </Tabs>
 
-              <div className="flex items-center space-x-2">
-                <Label htmlFor="currency-mode" className={currency === 'USD' ? 'font-bold' : 'text-muted-foreground'}>USD</Label>
-                <Switch 
-                  id="currency-mode" 
-                  checked={currency === 'NGN'}
-                  onCheckedChange={(checked) => setCurrency(checked ? 'NGN' : 'USD')}
-                />
-                <Label htmlFor="currency-mode" className={currency === 'NGN' ? 'font-bold' : 'text-muted-foreground'}>NGN</Label>
+              {/* PER-CURRENCY selector — picks the currency the customer is
+                  charged in. Prices come from the plan's admin-set
+                  prices_by_currency when present (exact), otherwise FX. */}
+              <div className="flex items-center rounded-lg border bg-muted/40 p-1" role="group" aria-label="Billing currency">
+                {(['USD', 'NGN', 'GBP', 'EUR'] as const).map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => setCurrency(c)}
+                    className={`px-3 py-1 text-sm rounded-md transition-colors ${currency === c ? 'bg-background font-bold shadow-sm' : 'text-muted-foreground hover:text-foreground'}`}
+                    aria-pressed={currency === c}
+                  >
+                    {c}
+                  </button>
+                ))}
               </div>
             </div>
           </div>
@@ -917,12 +963,16 @@ export default function Subscription() {
               .map((plan) => {
               const isCurrentPlan = subscription?.plan_id === plan.id;
               
-              const originalPrice = currency === 'USD' ? plan.price : Math.round(plan.price * exchangeRate);
-              const discountVal = parseFloat(plan.discount || "0");
-              const discount = currency === 'USD' ? discountVal : Math.round(discountVal * exchangeRate);
-              const finalPrice = Math.max(0, originalPrice - discount);
-              
-              const symbol = currency === 'USD' ? '$' : '₦';
+              // PER-CURRENCY price: admin-set explicit price for the selected
+              // currency when present (exact — what the backend charges),
+              // else plan base in its own currency, else FX estimate.
+              const fxRate = currency === 'USD' ? 1 : currency === 'NGN' ? exchangeRate : currency === 'GBP' ? exchangeRateGbp : exchangeRateEur;
+              const resolved = resolvePlanPrice(plan, currency, fxRate);
+              const originalPrice = Math.round(resolved.original);
+              const discount = Math.round(resolved.discount);
+              const finalPrice = Math.round(resolved.final);
+
+              const symbol = currency === 'USD' ? '$' : currency === 'NGN' ? '₦' : currency === 'GBP' ? '£' : '€';
               
               // Find the current plan's price from the plans array to ensure currency consistency (USD)
               const currentSubscriptionPlan = plans.find(p => p.id === subscription?.plan_id);
@@ -1231,42 +1281,36 @@ export default function Subscription() {
                 </div>
                 
                 <div className="space-y-3 border-t pt-4">
-                  <div className="flex justify-between text-sm">
-                    <span className="text-muted-foreground">Subtotal ({billingCycle})</span>
-                    <span>
-                      {currency === 'USD' ? '$' : '₦'}
-                      {currency === 'USD' 
-                        ? selectedPlanForCheckout.price.toLocaleString() 
-                        : Math.round(selectedPlanForCheckout.price * exchangeRate).toLocaleString()}
-                    </span>
-                  </div>
-                  
-                  {parseFloat(selectedPlanForCheckout.discount || "0") > 0 && (
-                    <div className="flex justify-between text-sm text-green-600">
-                      <span>Discount</span>
-                      <span>
-                        - {currency === 'USD' ? '$' : '₦'}
-                        {currency === 'USD'
-                          ? parseFloat(selectedPlanForCheckout.discount || "0").toLocaleString()
-                          : Math.round(parseFloat(selectedPlanForCheckout.discount || "0") * exchangeRate).toLocaleString()}
-                      </span>
-                    </div>
-                  )}
-                  
-                  <div className="flex justify-between font-bold text-lg border-t pt-3">
-                    <span>Total Pay</span>
-                    <span>
-                      {currency === 'USD' ? '$' : '₦'}
-                      {(
-                        (currency === 'USD' 
-                          ? selectedPlanForCheckout.price 
-                          : Math.round(selectedPlanForCheckout.price * exchangeRate)) -
-                        (currency === 'USD'
-                          ? parseFloat(selectedPlanForCheckout.discount || "0")
-                          : Math.round(parseFloat(selectedPlanForCheckout.discount || "0") * exchangeRate))
-                      ).toLocaleString()}
-                    </span>
-                  </div>
+                  {(() => {
+                    // PER-CURRENCY checkout summary — mirrors the backend
+                    // charge resolution exactly (explicit map price first).
+                    const fxRate = currency === 'USD' ? 1 : currency === 'NGN' ? exchangeRate : currency === 'GBP' ? exchangeRateGbp : exchangeRateEur;
+                    const cur = resolvePlanPrice(selectedPlanForCheckout, currency, fxRate);
+                    const sym = currency === 'USD' ? '$' : currency === 'NGN' ? '₦' : currency === 'GBP' ? '£' : '€';
+                    return (
+                      <>
+                        <div className="flex justify-between text-sm">
+                          <span className="text-muted-foreground">Subtotal ({billingCycle})</span>
+                          <span>{sym}{Math.round(cur.original).toLocaleString()}</span>
+                        </div>
+                        {cur.discount > 0 && (
+                          <div className="flex justify-between text-sm text-green-600">
+                            <span>Discount</span>
+                            <span>- {sym}{Math.round(cur.discount).toLocaleString()}</span>
+                          </div>
+                        )}
+                        <div className="flex justify-between font-bold text-lg border-t pt-3">
+                          <span>Total Pay</span>
+                          <span>{sym}{Math.round(cur.final).toLocaleString()}</span>
+                        </div>
+                        {!cur.exact && (
+                          <p className="text-[11px] text-muted-foreground">
+                            Estimated at live FX rates — the exact charge is confirmed at checkout.
+                          </p>
+                        )}
+                      </>
+                    );
+                  })()}
                 </div>
 
                 <div className="flex gap-3 justify-end pt-4">

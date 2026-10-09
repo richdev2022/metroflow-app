@@ -324,3 +324,15 @@
     animation-timing-function: linear;
   }
 }
+
+/* Status (stories) progress bar — drives the WhatsApp-style viewer rail */
+@keyframes statusbar-progress {
+  from { width: 0%; }
+  to { width: 100%; }
+}
+.statusbar-progress {
+  width: 0%;
+  animation-name: statusbar-progress;
+  animation-timing-function: linear;
+  animation-fill-mode: forwards;
+}
