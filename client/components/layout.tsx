@@ -5,6 +5,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/component
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
 import { WorkspaceLogo } from "./BrandLogo";
+import { WorkspaceSwitcher } from "./WorkspaceSwitcher";
 import { useTheme } from "next-themes";
 import { api } from "@/lib/api-client";
 import { KycStatus } from "@shared/api";
@@ -731,6 +732,8 @@ export default function Layout({ children }: { children: React.ReactNode }) {
             <WorkspaceLogo size={32} />
             <span className="font-bold text-xl group-data-[collapsible=icon]:hidden truncate">Metricorex</span>
           </div>
+          {/* Multi-workspace switching (hidden when only one membership) */}
+          <WorkspaceSwitcher />
         </SidebarHeader>
         <SidebarContent>
           <SidebarMenu>

@@ -119,6 +119,7 @@ import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
 import { ChatProfileModal, ChatProfilePerson } from "@/components/chat/ChatProfileModal";
 import { GroupInfoSheet } from "@/components/chat/GroupInfoSheet";
+import { StatusRail } from "@/components/chat/StatusRail";
 import { MessageActionMenu } from "@/components/chat/MessageActionMenu";
 import { resolveMediaUrl } from "@/lib/media-url";
 import {
@@ -1920,6 +1921,29 @@ export default function Chat() {
     }
   };
 
+  /** Status reply → open (or create) the DM with the status author and
+   *  prefill the composer so the user just hits send. */
+  const handleReplyToStatus = useCallback(async (authorId: string, prefill: string) => {
+    const existing = sortedConversations.find(
+      (c) => c.type === "direct" && (c.participants || []).some((p) => p.userId === authorId),
+    );
+    if (existing) {
+      setSelectedConversation(existing);
+      setMobileShowSidebar(false);
+      setNewMessage(prefill);
+      return;
+    }
+    try {
+      const conv = await createConversation.mutateAsync({ name: "", type: "direct", participantIds: [authorId] });
+      setSelectedConversation(conv);
+      setMobileShowSidebar(false);
+      setNewMessage(prefill);
+      toast({ title: "Conversation created" });
+    } catch (err) {
+      toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Could not open the conversation") });
+    }
+  }, [sortedConversations, createConversation, toast]);
+
   // ==========================================
   // Outgoing messages (text, stickers, GIFs, attachments)
   // ==========================================
@@ -3084,6 +3108,8 @@ export default function Chat() {
                 )}
               </div>
             </div>
+
+            <StatusRail onReplyToStatus={handleReplyToStatus} />
 
             <ScrollArea className="flex-1">
               {convLoading ? (
