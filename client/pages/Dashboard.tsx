@@ -43,6 +43,7 @@ import { CompletedTrendChart } from "@/components/dashboard/CompletedTrendChart"
 import { LeaderboardCard } from "@/components/dashboard/LeaderboardCard";
 import type { LeaderboardEntry } from "@/components/dashboard/LeaderboardCard";
 import { RecentTaskTable } from "@/components/dashboard/RecentTaskTable";
+import TransactionLimitHint from "@/components/TransactionLimitHint";
 import { formatDateLong } from "@/lib/datetime";
 
 const fmtMoney = (v: unknown, currency = "NGN") => {
@@ -724,6 +725,8 @@ export default function Dashboard() {
   return (
     <Layout>
       <div className="space-y-8">
+        {/* Business KYC tier banner — hidden entirely for verified businesses */}
+        <TransactionLimitHint />
         {/* Elegant page header */}
         <section className="relative overflow-hidden rounded-2xl border border-border bg-card p-6 shadow-sm md:p-8">
           <div aria-hidden="true" className="pointer-events-none absolute -right-20 -top-24 h-64 w-64 rounded-full bg-primary/10 blur-3xl" />
