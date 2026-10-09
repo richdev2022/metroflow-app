@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import Layout from "@/components/layout";
 import { api } from "@/lib/api-client";
 import { unwrapApiData } from "@/lib/api-response";
@@ -27,6 +27,7 @@ import {
   PopoverTrigger,
 } from "@/components/ui/popover";
 import { useToast } from "@/components/ui/use-toast";
+import { ToastAction } from "@/components/ui/toast";
 import { lookupAccountName } from "@/lib/account-lookup";
 import WalletTransactions from "@/components/wallet/WalletTransactions";
 import { useForm } from "react-hook-form";
@@ -203,7 +204,14 @@ const INTL_PAYOUT_COUNTRIES: { code: string; name: string }[] = [
   { code: "RW", name: "Rwanda" },
 ];
 
+// NGN tier-limit breaches arrive as HTTP 403 with codes
+// SINGLE_LIMIT_EXCEEDED / DAILY_LIMIT_EXCEEDED / MONTHLY_LIMIT_EXCEEDED.
+const isTransferLimitError = (error: any) =>
+  typeof error?.response?.data?.code === "string" &&
+  error.response.data.code.endsWith("LIMIT_EXCEEDED");
+
 export default function Wallet() {
+  const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
   const [paymentNotice, setPaymentNotice] = useState<{
     kind: "cancelled" | "pending" | "success";
@@ -783,9 +791,23 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
           fetchWalletInfo();
           setTransactionsRefreshKey((k) => k + 1);
       } catch (error: any) {
+      const serverError = error.response?.data?.error || error.response?.data?.message || "Transfer failed";
+      if (isTransferLimitError(error)) {
+        toast({
+          title: "Transaction limit reached",
+          description: serverError,
+          variant: "destructive",
+          action: (
+            <ToastAction altText="Upgrade your business" onClick={() => navigate("/business-kyc")}>
+              Upgrade your business
+            </ToastAction>
+          ),
+        });
+        return;
+      }
       toast({
         title: "Error",
-        description: error.response?.data?.error || error.response?.data?.message || "Transfer failed",
+        description: serverError,
         variant: "destructive"
       });
     } finally {
@@ -870,9 +892,23 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
       fetchWalletInfo();
       setTransactionsRefreshKey((k) => k + 1);
     } catch (error: any) {
+    const serverError = error.response?.data?.error || error.response?.data?.message || "Transfer failed";
+    if (isTransferLimitError(error)) {
+      toast({
+        title: "Transaction limit reached",
+        description: serverError,
+        variant: "destructive",
+        action: (
+          <ToastAction altText="Upgrade your business" onClick={() => navigate("/business-kyc")}>
+            Upgrade your business
+          </ToastAction>
+        ),
+      });
+      return;
+    }
     toast({
       title: "Error",
-      description: error.response?.data?.error || error.response?.data?.message || "Transfer failed",
+      description: serverError,
       variant: "destructive"
     });
   } finally {
