@@ -1,5 +1,5 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import { Copy, CornerUpLeft, Download, Forward, ImageDown, Languages, ListChecks, Pencil, Trash2 } from "lucide-react";
+import { Copy, CornerUpLeft, Download, Forward, ImageDown, Languages, ListChecks, Pencil, Share2, Trash2 } from "lucide-react";
 import type { ChatMessage } from "@/pages/Chat";
 
 /**
@@ -27,6 +27,7 @@ export function MessageActionMenu({
   onSelect,
   onCopyImage,
   onDownloadAttachment,
+  onShare,
   onTranslate,
   onClose,
 }: {
@@ -53,6 +54,8 @@ export function MessageActionMenu({
   onSelect?: (message: ChatMessage) => void;
   onCopyImage?: (message: ChatMessage) => void;
   onDownloadAttachment?: (message: ChatMessage) => void;
+  /** Web-Share API: attachments share as files, text messages share as text. */
+  onShare?: (message: ChatMessage) => void;
   onTranslate?: (message: ChatMessage) => void;
   onClose: () => void;
 }) {
@@ -100,6 +103,15 @@ export function MessageActionMenu({
 
   if (!target || !pos) return null;
   const { message } = target;
+  // "Share" is available when the message carries something shareable: an
+  // attachment (shared as a file) or plain text (shared via navigator.share).
+  const tombstoned =
+    !!(message.deletedForEveryone ?? (message as any).deleted_for_everyone) ||
+    !!(message.deletedForMe ?? (message as any).deleted_for_me);
+  const shareable =
+    !!onShare &&
+    !tombstoned &&
+    (hasDownloadableAttachment || hasImageAttachment || !!(message.content || "").trim());
 
   const item =
     "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm text-left transition-colors hover:bg-muted focus-visible:bg-muted focus-visible:outline-none";
@@ -135,6 +147,11 @@ export function MessageActionMenu({
       {hasDownloadableAttachment && onDownloadAttachment && (
         <button type="button" role="menuitem" className={item} onClick={() => onDownloadAttachment(message)}>
           <Download className="h-4 w-4 text-muted-foreground" /> Download
+        </button>
+      )}
+      {shareable && (
+        <button type="button" role="menuitem" className={item} onClick={() => onShare?.(message)}>
+          <Share2 className="h-4 w-4 text-muted-foreground" /> Share
         </button>
       )}
       {isOwn && canEdit && (

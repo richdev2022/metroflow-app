@@ -39,6 +39,7 @@ import Meetings from "./pages/Meetings";
 import CalendarPage from "./pages/Calendar";
 import MeetingComplete from "./pages/MeetingComplete";
 import Chat from "./pages/Chat";
+import JoinChat from "./pages/JoinChat";
 import MetricAiChat from "./pages/MetricAiChat";
 import Calls from "./pages/Calls";
 import Recordings from "./pages/Recordings";
@@ -282,6 +283,12 @@ const App = () => (
             <Route
               path="/chat"
               element={<TokenProtectedRoute element={<Chat />} />}
+            />
+            {/* Join-by-invite landing (group invite links /chat/join/<code>);
+                auth is checked inside (same /login bounce as JoinCallRing). */}
+            <Route
+              path="/chat/join/:code"
+              element={<JoinChat />}
             />
             <Route
               path="/metric-ai"
