@@ -27,6 +27,32 @@ function resolveSocketUrl(): string {
 // Extra handshake auth (e.g. guest token) that can be set before connecting.
 let singletonExtraAuth: { token?: string; guestToken?: string } = {};
 
+// ----------------------------------------------------------------------
+// Conversation room registry (reconnect-safe joins).
+//
+// The socket.io server forgets room membership the moment a client socket
+// disconnects (network blip, laptop sleep, server restart). After an
+// auto-reconnect the client silently stopped receiving `message:created`
+// for the open thread — messages only appeared after leaving and
+// re-entering the chat. We therefore remember every conversation the app
+// explicitly joined and re-emit 'join-conversation' for ALL of them on
+// every (re)connect inside the singleton 'connect' handler.
+// ----------------------------------------------------------------------
+const joinedConversations = new Set<string>();
+
+// Fired from the same 'connect' handler, but only for RE-connects (the very
+// first connect is skipped). Consumers use it to refetch data that may have
+// changed while the socket was offline (new messages, read state…).
+const singletonReconnectedListeners = new Set<() => void>();
+
+export function onSocketReconnected(cb: () => void) {
+  singletonReconnectedListeners.add(cb);
+}
+
+export function offSocketReconnected(cb: () => void) {
+  singletonReconnectedListeners.delete(cb);
+}
+
 /**
  * Set extra socket handshake auth (guest token etc).
  * Drops any existing singleton so the next connection picks up the new auth.
@@ -38,6 +64,8 @@ export function setSocketAuth(auth: { token?: string; guestToken?: string } | nu
     singletonSocket = null;
     singletonLastCreds = null;
   }
+  // A brand-new socket's first connect is an initial connect, not a reconnect.
+  singletonEverConnected = false;
 }
 
 let singletonSocket: Socket | null = null;
@@ -45,6 +73,7 @@ let singletonRefCount = 0;
 let singletonConnectedListeners = new Set<(connected: boolean) => void>();
 let singletonLastCreds: { userId: string; businessId: string } | null = null;
 let singletonKeepAliveInterval: NodeJS.Timeout | null = null;
+let singletonEverConnected = false;
 
 function ensureSingletonSocket(userId: string, businessId: string, userName: string) {
   const credsMatch = singletonLastCreds?.userId === userId && singletonLastCreds?.businessId === businessId;
@@ -84,6 +113,19 @@ function ensureSingletonSocket(userId: string, businessId: string, userName: str
       // keeps legacy presence behavior working.
       if (businessId) {
         socket.emit('user-online', userId, businessId, userName || localStorage.getItem('userName') || '');
+      }
+      // Re-join every conversation room: the server forgot our room membership
+      // while the socket was down (fires on the initial connect too — re-joining
+      // an already-joined room is a harmless no-op server-side).
+      joinedConversations.forEach((id) => {
+        try { socket.emit('join-conversation', id); } catch {}
+      });
+      const isReconnect = singletonEverConnected;
+      singletonEverConnected = true;
+      if (isReconnect) {
+        singletonReconnectedListeners.forEach((fn) => {
+          try { fn(); } catch {}
+        });
       }
       singletonConnectedListeners.forEach(fn => fn(true));
       if (singletonKeepAliveInterval) clearInterval(singletonKeepAliveInterval);
@@ -150,8 +192,24 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
 
   const getSocket = useCallback(() => singletonSocket, []);
 
+  /** Join a conversation room AND remember it so reconnects re-join
+   *  automatically (see joinedConversations above). */
   const joinConversation = useCallback((conversationId: string) => {
-    singletonSocket?.emit('join-conversation', conversationId);
+    if (!conversationId) return;
+    joinedConversations.add(conversationId);
+    if (singletonSocket?.connected) {
+      singletonSocket.emit('join-conversation', conversationId);
+    }
+    // Not connected yet: the singleton 'connect' handler re-emits every
+    // registered join, so nothing else to do here.
+  }, []);
+
+  /** Leave a conversation room and stop re-joining it on reconnects. The
+   *  'leave-conversation' emit is best-effort (older servers ignore it). */
+  const leaveConversation = useCallback((conversationId: string) => {
+    if (!conversationId) return;
+    joinedConversations.delete(conversationId);
+    try { singletonSocket?.emit('leave-conversation', conversationId); } catch {}
   }, []);
 
   // --- Call events
@@ -273,11 +331,22 @@ export const useSocket = ({ userId, businessId, userName }: UseSocketOptions = {
     singletonSocket?.emit('user-presence', status);
   }, []);
 
+  const onReconnected = useCallback((cb: () => void) => {
+    onSocketReconnected(cb);
+  }, []);
+
+  const offReconnected = useCallback((cb: () => void) => {
+    offSocketReconnected(cb);
+  }, []);
+
   return {
     socket: singletonSocket,
     getSocket,
     isConnected,
     joinConversation,
+    leaveConversation,
+    onReconnected,
+    offReconnected,
     joinCall,
     leaveCall,
     inviteToCall,
