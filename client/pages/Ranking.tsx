@@ -159,9 +159,9 @@ export default function Ranking() {
                         </div>
                       </div>
                     </TableCell>
-                    <TableCell className="text-right">{stat.totalTasks}</TableCell>
-                    <TableCell className="text-right">{stat.completedTasks}</TableCell>
-                    <TableCell className="text-right">
+                    <TableCell className="text-right whitespace-nowrap">{stat.totalTasks}</TableCell>
+                    <TableCell className="text-right whitespace-nowrap">{stat.completedTasks}</TableCell>
+                    <TableCell className="text-right whitespace-nowrap">
                       <Badge variant={stat.completionRate >= 80 ? "default" : stat.completionRate >= 50 ? "secondary" : "destructive"}>
                         {stat.completionRate.toFixed(1)}%
                       </Badge>
