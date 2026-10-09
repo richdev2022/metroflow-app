@@ -1729,7 +1729,7 @@ export default function Backlog() {
                               onCheckedChange={(checked) => handleSelectTask(task.id, checked as boolean)}
                             />
                           </TableCell>
-                          <TableCell onClick={(e) => e.stopPropagation()}>
+                          <TableCell className="whitespace-nowrap" onClick={(e) => e.stopPropagation()}>
                             <div className="flex items-center gap-2 group">
                               <span className="font-mono text-muted-foreground">#{(task as any).displayId}</span>
                               <Button
@@ -1767,7 +1767,7 @@ export default function Backlog() {
                             </span>
                           </TableCell>
                           <TableCell>{assignedNames}</TableCell>
-                          <TableCell>
+                          <TableCell className="whitespace-nowrap">
                             {new Date(task.startDate).toLocaleDateString()} - {new Date(task.endDate).toLocaleDateString()}
                           </TableCell>
                           <TableCell className="text-center" onClick={(e) => e.stopPropagation()}>

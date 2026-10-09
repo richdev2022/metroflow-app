@@ -1693,7 +1693,7 @@ export default function Payroll() {
                               </TableCell>
                               <TableCell>
                                 {emp.salary_amount ? (
-                                  <Badge variant="secondary" className="bg-primary/10 font-semibold text-primary hover:bg-primary/10">
+                                  <Badge variant="secondary" className="bg-primary/10 font-semibold text-primary hover:bg-primary/10 whitespace-nowrap">
                                     {emp.salary_currency || "NGN"} {Number(emp.salary_amount).toLocaleString()}
                                   </Badge>
                                 ) : (
@@ -2148,7 +2148,7 @@ export default function Payroll() {
                                 {adj.type === "bonus" ? "+" : "−"} {adj.type}
                               </Badge>
                             </TableCell>
-                            <TableCell className="font-semibold tabular-nums">
+                            <TableCell className="font-semibold tabular-nums whitespace-nowrap">
                               {adj.currency} {Number(adj.amount).toLocaleString()}
                             </TableCell>
                             <TableCell className="max-w-[220px] truncate" title={adj.reason}>

@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useMemo, useCallback, type ChangeEvent } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
 import Layout from "@/components/layout";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -118,7 +119,7 @@ import { formatLastSeen, isRecent, parseDateSafe } from "@/lib/last-seen";
 import { VoiceNotePlayer } from "@/components/chat/VoiceNotePlayer";
 import { VoiceRecorderPill } from "@/components/chat/VoiceRecorderPill";
 import { ChatProfileModal, ChatProfilePerson } from "@/components/chat/ChatProfileModal";
-import { GroupInfoSheet } from "@/components/chat/GroupInfoSheet";
+import { GroupInfoSheet, type GroupParticipant } from "@/components/chat/GroupInfoSheet";
 import { StatusRail } from "@/components/chat/StatusRail";
 import { MessageActionMenu } from "@/components/chat/MessageActionMenu";
 import { resolveMediaUrl } from "@/lib/media-url";
@@ -138,6 +139,8 @@ import {
   guessMediaKind,
   parseCallLogContent,
   downloadChatAttachment,
+  shareChatAttachment,
+  shareTextViaNavigator,
 } from "@/lib/chat-media";
 import type { ChatCallLogMeta, GifObject, MessageReplySnapshot } from "@shared/api";
 import { renderStyledText, wrapSelectionWithMarker } from "@/components/chat/styled-text";
@@ -293,7 +296,35 @@ const getMsgSenderName = (members: TeamMember[], m: ChatMessage) =>
 
 const getMsgTime = (m: ChatMessage) => m.createdAt || m.created_at || new Date().toISOString();
 
-const getLastMsg = (c: ConversationView) => c.lastMessage || c.last_message || c.lastmessage || "";
+const getLastMsg = (c: ConversationView) => {
+  const raw = c.lastMessage || c.last_message || c.lastmessage || "";
+  // DEFENSIVE (older servers): call-log system messages store a JSON blob in
+  // `content`. The thread renders them as a rich call row, but the raw JSON
+  // must never leak into the chat list preview — format it exactly like the
+  // server-side formatter does (📞 Voice call · 1m 5s / Missed / Declined).
+  const trimmed = String(raw).trim();
+  if (trimmed.startsWith("{")) {
+    const meta = parseCallLogContent(trimmed);
+    if (meta) {
+      const isVideo = String(meta.callType || "") === "video";
+      const icon = isVideo ? "📹" : "📞";
+      const label = isVideo ? "Video call" : "Voice call";
+      const status = String((meta as any).status || "").toLowerCase();
+      const duration = Number((meta as any).durationSeconds || 0);
+      let detail = "";
+      if (status === "missed") detail = " · Missed";
+      else if (status === "declined") detail = " · Declined";
+      else if (status === "cancelled" || status === "canceled") detail = " · Cancelled";
+      else if (duration > 0) {
+        const m = Math.floor(duration / 60);
+        const s = duration % 60;
+        detail = ` · ${m}m ${s}s`;
+      }
+      return `${icon} ${label}${detail}`;
+    }
+  }
+  return raw;
+};
 
 const getLastMsgTime = (c: ConversationView) =>
   c.lastMessageAt || c.last_message_at || c.lastmessageat || "";
@@ -1192,13 +1223,15 @@ const TeamMemberMultiSelect = ({
 // Main Component
 // ==========================================
 export default function Chat() {
+  const queryClient = useQueryClient();
+  const location = useLocation();
   const { data: conversations, isLoading: convLoading, error: convError, refetch: refetchConv } = useConversations();
   const createConversation = useCreateConversation();
   const sendMessage = useSendMessage();
   const createCall = useCreateCall();
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { socket, isConnected, joinConversation, on, off, inviteToCall } = useSocket({
+  const { socket, isConnected, joinConversation, leaveConversation, onReconnected, offReconnected, on, off, inviteToCall } = useSocket({
     userId: CURRENT_USER_ID(),
     businessId: localStorage.getItem("businessId") || "",
   });
@@ -1385,10 +1418,58 @@ export default function Chat() {
     if (convError) toast({ variant: "destructive", title: "Error", description: getApiMessage(convError, "Failed to load conversations") });
   }, [convError, toast]);
 
-  // Join conversation room via socket
+  // Join conversation room via socket. joinConversation also REGISTERS the id
+  // in useSocket's module-level registry, so the singleton automatically
+  // re-emits 'join-conversation' after EVERY reconnect (the server forgets
+  // room membership once a socket drops — that was the "messages only appear
+  // after re-entering the chat" bug).
   useEffect(() => {
     if (selectedConversation?.id && isConnected) joinConversation(selectedConversation.id);
   }, [selectedConversation?.id, isConnected, joinConversation]);
+
+  // Leave the previous conversation room when the selection changes or the
+  // page unmounts (removes it from the reconnect registry + best-effort
+  // 'leave-conversation' emit). Deliberately NOT keyed on isConnected — the
+  // join effect above re-joins the active room on every reconnect.
+  useEffect(() => {
+    const convId = selectedConversation?.id;
+    return () => {
+      if (convId) leaveConversation(convId);
+    };
+  }, [selectedConversation?.id, leaveConversation]);
+
+  // Socket RE-connected (server restart / network blip / laptop sleep). The
+  // registry in useSocket has already re-joined every conversation room; here
+  // we backfill anything the open thread missed while offline and re-assert
+  // the read cursor. Every call is an idempotent refetch — no toasts.
+  useEffect(() => {
+    const handleReconnected = () => {
+      const convId = selectedConversation?.id;
+      if (!convId) return;
+      queryClient.invalidateQueries({ queryKey: ["messages", convId] });
+      queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      try {
+        socket?.emit("chat:mark-read", { conversationId: convId, userId: CURRENT_USER_ID() });
+      } catch {}
+    };
+    onReconnected(handleReconnected);
+    return () => offReconnected(handleReconnected);
+  }, [onReconnected, offReconnected, selectedConversation?.id, socket, queryClient]);
+
+  // Join-by-invite handoff: /chat/join/:code navigates here with
+  // location.state.openConversationId. Select that conversation once the list
+  // payload contains it, then clear the router state so a refresh / back
+  // navigation doesn't re-open it.
+  useEffect(() => {
+    const openId = (location.state as any)?.openConversationId;
+    if (!openId || !conversations) return;
+    const conv = (conversations as ConversationView[]).find((c) => c.id === openId);
+    if (conv) {
+      setSelectedConversation(conv);
+      setMobileShowSidebar(false);
+      navigate(location.pathname + location.search, { replace: true });
+    }
+  }, [location.state, location.pathname, location.search, conversations, navigate]);
 
   // Reset local messages on conversation change + mark as read
   useEffect(() => {
@@ -1681,6 +1762,17 @@ export default function Chat() {
     };
   }, [isConnected, on, off, selectedConversation?.id, refetchConv]);
 
+  // Socket: conversation:participants-added — someone (me from the group
+  // sheet, or another member) added people to a conversation. Refresh the
+  // list so member counts/rows stay honest. The GroupInfoSheet refreshes its
+  // own participants state via its own listener — no duplicated toasts.
+  useEffect(() => {
+    if (!isConnected) return;
+    const handler = () => refetchConv();
+    on("conversation:participants-added", handler as any);
+    return () => off("conversation:participants-added", handler as any);
+  }, [isConnected, on, off, refetchConv]);
+
   // Hydrate blocked-user ids (block list powers the composer banner/state).
   useEffect(() => {
     api
@@ -1943,6 +2035,19 @@ export default function Chat() {
       toast({ variant: "destructive", title: "Error", description: getApiMessage(err, "Could not open the conversation") });
     }
   }, [sortedConversations, createConversation, toast]);
+
+  /** GroupInfoSheet member row -> open (or create) the 1:1 DM with that
+   *  member. The sheet hands back the hydrated conversation from
+   *  POST /chat/conversations; we select it and hide the mobile list, the
+   *  same handoff the create dialog / status reply use. */
+  const handleOpenConversationFromSheet = useCallback(
+    (conversation: Conversation | null | undefined) => {
+      if (!conversation?.id) return;
+      setSelectedConversation(conversation);
+      setMobileShowSidebar(false);
+    },
+    []
+  );
 
   // ==========================================
   // Outgoing messages (text, stickers, GIFs, attachments)
@@ -2674,6 +2779,34 @@ export default function Chat() {
     [toast]
   );
 
+  /** Web-Share API: attachments share as files, text messages share as text.
+   *  Browsers without file sharing fall back to a download (toast explains). */
+  const handleMessageShare = useCallback(
+    async (message: ChatMessage) => {
+      setActionMenu(null);
+      const url = getAttachmentUrl(message);
+      if (url && !isCallLogMessage(message)) {
+        const name = getAttachmentName(message) || "attachment";
+        const result = await shareChatAttachment(url, name);
+        if (result === "failed") {
+          toast({ variant: "destructive", title: "Share failed", description: "Could not share this attachment." });
+        } else if (result === "downloaded") {
+          toast({ title: "Sharing not supported — file downloaded" });
+        }
+        return;
+      }
+      const text = (message.content || "").trim();
+      if (!text || isCallLogMessage(message)) return;
+      const result = await shareTextViaNavigator(text);
+      if (result === "failed") {
+        toast({ variant: "destructive", title: "Share failed", description: "Could not share this message." });
+      } else if (result === "copied") {
+        toast({ title: "Copied to clipboard", description: "Sharing is not supported in this browser." });
+      }
+    },
+    [toast]
+  );
+
   /** Composer formatting: wrap the textarea selection in a marker. */
   const applyComposerFormat = useCallback(
     (marker: string) => {
@@ -2958,6 +3091,122 @@ export default function Chat() {
       null
     );
   }, [selectedConvView]);
+
+  // ==========================================
+  // @mention popover (groups only, dependency-free)
+  // ==========================================
+  // Detects "@<token>" right before the caret (no whitespace after the @,
+  // not part of an email) and lists up to 6 group members. Plain-text insert
+  // — no special rendering for now.
+  const [mentionState, setMentionState] = useState<{ tokenStart: number; query: string } | null>(null);
+  const [mentionHighlight, setMentionHighlight] = useState(0);
+  // Fetched-on-demand member names for groups whose conversation payload
+  // carries no participants array (the mention list needs display names).
+  const [mentionMembersCache, setMentionMembersCache] = useState<Record<string, { id: string; name: string }[]>>({});
+
+  const mentionMembers = useMemo(() => {
+    if (selectedConvView?.type !== "group") return [];
+    const parts = ((selectedConvView.participants as ChatParticipant[]) || []);
+    if (parts.length > 0) {
+      return parts
+        .map((p) => {
+          const id = getParticipantUserId(p);
+          return { id, name: getParticipantName(teamMembers, id, p) };
+        })
+        .filter((m) => m.id && m.id !== CURRENT_USER_ID() && m.name && m.name !== "Unknown");
+    }
+    return mentionMembersCache[selectedConvView.id] || [];
+  }, [selectedConvView, teamMembers, mentionMembersCache]);
+
+  useEffect(() => {
+    const conv = selectedConvView;
+    if (!conv || conv.type !== "group") return;
+    const parts = ((conv.participants as ChatParticipant[]) || []);
+    if (parts.length > 0 || mentionMembersCache[conv.id]) return;
+    let cancelled = false;
+    api
+      .get(`/chat/conversations/${conv.id}/participants`)
+      .then((res) => {
+        if (cancelled) return;
+        const data = unwrapApiData<{ participants?: GroupParticipant[] }>(res.data, "");
+        const list = data?.participants || [];
+        setMentionMembersCache((prev) => ({
+          ...prev,
+          [conv.id]: (Array.isArray(list) ? list : [])
+            .map((p: any) => ({ id: String(p?.userId || p?.user_id || ""), name: p?.name || p?.userName || "" }))
+            .filter((m: { id: string; name: string }) => m.id && m.id !== CURRENT_USER_ID() && m.name),
+        }));
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedConvView, mentionMembersCache]);
+
+  /** "@word" right before the caret -> { tokenStart, query }, else null.
+   *  The char before the @ must be start-of-text or whitespace so emails
+   *  (name@company.com) never trigger the popover. */
+  const detectMentionToken = useCallback(
+    (text: string, caret: number): { tokenStart: number; query: string } | null => {
+      if (selectedConvView?.type !== "group" || composerDisabled) return null;
+      const before = text.slice(0, caret);
+      const match = before.match(/(?:^|\s)@([^\s@]{0,30})$/);
+      if (!match) return null;
+      return { tokenStart: caret - (match[1].length + 1), query: match[1] };
+    },
+    [selectedConvView?.type, composerDisabled]
+  );
+
+  const updateMentionState = useCallback(
+    (text: string, caret: number) => {
+      const detected = detectMentionToken(text, caret);
+      if (!detected) {
+        setMentionState((prev) => (prev ? null : prev));
+        return;
+      }
+      setMentionState((prev) =>
+        prev && prev.tokenStart === detected.tokenStart && prev.query === detected.query
+          ? prev
+          : detected
+      );
+      setMentionHighlight(0);
+    },
+    [detectMentionToken]
+  );
+
+  const mentionCandidates = useMemo(() => {
+    if (!mentionState) return [];
+    const q = mentionState.query.toLowerCase();
+    return mentionMembers
+      .filter((m) => m.name && m.name.toLowerCase().includes(q))
+      .slice(0, 6);
+  }, [mentionState, mentionMembers]);
+
+  const mentionPopoverOpen =
+    !!mentionState &&
+    mentionCandidates.length > 0 &&
+    selectedConvView?.type === "group" &&
+    !composerDisabled &&
+    !isRecording;
+
+  /** Replace the partial "@token" before the caret with "@<Name> ". */
+  const insertMention = useCallback(
+    (member: { id: string; name: string }) => {
+      if (!member.name || !mentionState) return;
+      const el = composerRef.current;
+      const caret = el?.selectionStart ?? newMessage.length;
+      const next = `${newMessage.slice(0, mentionState.tokenStart)}@${member.name} ${newMessage.slice(caret)}`;
+      setNewMessage(next);
+      setMentionState(null);
+      requestAnimationFrame(() => {
+        el?.focus();
+        const pos = mentionState.tokenStart + member.name.length + 2;
+        if (el) el.selectionStart = el.selectionEnd = pos;
+      });
+    },
+    [mentionState, newMessage]
+  );
+
 
   // ==========================================
   // Render
@@ -3624,7 +3873,7 @@ export default function Chat() {
                           </DropdownMenuItem>
                         </DropdownMenuContent>
                       </DropdownMenu>
-                      <div className="flex-1">
+                      <div className="relative flex-1">
                         {/* Text styling toolbar (WhatsApp-style *bold* _italic_ ~strike~ `code`) */}
                         {(composerFocused || newMessage) && (
                           <div className="mb-1 flex items-center gap-0.5">
@@ -3654,16 +3903,77 @@ export default function Chat() {
                             </span>
                           </div>
                         )}
+                        {/* @mention popover (groups) — anchored above the composer */}
+                        {mentionPopoverOpen && (
+                          <div className="absolute bottom-full left-0 z-50 mb-2 w-64 max-w-[85vw] overflow-hidden rounded-xl border border-border bg-popover p-1 shadow-xl animate-in fade-in zoom-in-95 duration-100">
+                            <p className="px-2 pb-1 pt-1.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                              Mention member
+                            </p>
+                            <div className="max-h-[200px] overflow-y-auto">
+                              {mentionCandidates.map((m, i) => (
+                                <button
+                                  key={m.id}
+                                  type="button"
+                                  onMouseDown={(e) => e.preventDefault()}
+                                  onClick={() => insertMention(m)}
+                                  className={cn(
+                                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-left text-sm transition-colors",
+                                    i === mentionHighlight ? "bg-accent text-accent-foreground" : "hover:bg-muted"
+                                  )}
+                                >
+                                  <Avatar className="h-6 w-6">
+                                    <AvatarFallback className={cn("bg-gradient-to-br text-[9px] font-semibold text-white", getAvatarGradient(m.name))}>
+                                      {getInitials(m.name)}
+                                    </AvatarFallback>
+                                  </Avatar>
+                                  <span className="truncate">{m.name}</span>
+                                </button>
+                              ))}
+                            </div>
+                          </div>
+                        )}
                         <div className="flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
                         <Textarea
                           ref={composerRef}
                           placeholder={editing ? "Edit message…" : "Type a message..."}
                           value={newMessage}
-                          onChange={(e) => handleInputChange(e.target.value)}
+                          onChange={(e) => {
+                            const el = e.currentTarget;
+                            handleInputChange(el.value);
+                            updateMentionState(el.value, el.selectionStart ?? el.value.length);
+                          }}
                           onFocus={() => setComposerFocused(true)}
-                          onBlur={() => setComposerFocused(false)}
+                          onBlur={() => {
+                            setComposerFocused(false);
+                            // Delay so tapping a suggestion can complete first
+                            // (desktop keeps focus via onMouseDown preventDefault).
+                            window.setTimeout(() => setMentionState(null), 150);
+                          }}
                           onPaste={handleComposerPaste}
                           onKeyDown={(e) => {
+                            // @mention popover navigation wins while open.
+                            if (mentionPopoverOpen && mentionCandidates.length > 0) {
+                              if (e.key === "ArrowDown") {
+                                e.preventDefault();
+                                setMentionHighlight((i) => Math.min(i + 1, mentionCandidates.length - 1));
+                                return;
+                              }
+                              if (e.key === "ArrowUp") {
+                                e.preventDefault();
+                                setMentionHighlight((i) => Math.max(i - 1, 0));
+                                return;
+                              }
+                              if (e.key === "Enter" || e.key === "Tab") {
+                                e.preventDefault();
+                                insertMention(mentionCandidates[Math.min(mentionHighlight, mentionCandidates.length - 1)]);
+                                return;
+                              }
+                              if (e.key === "Escape") {
+                                e.preventDefault();
+                                setMentionState(null);
+                                return;
+                              }
+                            }
                             // Enter = new paragraph (multi-line input);
                             // Ctrl/Cmd+Enter or the send button sends.
                             if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
@@ -3820,6 +4130,7 @@ export default function Chat() {
             : ""
         }
         myRole={myGroupRole}
+        onOpenConversation={handleOpenConversationFromSheet}
         onLeft={() => {
           setSelectedConversation(null);
           setMobileShowSidebar(true);
@@ -3898,6 +4209,7 @@ export default function Chat() {
         onSelect={enterSelectionMode}
         onCopyImage={handleCopyImage}
         onDownloadAttachment={handleDownloadAttachment}
+        onShare={handleMessageShare}
         onTranslate={handleTranslateMessage}
         onClose={() => setActionMenu(null)}
       />

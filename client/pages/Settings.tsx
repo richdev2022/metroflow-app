@@ -1016,7 +1016,7 @@ export default function Settings() {
                 <CardDescription>Transparency on transaction fees.</CardDescription>
               </CardHeader>
               <CardContent>
-                <Table>
+                <Table className="min-w-[680px]">
                     <TableHeader>
                         <TableRow>
                             <TableHead>Category</TableHead>
@@ -1027,15 +1027,15 @@ export default function Settings() {
                     <TableBody>
                         {fees.map((fee) => (
                             <TableRow key={fee.id}>
-                                <TableCell className="capitalize">{fee.name}</TableCell>
-                                <TableCell className="capitalize">{fee.config_type.replace('_', ' ')}</TableCell>
-                                <TableCell>
+                                <TableCell className="capitalize whitespace-nowrap">{fee.name}</TableCell>
+                                <TableCell className="capitalize whitespace-nowrap">{fee.config_type.replace('_', ' ')}</TableCell>
+                                <TableCell className={fee.config_type === 'flat_conditional' || fee.config_type === 'range' ? undefined : 'whitespace-nowrap'}>
                                     {fee.config_type === 'flat' && `₦${fee.config.amount}`}
                                     {fee.config_type === 'percentage_cap' && `${fee.config.percentage}% (Cap: ₦${fee.config.cap})`}
                                     {fee.config_type === 'flat_conditional' && (
                                         <div className="space-y-1">
                                             {fee.config.conditions?.map((c, i) => (
-                                                <div key={i} className="text-sm">
+                                                <div key={i} className="text-sm whitespace-nowrap">
                                                     If amount {c.operator} ₦{c.threshold.toLocaleString()}: ₦{c.fee}
                                                 </div>
                                             ))}
@@ -1044,7 +1044,7 @@ export default function Settings() {
                                     {fee.config_type === 'range' && (
                                         <div className="space-y-1">
                                             {fee.config.ranges?.map((r, i) => (
-                                                <div key={i} className="text-sm">
+                                                <div key={i} className="text-sm whitespace-nowrap">
                                                     ₦{r.min.toLocaleString()} - {r.max >= 999999999 ? "Above" : `₦${r.max.toLocaleString()}`}: ₦{r.fee}
                                                 </div>
                                             ))}

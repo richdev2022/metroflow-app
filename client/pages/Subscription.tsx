@@ -1132,7 +1132,7 @@ export default function Subscription() {
 
           <Card>
             <CardContent className="p-0">
-              <Table>
+              <Table className="min-w-[720px]">
                 <TableHeader>
                   <TableRow>
                     <TableHead>Date</TableHead>
@@ -1161,14 +1161,14 @@ export default function Subscription() {
                   ) : (
                     transactions.map((tx) => (
                       <TableRow key={tx.id}>
-                        <TableCell>{format(new Date(tx.created_at), 'PPP')}</TableCell>
-                        <TableCell className="font-mono text-xs">{tx.reference}</TableCell>
+                        <TableCell className="whitespace-nowrap">{format(new Date(tx.created_at), 'PPP')}</TableCell>
+                        <TableCell className="font-mono text-xs whitespace-nowrap">{tx.reference}</TableCell>
                         <TableCell>{tx.plan_name || 'N/A'}</TableCell>
-                        <TableCell>
+                        <TableCell className="whitespace-nowrap">
                           {tx.currency} {Number(tx.amount).toLocaleString()}
                         </TableCell>
                         <TableCell>
-                          <Badge variant={tx.status === 'success' ? 'default' : tx.status === 'pending' ? 'outline' : 'destructive'} className="capitalize">
+                          <Badge variant={tx.status === 'success' ? 'default' : tx.status === 'pending' ? 'outline' : 'destructive'} className="capitalize whitespace-nowrap">
                             {tx.status}
                           </Badge>
                         </TableCell>
