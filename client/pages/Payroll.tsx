@@ -206,8 +206,9 @@ function isEpicRecipientComplete(item: TransferItem): boolean {
     return (
       !!item.bank_name?.trim() &&
       isValidAbaRoutingNumber(item.routing_number || "") &&
-      // USD meta[0] contract: swift_code is required on every USD payout.
-      isValidSwiftCode(item.swift_code || "") &&
+      // USD rails: ACH (default) needs no BIC — validate format only when a
+      // SWIFT code is present; the SWIFT wire rail requires it server-side.
+      (!item.swift_code?.trim() || isValidSwiftCode(item.swift_code)) &&
       !!item.recipient_account?.trim() &&
       !!item.recipient_address?.trim() &&
       !!item.recipient_country &&
@@ -1168,6 +1169,8 @@ export default function Payroll() {
           payload.bankName = item.bank_name?.trim() || undefined;
           payload.swiftCode = item.swift_code?.trim()?.toUpperCase() || undefined;
           payload.routingNumber = item.routing_number?.trim() || undefined;
+          // USD payout rail for the server-side validator (ACH default).
+          if (currency === "USD") payload.bankCode = item.recipient_bank?.trim() || (item.swift_code?.trim() ? "SWIFT" : "ACH");
           payload.recipientAddress = item.recipient_address?.trim() || undefined;
           payload.recipientCity = item.recipient_city?.trim() || undefined;
           payload.recipientState = item.recipient_state?.trim() || undefined;
@@ -1212,6 +1215,10 @@ export default function Payroll() {
         if (currency === "NGN") {
           mapped.bankCode = item.recipient_bank;
         } else {
+          // USD: bankCode carries the payout rail (ACH | SWIFT) so the
+          // validator knows whether a BIC is required. GBP/EUR are always
+          // SWIFT-rail and the backend ignores bankCode for them.
+          mapped.bankCode = currency === "USD" ? (item.recipient_bank?.trim() || (item.swift_code?.trim() ? "SWIFT" : "ACH")) : "SWIFT";
           mapped.recipientBankName = item.bank_name?.trim() || undefined;
           mapped.recipientSwiftCode = item.swift_code?.trim()?.toUpperCase() || undefined;
           mapped.recipientRoutingNumber = item.routing_number?.trim() || undefined;
@@ -2544,7 +2551,7 @@ export default function Payroll() {
                                 </div>
                                 ) : (
                                 <div className="flex flex-col">
-                                  <Label>SWIFT Code *</Label>
+                                  <Label>{rowCurrency === "USD" ? "SWIFT Code (SWIFT rail only)" : "SWIFT Code *"}</Label>
                                   <Input
                                     value={item.swift_code || ""}
                                     onChange={(e) => updateRecipient(id, "swift_code", e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ""))}
@@ -2552,9 +2559,11 @@ export default function Payroll() {
                                     placeholder={rowCurrency === "GBP" ? "e.g. BUKBGB22" : "e.g. CHASUS33"}
                                     className={cn(swiftInvalid && "border-destructive focus-visible:ring-destructive")}
                                   />
-                                  {swiftInvalid && (
+                                  {swiftInvalid ? (
                                     <p className="text-xs text-destructive">SWIFT must be 8 or 11 characters</p>
-                                  )}
+                                  ) : rowCurrency === "USD" ? (
+                                    <p className="text-xs text-muted-foreground">Only needed for SWIFT wire transfers — ACH payouts skip this</p>
+                                  ) : null}
                                 </div>
                                 )}
                                 {rowCurrency === "USD" && (

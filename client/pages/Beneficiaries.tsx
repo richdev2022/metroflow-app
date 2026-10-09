@@ -280,7 +280,8 @@ export default function Beneficiaries() {
     try {
       const res = await api.post("/transfers/beneficiaries", {
         currency: form.currency,
-        bankCode: isIntl ? "SWIFT" : form.bankCode,
+        // USD: bankCode is the payout rail (ACH | SWIFT) — never hardcode SWIFT.
+        bankCode: isIntl ? (form.bankCode || (form.currency === "USD" ? "ACH" : "SWIFT")) : form.bankCode,
         accountNumber: form.accountNumber.trim(),
         accountName: form.accountName.trim() || undefined,
         bankName: form.bankName.trim() || undefined,
@@ -655,7 +656,11 @@ export default function Beneficiaries() {
                   {form.currency === "USD" && (
                     <div className="space-y-1.5">
                       <Label>Payout rail</Label>
-                      <Select value={form.bankCode || "ACH"} onValueChange={(v) => setField("bankCode", v)}>
+                      <Select value={form.bankCode || "ACH"} onValueChange={(v) => {
+                        setField("bankCode", v);
+                        // ACH carries no BIC — drop any stale SWIFT value.
+                        if (v === "ACH") setField("swiftCode", "");
+                      }}>
                         <SelectTrigger>
                           <SelectValue placeholder="Choose payout rail" />
                         </SelectTrigger>
@@ -672,7 +677,8 @@ export default function Beneficiaries() {
                       <Input value={form.routingNumber} onChange={(e) => setField("routingNumber", e.target.value)} placeholder="9 digits, e.g. 021000021" maxLength={12} />
                     </div>
                   )}
-                  {form.currency === "USD" && (
+                  {/* USD SWIFT rail only — ACH payouts carry no BIC. */}
+                  {form.currency === "USD" && form.bankCode === "SWIFT" && (
                     <div className="space-y-1.5">
                       <Label>SWIFT / BIC code</Label>
                       <Input value={form.swiftCode} onChange={(e) => setField("swiftCode", e.target.value.toUpperCase())} placeholder="e.g. CHASUS33" maxLength={11} />

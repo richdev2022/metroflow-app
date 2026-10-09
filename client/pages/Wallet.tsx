@@ -77,16 +77,20 @@ const transferSchema = z.object({
     });
   }
   if (data.currency === "USD") {
-    // USD contract (Flutterwave intl docs): ABA routing number, SWIFT/BIC code,
-    // bank name, street address, account_type checking|depository, email.
+    // USD contract (Flutterwave intl docs): ABA routing number, bank name,
+    // street address, account_type checking|depository, email. The SWIFT/BIC
+    // code is required only on the SWIFT rail (international wire); ACH —
+    // US local rails, the default — needs no BIC.
     const required: Array<[keyof typeof data, string]> = [
       ["recipientCountry", "Recipient country is required for international payouts"],
       ["recipientAddress", "Street address is required for international payouts"],
       ["recipientCity", "City is required for international payouts"],
       ["bankName", "Bank name is required for international payouts"],
       ["routingNumber", "US routing number (ABA) is required for USD payouts"],
-      ["swiftCode", "SWIFT/BIC code is required for USD payouts"],
     ];
+    if (data.bankCode === "SWIFT") {
+      required.push(["swiftCode", "SWIFT/BIC code is required for USD SWIFT wire transfers"]);
+    }
     for (const [path, message] of required) {
       if (!String(data[path] || "").trim()) {
         ctx.addIssue({ code: z.ZodIssueCode.custom, path: [path], message });
@@ -1580,7 +1584,12 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                         render={({ field }) => (
                           <FormItem>
                             <FormLabel>Payout rail</FormLabel>
-                            <Select value={field.value} onValueChange={(v) => field.onChange(v)}>
+                            <Select value={field.value} onValueChange={(v) => {
+                              field.onChange(v);
+                              // ACH carries no BIC — drop any stale SWIFT value
+                              // so the hidden field can't leak into the payload.
+                              if (v === "ACH") transferForm.setValue("swiftCode", "");
+                            }}>
                               <FormControl>
                                 <SelectTrigger>
                                   <SelectValue placeholder="Choose payout rail" />
@@ -1654,7 +1663,9 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                           )}
                         />
                       )}
-                      {watchedCurrency === "USD" && (
+                      {/* USD SWIFT rail (international wire) only — ACH payouts
+                          need no BIC, so the field disappears on the default rail. */}
+                      {watchedCurrency === "USD" && watchedBankCode === "SWIFT" && (
                         <FormField
                           control={transferForm.control}
                           name="swiftCode"
