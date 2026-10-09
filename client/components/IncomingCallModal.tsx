@@ -55,6 +55,13 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
       return;
     }
 
+    // NEW CALL — reset the busy flags. They are set (never cleared) by
+    // handleAccept/handleReject; without this reset every incoming call
+    // AFTER the first accept/reject attempt rendered permanently disabled
+    // buttons and the accept guard silently swallowed further taps.
+    setIsAccepting(false);
+    setIsRejecting(false);
+
     const startRinging = async () => {
       try {
         const stop = await AudioUtils.playRingtone();
@@ -157,7 +164,7 @@ export default function IncomingCallModal({ call, onClose }: IncomingCallModalPr
   const displayName = callerName || call.callerName || call.fromName || 'Unknown Caller';
 
   return (
-    <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+    <div className="fixed inset-0 z-[300] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
       <div className="w-full max-w-sm rounded-3xl p-8 bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 border border-white/10 shadow-2xl animate-in zoom-in-95 duration-300">
         <div className="flex flex-col items-center text-center">
           <div className="relative mb-5">

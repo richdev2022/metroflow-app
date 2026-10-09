@@ -563,11 +563,16 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     on('call:accepted', handleAccepted);
     on('call:rejected', handleRejected);
     on('call:ended', handleEnded);
+    // Ring expiry: the server emits call:timeout when nobody answers within
+    // the ring window. Without this the overlay rang forever (the callee
+    // saw a stale "is calling..." for a call that no longer exists).
+    on('call:timeout', handleEnded);
     return () => {
       off('call:incoming', handleIncomingCall);
       off('call:accepted', handleAccepted);
       off('call:rejected', handleRejected);
       off('call:ended', handleEnded);
+      off('call:timeout', handleEnded);
     };
   }, [isConnected, socket, on, off, showNotification, closeCallNotification]);
 
