@@ -10,6 +10,14 @@
   to = "/.netlify/functions/api"
   status = 200
 
+# Android App Links verification file must be served as raw JSON — the SPA
+# catch-all below would otherwise rewrite it to index.html.
+[[redirects]]
+  from = "/.well-known/assetlinks.json"
+  to = "/.well-known/assetlinks.json"
+  status = 200
+  force = false
+
 [[redirects]]
   from = "/*"
   to = "/index.html"
