@@ -671,19 +671,29 @@ const MessageBubble = ({
     start.lastY = t.clientY;
     const dx = t.clientX - start.x;
     const dy = t.clientY - start.y;
-    // Vertical scroll or left drag cancels both gestures.
-    if (Math.abs(dy) > Math.abs(dx) || dx <= 0) {
+    // Vertical scroll cancels both gestures.
+    if (Math.abs(dy) > Math.abs(dx)) {
       clearLongPress();
       if (swipeX !== 0) setSwipeX(0);
       return;
     }
-    if (dx > 10) clearLongPress();
-    setSwipeX(Math.min(dx, 96));
+    // MIRRORED swipe-to-reply: OTHER people's messages swipe RIGHT (bubble
+    // sits at the left edge), YOUR messages swipe LEFT (bubble sits at the
+    // right edge) — WhatsApp parity. Before this, replying to your own
+    // message was impossible on touch (right-swipe ran off-screen).
+    const away = dx * (isOwn ? -1 : 1);
+    if (away <= 0) {
+      clearLongPress();
+      if (swipeX !== 0) setSwipeX(0);
+      return;
+    }
+    if (away > 10) clearLongPress();
+    setSwipeX(Math.min(away, 96) * (isOwn ? -1 : 1));
   };
 
   const handleTouchEnd = () => {
     clearLongPress();
-    if (swipeX > 56 && onReplySwipe && !tombstone) {
+    if (Math.abs(swipeX) > 56 && onReplySwipe && !tombstone) {
       try { navigator.vibrate?.(10); } catch {}
       onReplySwipe(message);
     }
@@ -857,11 +867,15 @@ const MessageBubble = ({
   return (
     <div
       className={cn(
-        "flex items-end gap-2 group",
+        "flex items-end gap-2 group select-none sm:select-text",
         isOwn ? "justify-end" : "justify-start",
         isGrouped ? "mt-0.5" : "mt-2",
         selectionActive && "cursor-pointer"
       )}
+      // Suppress the NATIVE long-press callout/selection on touch: iOS Safari
+      // used to steal the long-press for its own text callout, so the custom
+      // action menu (reply/select/forward/copy) never opened on mobile web.
+      style={{ WebkitTouchCallout: "none" as never }}
       onTouchStart={selectionActive ? undefined : handleTouchStart}
       onTouchMove={selectionActive ? undefined : handleTouchMove}
       onTouchEnd={selectionActive ? undefined : handleTouchEnd}
@@ -900,11 +914,15 @@ const MessageBubble = ({
         </div>
       )}
       <div className="relative flex min-w-0 max-w-[82%] sm:max-w-[68%] items-center">
-        {/* Swipe-to-reply affordance revealed behind the bubble */}
+        {/* Swipe-to-reply affordance revealed behind the bubble (mirrored
+            per side: left affordance for others, right for your own) */}
         {onReplySwipe && !tombstone && (
           <span
-            className="pointer-events-none absolute left-[-36px] top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500"
-            style={{ opacity: Math.min(1, swipeX / 56) }}
+            className={cn(
+              "pointer-events-none absolute top-1/2 flex h-7 w-7 -translate-y-1/2 items-center justify-center rounded-full bg-emerald-500/15 text-emerald-500",
+              isOwn ? "right-[-36px]" : "left-[-36px]"
+            )}
+            style={{ opacity: Math.min(1, Math.abs(swipeX) / 56) }}
             aria-hidden
           >
             <CornerUpLeft className="h-3.5 w-3.5" />
