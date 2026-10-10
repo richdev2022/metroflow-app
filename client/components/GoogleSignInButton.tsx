@@ -47,8 +47,11 @@ interface GoogleCredentialResponse {
 
 export default function GoogleSignInButton({
   mode = "login",
+  referralCode,
 }: {
   mode?: "login" | "signup";
+  /** Refer & Earn: attach an optional referral code to NEW Google sign-ups. */
+  referralCode?: string;
 }) {
   const navigate = useNavigate();
   const gsiHostRef = useRef<HTMLDivElement>(null);
@@ -67,6 +70,7 @@ export default function GoogleSignInButton({
     try {
       const res = await api.post("/auth/google", {
         credential: response.credential,
+        ...(referralCode ? { referralCode: referralCode.trim().toUpperCase() } : {}),
       });
       const data = res.data as any;
 
@@ -184,7 +188,7 @@ export default function GoogleSignInButton({
     return () => {
       cancelled = true;
     };
-  }, [mode]);
+  }, [mode, referralCode]);
 
   const handleCustomClick = () => {
     setNotice(
