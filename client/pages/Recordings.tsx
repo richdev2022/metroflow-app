@@ -65,26 +65,32 @@ import {
 import { Recording } from "@shared/api";
 import { getApiMessage } from "@/lib/api-response";
 import { api } from "@/lib/api-client";
+import { resolveMediaUrl } from "@/lib/media-url";
 
 // ─── Helpers ───────────────────────────────────────────────────────────────────
 
 const getVideoUrl = (storageUrl?: string | null): string | null => {
-  if (!storageUrl) return null;
+  // Recording rows can hold an absolute URL, a root-served "/uploads/x" path
+  // (client-mode uploads — served at the API ROOT, not under /api), or a bare
+  // R2 object key like "recordings/<biz>/<id>.mp4" (LiveKit egress webhook).
+  // resolveMediaUrl() handles all three (bare keys go through the API's
+  // /files/<key> streaming route). The previous implementation prepended the
+  // axios base URL INCLUDING its "/api" segment, producing 404s such as
+  // /api/uploads/... — which is exactly why recordings failed to play and
+  // download on this page.
+  const resolved = resolveMediaUrl(storageUrl);
+  return resolved || null;
+};
 
-  if (
-    storageUrl.startsWith("data:") ||
-    storageUrl.startsWith("http://") ||
-    storageUrl.startsWith("https://") ||
-    storageUrl.startsWith("blob:")
-  ) {
-    return storageUrl;
+const extensionFromUrl = (url?: string | null): string => {
+  if (!url) return "webm";
+  try {
+    const clean = url.split("?")[0].split("#")[0];
+    const ext = clean.slice(clean.lastIndexOf(".") + 1).toLowerCase();
+    return /^[a-z0-9]{2,5}$/.test(ext) ? ext : "webm";
+  } catch {
+    return "webm";
   }
-
-  const apiBase = api.defaults.baseURL || import.meta.env.VITE_API_BASE_URL || "";
-  const normalizedBase = apiBase.endsWith("/") ? apiBase.slice(0, -1) : apiBase;
-  const path = storageUrl.startsWith("/") ? storageUrl : `/${storageUrl}`;
-  
-  return `${normalizedBase}${path}`;
 };
 
 const downloadRecordingFile = async (
@@ -126,7 +132,11 @@ const downloadRecordingFile = async (
 
     const a = document.createElement("a");
     a.href = blobUrl;
-    a.download = filename.endsWith(".webm") ? filename : `${filename}.webm`;
+    // Keep the real container extension (server-side egress produces MP4,
+    // client-mode uploads produce WEBM) instead of forcing ".webm".
+    const ext = extensionFromUrl(url);
+    const baseName = filename.replace(/\.[a-z0-9]{2,5}$/i, "");
+    a.download = `${baseName}.${ext}`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
