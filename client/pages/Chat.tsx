@@ -1052,6 +1052,7 @@ const ConversationListItem = ({
   presence,
   searchQuery,
   onClick,
+  onDelete,
 }: {
   conversation: ConversationView;
   isSelected: boolean;
@@ -1059,6 +1060,8 @@ const ConversationListItem = ({
   presence: Record<string, string>;
   searchQuery: string;
   onClick: () => void;
+  /** Delete-from-my-list (direct chats only). Omit for groups. */
+  onDelete?: () => void;
 }) => {
   const name = getConversationName(members, conversation);
   const lastMsg = getLastMsg(conversation);
@@ -1089,6 +1092,7 @@ const ConversationListItem = ({
   const unread = conversation.unreadCount ?? 0;
 
   return (
+    <div className="relative group/conv">
     <button
       onClick={onClick}
       className={cn(
@@ -1138,6 +1142,21 @@ const ConversationListItem = ({
         </div>
       </div>
     </button>
+    {onDelete && (
+      <button
+        type="button"
+        aria-label="Delete chat"
+        title="Delete chat"
+        className="absolute right-2 top-1/2 -translate-y-1/2 h-7 w-7 rounded-lg hidden sm:group-hover/conv:flex items-center justify-center text-muted-foreground hover:text-destructive hover:bg-destructive/10"
+        onClick={(e) => {
+          e.stopPropagation();
+          onDelete();
+        }}
+      >
+        <Trash2 className="h-3.5 w-3.5" />
+      </button>
+    )}
+    </div>
   );
 };
 
@@ -1902,6 +1921,22 @@ export default function Chat() {
     }
     AudioUtils.stopAllRingtones();
   }, []);
+
+  /** WhatsApp-style "delete chat": hide a direct conversation from MY list.
+   *  The other participant keeps it; a new message brings the chat back. */
+  const handleDeleteConversation = async (conv: ConversationView) => {
+    const name = getConversationName(teamMembers, conv) || "this chat";
+    if (!window.confirm(`Delete "${name}" from your chat list? They keep their copy, and the chat reappears if they message you again.`)) return;
+    try {
+      await api.delete(`/chat/conversations/${conv.id}`);
+      await queryClient.invalidateQueries({ queryKey: ["conversations"] });
+      setSelectedConversation((prev: ConversationView | null) => (prev?.id === conv.id ? null : prev));
+      setMobileShowSidebar(true);
+      toast({ title: "Chat deleted", description: "It will reappear if they message you again." });
+    } catch (e) {
+      toast({ variant: "destructive", title: "Error", description: getApiMessage(e, "Failed to delete the chat") });
+    }
+  };
 
   const handleStartCall = async (type: 'audio' | 'video') => {
     if (!selectedConversation || startingCall) return;
@@ -3402,6 +3437,7 @@ export default function Chat() {
                             // Mobile: enter the conversation immediately.
                             setMobileShowSidebar(false);
                           }}
+                          onDelete={conv.type === "direct" ? () => handleDeleteConversation(conv) : undefined}
                         />
                       ))}
                       {/* Invited (guest) contacts — people brought in by
