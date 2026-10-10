@@ -83,6 +83,7 @@ import {
   useConversations,
   useCreateConversation,
   useMessages,
+  useInfiniteMessages,
   useSendMessage,
   useCreateCall,
   uploadChatMedia,
@@ -1551,8 +1552,40 @@ export default function Chat() {
     }
   }, [selectedConversation?.id]);
 
-  // Fetch messages
-  const { data: messagesData } = useMessages(selectedConversation?.id || "", 1, 100);
+  // Fetch messages — INFINITE variant so the full history is reachable:
+  // page 1 is the newest 50 and scrolling near the TOP transparently fetches
+  // older pages (web previously read exactly page 1 and had no pagination).
+  const {
+    data: messagesInfinite,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+  } = useInfiniteMessages(selectedConversation?.id || "", 50);
+  const messagesData = useMemo(() => {
+    const pages = (messagesInfinite?.pages || []) as Array<{
+      messages?: ChatMessage[];
+      total?: number;
+      participants?: { userId?: string; user_id?: string; userName?: string; lastReadAt?: string | null }[];
+    }>;
+    return {
+      messages: pages.flatMap((p) => p.messages || []),
+      total: pages[0]?.total ?? 0,
+      participants: pages[pages.length - 1]?.participants || [],
+    };
+  }, [messagesInfinite]);
+  // Scroll-anchor preservation for prepend loads: remember the previous
+  // scrollHeight and re-stamp scrollTop by the growth once the older page
+  // renders (otherwise the viewport jumps to the newest message).
+  const prevScrollHeightRef = useRef(0);
+  const restoreScrollAfterPrependRef = useRef(false);
+  useEffect(() => {
+    if (!restoreScrollAfterPrependRef.current) return;
+    restoreScrollAfterPrependRef.current = false;
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    const growth = el.scrollHeight - prevScrollHeightRef.current;
+    if (growth > 0) el.scrollTop += growth;
+  }, [messagesData.messages.length]);
 
   // Read receipts — derive the peer's latest read timestamp from (a) the
   // messages payload's participants (backend GET messages) and (b) the
@@ -1650,12 +1683,21 @@ export default function Chat() {
     });
   }, [filteredConversations]);
 
-  // Scroll handling
+  // Scroll handling — also the LOAD-OLDER trigger: near the TOP of the
+  // history (≤120px) fetch the next older page while keeping the reader
+  // anchored (see prevScrollHeightRef restore above).
   const handleScroll = useCallback(() => {
     const el = scrollContainerRef.current;
     if (!el) return;
     isNearBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 100;
-  }, []);
+    if (el.scrollTop <= 120 && hasNextPage && !isFetchingNextPage && selectedConversation?.id) {
+      prevScrollHeightRef.current = el.scrollHeight;
+      restoreScrollAfterPrependRef.current = true;
+      fetchNextPage().catch(() => {
+        restoreScrollAfterPrependRef.current = false;
+      });
+    }
+  }, [hasNextPage, isFetchingNextPage, fetchNextPage, selectedConversation?.id]);
 
   const scrollToBottom = useCallback((force = false) => {
     if (force || isNearBottomRef.current) {

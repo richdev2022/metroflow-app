@@ -139,11 +139,25 @@ export default function MobileMeetingInterstitial({
     try {
       if (isAndroid()) {
         // intent:// launches the app when installed and falls back to the
-        // browser otherwise — the most reliable Android path.
+        // browser otherwise — the most reliable Android path in full Chrome.
         const intentUrl =
           `intent://meetings/${encodeURIComponent(meetingCode)}#Intent;` +
           `scheme=${APP_SCHEME};package=${ANDROID_PACKAGE};S.browser_fallback_url=${encodeURIComponent(location.pathname)};end`;
         window.location.href = intentUrl;
+        // WebView-type browsers (WhatsApp/Telegram/Instagram in-app, some OEM
+        // shells) BLOCK intent:// and custom-scheme navigations — the tab
+        // either does nothing or errors with the browser's own "page not
+        // found". If we are still visible after 1.2s, try the https
+        // UNIVERSAL link: the Android app registers an App Links
+        // intent-filter for app.metricorex.com, so this resolves even where
+        // intent:// is stripped.
+        window.setTimeout(() => {
+          if (!document.hidden && !continueOnWeb && !showStores) {
+            try {
+              window.location.href = `https://app.metricorex.com/meetings/${encodeURIComponent(meetingCode)}`;
+            } catch { /* store timer still covers it */ }
+          }
+        }, 1200);
       } else {
         window.location.href = deepLink;
       }

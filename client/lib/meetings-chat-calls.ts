@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { api } from './api-client';
 import { unwrapApiData } from './api-response';
 import type {
@@ -195,6 +195,38 @@ export const useMessages = (conversationId: string, page = 1, limit = 50) => {
         response.data,
         'Failed to get messages',
       );
+    },
+    enabled: !!conversationId,
+  });
+};
+
+/**
+ * Infinite-scroll variant of useMessages: page 1 = newest N, every next page
+ * fetches the OLDER history (server contract: ORDER BY created_at DESC +
+ * OFFSET, response ascending). "Old chat history missing" on web was exactly
+ * this — the UI read page 1 only and had no way to page back.
+ */
+export const useInfiniteMessages = (conversationId: string, limit = 50) => {
+  return useInfiniteQuery({
+    queryKey: ['messages-infinite', conversationId, limit],
+    initialPageParam: 1,
+    queryFn: async ({ pageParam }: { pageParam: number }) => {
+      const response = await api.get(`/chat/conversations/${conversationId}/messages`, {
+        params: { page: pageParam, limit },
+      });
+      return unwrapApiData<{
+        messages: Message[];
+        total: number;
+        participants?: { userId?: string; user_id?: string; userName?: string; lastReadAt?: string | null }[];
+      }>(
+        response.data,
+        'Failed to get messages',
+      );
+    },
+    getNextPageParam: (lastPage: any, allPages: any[]) => {
+      const total = Number(lastPage?.total ?? 0);
+      const loaded = allPages.reduce((n: number, p: any) => n + (p?.messages?.length || 0), 0);
+      return loaded < total ? allPages.length + 1 : undefined;
     },
     enabled: !!conversationId,
   });
