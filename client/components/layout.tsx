@@ -474,7 +474,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
       if (location.pathname === "/meetings") return;
       setMeetingsUnread((prev) => prev + 1);
       AudioUtils.ensureInitialized().catch(() => {});
-      AudioUtils.playNotification().catch(() => {});
+      AudioUtils.playPushNotification().catch(() => {});
       sonnerToast("New meeting invitation", {
         description: meeting.title ? `You were invited to “${meeting.title}”` : "You were invited to a meeting",
         duration: 6000,
