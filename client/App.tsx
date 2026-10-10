@@ -8,6 +8,8 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ThemeProvider } from "next-themes";
 import Login from "./pages/Login";
 import Register from "./pages/Register";
+import ReferralInvite from "./pages/ReferralInvite";
+import Referrals from "./pages/Referrals";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPasswordOtp from "./pages/ResetPasswordOtp";
 import ResetPassword from "./pages/ResetPassword";
@@ -168,6 +170,10 @@ const App = () => (
             <Route path="/" element={<Navigate to="/login" replace />} />
             <Route path="/login" element={<Login />} />
             <Route path="/register" element={<Register />} />
+            {/* Refer & Earn: public referral-link landing */}
+            <Route path="/r/:code" element={<ReferralInvite />} />
+            {/* Authed: Refer & Earn dashboard */}
+            <Route path="/referrals" element={<TokenProtectedRoute element={<Referrals />} />} />
             <Route path="/forgot-password" element={<ForgotPassword />} />
             <Route path="/reset-password-otp" element={<ResetPasswordOtp />} />
             <Route path="/reset-password" element={<ResetPassword />} />

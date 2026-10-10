@@ -11,7 +11,7 @@ import {
   Alert,
   AlertDescription,
 } from "@/components/ui/alert";
-import { Building2, CheckCircle2, ImagePlus, Loader2 } from "lucide-react";
+import { Building2, CheckCircle2, Gift, ImagePlus, Loader2 } from "lucide-react";
 
 /**
  * ProfileComplete — SSO onboarding gate (web).
@@ -35,7 +35,20 @@ export default function ProfileComplete() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // Refer & Earn: optional referral code for Google SSO sign-ups. Claimed
+  // (POST /referrals/claim) on BOTH complete and skip paths — best effort.
+  const [referralCode, setReferralCode] = useState("");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  const claimReferral = async () => {
+    const code = referralCode.trim();
+    if (!code) return;
+    try {
+      await api.post("/referrals/claim", { referralCode: code.toUpperCase() });
+    } catch {
+      // Never block onboarding because of a referral code.
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -117,6 +130,7 @@ export default function ProfileComplete() {
         return;
       }
       toast({ title: "Profile completed", description: "Welcome aboard! Taking you to your dashboard..." });
+      await claimReferral();
       setTimeout(() => navigate("/dashboard"), 700);
     } catch (err: any) {
       setError(getApiMessage(err, "Failed to complete profile"));
@@ -137,6 +151,7 @@ export default function ProfileComplete() {
     } finally {
       setSaving(false);
     }
+    await claimReferral();
     navigate("/dashboard");
   };
 
@@ -231,6 +246,22 @@ export default function ProfileComplete() {
               type="tel"
               autoComplete="tel"
             />
+          </div>
+
+          <div className="space-y-1.5">
+            <Label htmlFor="biz-referral" className="flex items-center gap-1.5">
+              <Gift className="h-3.5 w-3.5 text-primary" /> Referral code{" "}
+              <span className="font-normal text-muted-foreground">(optional)</span>
+            </Label>
+            <Input
+              id="biz-referral"
+              value={referralCode}
+              onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+              placeholder="Enter a friend's referral code"
+            />
+            <p className="text-xs text-muted-foreground">
+              If someone invited you, their code credits them when you subscribe.
+            </p>
           </div>
 
           <Button type="submit" className="w-full" disabled={saving}>

@@ -1,5 +1,5 @@
-import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useEffect, useState } from "react";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { motion } from "framer-motion";
 import { api } from "@/lib/api-client";
 import { Button } from "@/components/ui/button";
@@ -13,6 +13,7 @@ import {
   Building2,
   CheckCircle,
   FileText,
+  Gift,
   Lock,
   Mail,
   Store,
@@ -24,6 +25,7 @@ import { IndustryCombobox } from "@/components/industry-combobox";
 import { useCountdown } from "@/hooks/useCountdown";
 import GoogleSignInButton from "@/components/GoogleSignInButton";
 import AuthShell from "@/components/auth/AuthShell";
+import { validateReferralCode } from "@/lib/referral-api";
 
 type Step = "business" | "otp";
 type BusinessType = "registered" | "non_registered";
@@ -75,6 +77,35 @@ export default function Register() {
     confirmPassword: "",
   });
 
+  // Refer & Earn: optional referral code. Prefilled from ?ref= on the URL
+  // (referral links land on /register?ref=CODE), editable, validated lazily.
+  const [searchParams] = useSearchParams();
+  const [referralCode, setReferralCode] = useState(
+    (searchParams.get("ref") || "").toUpperCase(),
+  );
+  const [referralValid, setReferralValid] = useState<"idle" | "valid" | "invalid">("idle");
+
+  useEffect(() => {
+    const code = referralCode.trim();
+    if (code.length < 4) {
+      setReferralValid("idle");
+      return;
+    }
+    let alive = true;
+    const timer = setTimeout(async () => {
+      try {
+        const result = await validateReferralCode(code);
+        if (alive) setReferralValid(result.valid ? "valid" : "invalid");
+      } catch {
+        if (alive) setReferralValid("idle");
+      }
+    }, 450);
+    return () => {
+      alive = false;
+      clearTimeout(timer);
+    };
+  }, [referralCode]);
+
   // OTP Data State
   const [otpData, setOtpData] = useState({
     email: "",
@@ -119,6 +150,7 @@ export default function Register() {
         adminEmail: businessData.adminEmail,
         password: businessData.password,
         businessType,
+        referralCode: referralCode.trim() || undefined,
       });
 
       const data = response.data as AuthResponse;
@@ -464,6 +496,39 @@ export default function Register() {
                   />
                 </div>
               </div>
+
+              <div className="space-y-1.5">
+                <Label htmlFor="referralCode" className="text-sm font-medium">
+                  Referral code <span className="font-normal text-muted-foreground">(optional)</span>
+                </Label>
+                <div className="relative">
+                  <Gift className="pointer-events-none absolute left-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                  <Input
+                    id="referralCode"
+                    placeholder="Enter a friend's referral code"
+                    value={referralCode}
+                    onChange={(e) => setReferralCode(e.target.value.toUpperCase())}
+                    className={`${inputClass} ${
+                      referralValid === "valid"
+                        ? "border-emerald-400 focus-visible:ring-emerald-400/50"
+                        : referralValid === "invalid"
+                          ? "border-red-400 focus-visible:ring-red-400/50"
+                          : ""
+                    }`}
+                  />
+                  {referralValid === "valid" && (
+                    <CheckCircle className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-emerald-500" />
+                  )}
+                  {referralValid === "invalid" && (
+                    <XCircle className="pointer-events-none absolute right-3.5 top-1/2 h-4 w-4 -translate-y-1/2 text-red-500" />
+                  )}
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {referralValid === "invalid"
+                    ? "This code doesn't match any account — leave it empty if you don't have one."
+                    : "Have a referral code? Enter it so your referrer gets credited when you subscribe."}
+                </p>
+              </div>
             </div>
           </div>
 
@@ -475,7 +540,7 @@ export default function Register() {
             {loading ? "Creating account..." : "Create account"}
           </Button>
 
-          <GoogleSignInButton mode="signup" />
+          <GoogleSignInButton mode="signup" referralCode={referralCode.trim() || undefined} />
 
           <p className="pt-1 text-center text-xs leading-relaxed text-muted-foreground">
             By creating an account you agree to our{" "}
