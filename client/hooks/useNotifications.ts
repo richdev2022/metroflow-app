@@ -117,7 +117,7 @@ export function useNotifications() {
         // skipped here to avoid double alerts.
         if (convertedNotification.type !== 'chat' && convertedNotification.type !== 'call') {
           AudioUtils.ensureInitialized().catch(() => {});
-          AudioUtils.playNotification().catch(() => {});
+          AudioUtils.playPushNotification().catch(() => {});
           sonnerToast(convertedNotification.title || 'New notification', {
             description: convertedNotification.message || '',
             duration: 5000,
