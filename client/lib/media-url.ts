@@ -73,9 +73,17 @@ export function resolveMediaUrl(url?: string | null): string {
     return `${getApiOrigin()}${stripped}`;
   }
 
-  // Anything else (bare relative path like "uploads/x.webm") — make it
-  // root-relative against the API origin as a best effort.
-  return `${getApiOrigin()}/${trimmed.replace(/^\.?\//, "")}`;
+  // Bare relative values. Two shapes exist:
+  //  - "uploads/x.webm" — legacy local-disk media → root-relative on the API origin.
+  //  - bare object keys ("recordings/<biz>/<id>.mp4", "chat/...", "metricai/...")
+  //    returned by R2/egress uploads — these are NOT URLs; they must go through
+  //    the API's public /files/<key> streaming route (same normalization the
+  //    backend applies to chat media).
+  const bare = trimmed.replace(/^\.?\//, "");
+  if (/^uploads\//i.test(bare)) {
+    return `${getApiOrigin()}/${bare}`;
+  }
+  return `${getApiOrigin()}/files/${bare}`;
 }
 
 /**

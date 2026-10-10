@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Loader2, Heart, Eye, Trash2, Repeat2, X, Plus, Reply, ChevronLeft, ChevronRight } from "lucide-react";
 import { api } from "@/lib/api-client";
+import { AudioUtils } from "@/lib/audio-utils";
 import { getApiMessage, unwrapApiData } from "@/lib/api-response";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { uploadChatMedia } from "@/lib/meetings-chat-calls";
@@ -263,6 +264,8 @@ function StatusComposerDialog({ open, onOpenChange, onPosted }: {
     setPosting(true);
     try {
       await api.post("/statuses", { content: text.trim(), backgroundColor: bg, ...(mediaUrl ? { mediaUrl, mediaType: "image" } : {}) });
+      AudioUtils.ensureInitialized().catch(() => {});
+      AudioUtils.playStatusPublished().catch(() => {});
       toast({ title: "Status posted" });
       reset();
       onOpenChange(false);

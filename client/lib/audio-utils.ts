@@ -10,6 +10,8 @@ const SOUND_FETCH_FAILED_AT: Record<string, number> = {};
 const AUDIO_FILE_PATHS: Record<string, string> = {
   'message-sent': '/sounds/message-sent.mp3',
   'message-received': '/sounds/message-received.mp3',
+  'push-notification': '/sounds/push-notification.mp3',
+  'status-published': '/sounds/status-published.mp3',
   'ringtone': '/sounds/ringtone.mp3',
   'ringback': '/sounds/ringback.mp3',
   'call-ended': '/sounds/call-ended.mp3',
@@ -513,6 +515,72 @@ export const AudioUtils = {
 
   async playNotification() {
     await this.playMessageReceived();
+  },
+
+  /**
+   * Generic (non-chat) push notification sound — meeting invites, wallet
+   * credits, admin announcements, etc. Chat messages use playMessageReceived.
+   */
+  async playPushNotification() {
+    await this.ensureInitialized();
+    const buf = await this._loadAudioBuffer('push-notification');
+    if (buf) {
+      this._playBuffer(buf, 0.8);
+      return;
+    }
+    const ctx = this.audioContext;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const notes = [
+      { f: 880, t: 0, d: 0.09 },
+      { f: 1174.66, t: 0.09, d: 0.12 },
+    ];
+    notes.forEach(note => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const t = now + note.t;
+      osc.frequency.setValueAtTime(note.f, t);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.3, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + note.d);
+      osc.start(t);
+      osc.stop(t + note.d + 0.02);
+    });
+  },
+
+  /** Chat status (story) published successfully. */
+  async playStatusPublished() {
+    await this.ensureInitialized();
+    const buf = await this._loadAudioBuffer('status-published');
+    if (buf) {
+      this._playBuffer(buf, 0.8);
+      return;
+    }
+    const ctx = this.audioContext;
+    if (!ctx) return;
+    const now = ctx.currentTime;
+    const notes = [
+      { f: 659.25, t: 0, d: 0.08 },
+      { f: 830.61, t: 0.08, d: 0.08 },
+      { f: 987.77, t: 0.16, d: 0.14 },
+    ];
+    notes.forEach(note => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'triangle';
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      const t = now + note.t;
+      osc.frequency.setValueAtTime(note.f, t);
+      gain.gain.setValueAtTime(0, t);
+      gain.gain.linearRampToValueAtTime(0.3, t + 0.008);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + note.d);
+      osc.start(t);
+      osc.stop(t + note.d + 0.02);
+    });
   },
 
   async playCallEnded() {
