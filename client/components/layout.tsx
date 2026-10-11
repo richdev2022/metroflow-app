@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback, useRef } from "react";
 import { Link, useLocation, useNavigate } from "react-router-dom";
-import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Store, Repeat, ShieldCheck, ChevronRight, type LucideIcon } from "lucide-react";
+import { BarChart3, Users, ListTodo, LogOut, UserCircle2, Moon, Sun, Activity, Target, Lightbulb, CreditCard, Wallet, Banknote, Gift, Loader2, Settings, History, Kanban, Calendar, CalendarDays, MessageSquare, Video, Mic, Phone, Sparkles, Link as LinkIcon, FileText, Store, Repeat, ShieldCheck, ChevronRight, type LucideIcon } from "lucide-react";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { NotificationBell } from "./NotificationBell";
 import { AnnouncementTicker } from "./AnnouncementTicker";
@@ -808,6 +808,7 @@ export default function Layout({ children }: { children: React.ReactNode }) {
                 { path: "/beneficiaries", label: "Beneficiaries", icon: <Users />, active: isActive("/beneficiaries"), dataTour: "nav-beneficiaries", kycChecking: kycCheckingPath === "/beneficiaries", onClick: (e) => handleKycProtectedNavigation(e, "/beneficiaries") },
                 { path: "/payroll", label: "Payroll", icon: <Banknote />, active: isActive("/payroll"), dataTour: "nav-payroll", kycChecking: kycCheckingPath === "/payroll", onClick: (e) => handleKycProtectedNavigation(e, "/payroll") },
                 { path: "/transfer-history", label: "Transfer History", icon: <History />, active: isActive("/transfer-history"), dataTour: "nav-transfer-history" },
+                { path: "/referrals", label: "Refer & Earn", icon: <Gift />, active: isActive("/referrals"), dataTour: "nav-referrals" },
               ]}
             />
 
