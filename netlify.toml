@@ -22,3 +22,17 @@
   from = "/*"
   to = "/index.html"
   status = 200
+
+# VAPT MF-009 fix: baseline security headers on every response.
+# (CSP intentionally omitted for the SPA bundle — a strict policy here
+# breaks the Vite inline bootstrap; frame-security is covered by XFO.)
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "camera=(), microphone=(), geolocation=(), payment=()"
+    Strict-Transport-Security = "max-age=31536000; includeSubDomains"
+    X-Permitted-Cross-Domain-Policies = "none"
+    Cross-Origin-Opener-Policy = "same-origin-allow-popups"
