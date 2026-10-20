@@ -754,6 +754,13 @@ export default function Subscription() {
   const daysLeft = subscription?.trial_ends_at 
     ? Math.ceil((new Date(subscription.trial_ends_at).getTime() - new Date().getTime()) / (1000 * 60 * 60 * 24)) 
     : 0;
+  // FREE-FOREVER: a price-0 plan is always usable — its trial only gates
+  // premium features. Never paint a free plan as inactive/red even if a
+  // stale backend status lags behind (the free tier never expires).
+  const isFreePlan = !!subscription && parseFloat(String(subscription.plan_price ?? "0")) === 0;
+  const displayStatus = isFreePlan && subscription.subscription_status === 'inactive'
+    ? 'active'
+    : subscription.subscription_status;
 
   return (
     <Layout>
@@ -784,8 +791,8 @@ export default function Subscription() {
                 <div>
                   <CardTitle>Current Plan: {subscription.plan_name}</CardTitle>
                   <CardDescription>
-                    Status: <Badge variant={subscription.subscription_status === 'active' ? 'default' : 'destructive'} className="ml-2 capitalize">
-                      {subscription.subscription_status}
+                    Status: <Badge variant={displayStatus === 'active' ? 'default' : 'destructive'} className="ml-2 capitalize">
+                      {displayStatus}
                     </Badge>
                   </CardDescription>
                 </div>
@@ -823,6 +830,11 @@ export default function Subscription() {
                        <div className="text-sm text-muted-foreground">
                          {format(new Date(subscription.next_due_subscription_date), 'PPP')}
                        </div>
+                    </>
+                  ) : isFreePlan ? (
+                    <>
+                       <div className="text-sm font-medium">Billing</div>
+                       <div className="text-sm text-muted-foreground">Free plan — no billing required</div>
                     </>
                   ) : null}
                 </div>
