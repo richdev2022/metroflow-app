@@ -645,22 +645,19 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
         if (response.data.success) {
           const sub = response.data.subscription;
-          const isTrial = sub.trial_ends_at && new Date(sub.trial_ends_at) > new Date();
-          const isPaid = sub.plan_price > 0 && sub.subscription_status === 'active';
-          
-          // Check if user is on Free plan (price 0) and trial has ended
-          if (sub.plan_price === "0.00" || sub.plan_price === 0) {
-             if (sub.trial_ends_at && new Date(sub.trial_ends_at) < new Date()) {
-                setAlertType('trial_ended');
-                setShowSubscriptionAlert(true);
-             }
-          }
-          
-          // Or if status is cancelled/expired for paid plans (though logic above covers plan_price > 0)
-          // If status is not active and not trial
-          if (sub.subscription_status !== 'active' && !isTrial && sub.plan_price > 0) {
-              setAlertType('expired');
-              setShowSubscriptionAlert(true);
+          const price = parseFloat(sub.plan_price ?? "0") || 0;
+          const isTrial = !!(sub.trial_ends_at && new Date(sub.trial_ends_at) > new Date());
+
+          // FREE-FOREVER: price-0 plans are NEVER gated. The 7-day trial only
+          // unlocks premium features — the essentials stay free forever (the
+          // backend's checkFeaturePermission enforces exactly this). Showing a
+          // blocking "Subscription Required" dialog to a free-plan user whose
+          // trial window passed contradicts the plan and locked every free
+          // account out of the app. Only PAID plans that are neither active
+          // nor inside their trial period get the subscription wall.
+          if (price > 0 && sub.subscription_status !== 'active' && !isTrial) {
+            setAlertType('expired');
+            setShowSubscriptionAlert(true);
           }
         }
       } catch (error: any) {
