@@ -49,6 +49,7 @@ import { cn } from "@/lib/utils";
 import AppTour, { restartAppTour } from "./AppTour";
 import { Compass } from "lucide-react";
 import { SidebarToggleButton } from "./SidebarToggleButton";
+import { openCrossApp } from "@/lib/cross-app";
 import { useSidebar } from "@/components/ui/sidebar";
 
 const APP_TITLE = (typeof document !== "undefined" && document.title) || "Metricorex — Business OS";
@@ -856,6 +857,20 @@ export default function Layout({ children }: { children: React.ReactNode }) {
               <SidebarMenuButton onClick={() => setTheme(theme === "dark" ? "light" : "dark")} tooltip="Toggle Theme">
                 {theme === "dark" ? <Sun /> : <Moon />}
                 <span>Toggle Theme</span>
+              </SidebarMenuButton>
+            </SidebarMenuItem>
+            {/* Cross-app switch — open the Personal app. SSO hands the session
+                over (POST /auth/sso/ticket) so no re-login is needed. */}
+            <SidebarMenuItem>
+              <SidebarMenuButton
+                onClick={() => {
+                  openCrossApp("personal", "/home");
+                }}
+                tooltip="Open MetriCorex Personal"
+                className="text-fuchsia-600 hover:text-fuchsia-500 dark:text-fuchsia-400"
+              >
+                <Sparkles />
+                <span>Open Personal</span>
               </SidebarMenuButton>
             </SidebarMenuItem>
             <SidebarSeparator />
