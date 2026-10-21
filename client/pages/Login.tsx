@@ -229,6 +229,17 @@ export default function Login() {
 
           <GoogleSignInButton mode="login" />
 
+          {/* Cross-app: one set of credentials for Personal and Business */}
+          <p className="pt-2 text-center text-xs text-muted-foreground">
+            Personal life admin too?{" "}
+            <a
+              href={import.meta.env.VITE_PERSONAL_APP_URL || "https://personal.metricorex.com"}
+              className="font-semibold text-primary hover:underline"
+            >
+              Open MetriCorex Personal
+            </a>
+          </p>
+
           <p className="pt-1 text-center text-sm text-muted-foreground">
             New to MetriCorex?{" "}
             <button
