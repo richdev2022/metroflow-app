@@ -6,7 +6,7 @@ import { normalizeKycStatus } from "@/lib/kyc-utils";
 import { cn } from "@/lib/utils";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, ArrowUpRight, Users, Plus, Wallet, Banknote, Link2, FileText, Store, Repeat, History, ShoppingBag, Video, ListTodo, ChevronRight } from "lucide-react";
+import { AlertCircle, TrendingUp, Target, Clock, ArrowRight, ArrowUpRight, Users, Plus, Wallet, Banknote, Link2, FileText, Store, Repeat, History, ShoppingBag, Video, ListTodo, ChevronRight, Eye, EyeOff } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Button } from "@/components/ui/button";
@@ -38,6 +38,8 @@ import {
   CommandList,
 } from "@/components/ui/command";
 import { StatCard } from "@/components/dashboard/StatCard";
+import { PrivateAmount } from "@/components/BalancePrivacy";
+import { useBalanceHidden } from "@/lib/balance-visibility";
 import { SectionHeader } from "@/components/dashboard/SectionHeader";
 import { CompletedTrendChart } from "@/components/dashboard/CompletedTrendChart";
 import { LeaderboardCard } from "@/components/dashboard/LeaderboardCard";
@@ -702,6 +704,9 @@ export default function Dashboard() {
       ? walletInfo.business_wallet
       : walletInfo?.user_wallet;
 
+  // Balance privacy — global show/hide shared with the Wallet page (persisted).
+  const [balanceHidden, toggleBalanceHidden] = useBalanceHidden();
+
   const openFundWalletPicker = () => {
     setFundPickWalletId(primaryWallet?.id || fundWalletOptions[0]?.id || "");
     setFundPickOpen(true);
@@ -758,10 +763,31 @@ export default function Dashboard() {
                       : "Personal balance"}
                   </span>
                   <span className="block truncate text-lg font-semibold tracking-tight text-foreground">
-                    {primaryWallet ? fmtMoney(primaryWallet.balance, primaryWallet.currency) : "—"}
+                    <PrivateAmount value={primaryWallet ? fmtMoney(primaryWallet.balance, primaryWallet.currency) : "—"} />
                   </span>
                 </span>
                 <span className="flex shrink-0 items-center gap-1.5">
+                  {/* Eye toggle — span (not button) because this strip is itself a <button> */}
+                  <span
+                    role="button"
+                    tabIndex={0}
+                    aria-label={balanceHidden ? "Show balances" : "Hide balances"}
+                    title={balanceHidden ? "Show balances" : "Hide balances"}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      toggleBalanceHidden();
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        e.stopPropagation();
+                        toggleBalanceHidden();
+                      }
+                    }}
+                    className="flex h-7 w-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    {balanceHidden ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </span>
                   <span
                     role="button"
                     tabIndex={0}
@@ -1612,7 +1638,7 @@ export default function Dashboard() {
                     <span className="min-w-0 flex-1">
                       <span className="block text-sm font-semibold">{wallet.label}</span>
                       <span className="block text-xs text-muted-foreground">
-                        {wallet.currency} · {fmtMoney(wallet.balance, wallet.currency)}
+                        {wallet.currency} · <PrivateAmount value={fmtMoney(wallet.balance, wallet.currency)} />
                       </span>
                     </span>
                   </Label>

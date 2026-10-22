@@ -31,6 +31,7 @@ import {
   Search as SearchIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { PrivateAmount } from "@/components/BalancePrivacy";
 import { downloadCsvExport, csvFilename } from "@/lib/csv-download";
 import { useToast } from "@/components/ui/use-toast";
 
@@ -259,7 +260,7 @@ export function WalletTransactions({ wallets: initialWallets, refreshKey = 0, on
                 <SelectItem value="all">All wallets</SelectItem>
                 {walletOptions.map((w) => (
                   <SelectItem key={w.id} value={w.id}>
-                    {w.currency} wallet · {Number(w.balance).toLocaleString()}
+                    {w.currency} wallet · <PrivateAmount value={Number(w.balance).toLocaleString()} />
                   </SelectItem>
                 ))}
               </SelectContent>
