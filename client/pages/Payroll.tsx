@@ -54,6 +54,7 @@ import { Badge } from "@/components/ui/badge";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { PrivateAmount } from "@/components/BalancePrivacy";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { useCountdown } from "@/hooks/useCountdown";
 import { extractAccountName } from "@/lib/account-lookup";
@@ -1928,12 +1929,12 @@ export default function Payroll() {
                               <SelectContent>
                                 {wallets?.business_wallet && (
                                   <SelectItem value={wallets.business_wallet.id}>
-                                    Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
+                                    Business Wallet ({wallets.business_wallet.currency} <PrivateAmount value={Number(wallets.business_wallet.balance).toLocaleString()} />)
                                   </SelectItem>
                                 )}
                                 {wallets?.user_wallet && (
                                   <SelectItem value={wallets.user_wallet.id}>
-                                    Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
+                                    Personal Wallet ({wallets.user_wallet.currency} <PrivateAmount value={Number(wallets.user_wallet.balance).toLocaleString()} />)
                                   </SelectItem>
                                 )}
                               </SelectContent>
@@ -2426,12 +2427,12 @@ export default function Payroll() {
                         <SelectContent>
                           {wallets?.business_wallet && (
                             <SelectItem value={wallets.business_wallet.id}>
-                              Business Wallet ({wallets.business_wallet.currency} {Number(wallets.business_wallet.balance).toLocaleString()})
+                              Business Wallet ({wallets.business_wallet.currency} <PrivateAmount value={Number(wallets.business_wallet.balance).toLocaleString()} />)
                             </SelectItem>
                           )}
                           {wallets?.user_wallet && (
                             <SelectItem value={wallets.user_wallet.id}>
-                              Personal Wallet ({wallets.user_wallet.currency} {Number(wallets.user_wallet.balance).toLocaleString()})
+                              Personal Wallet ({wallets.user_wallet.currency} <PrivateAmount value={Number(wallets.user_wallet.balance).toLocaleString()} />)
                             </SelectItem>
                           )}
                         </SelectContent>
