@@ -13,6 +13,7 @@ import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, D
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Loader2, Wallet as WalletIcon, Building2, CreditCard, ArrowRightLeft, RefreshCw, AlertCircle, CheckCircle2, Timer, ClockAlert } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { BalanceToggle, PrivateAmount } from "@/components/BalancePrivacy";
 import {
   Command,
   CommandEmpty,
@@ -1307,9 +1308,12 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
   return (
     <Layout>
       <div className="p-8 space-y-8">
-        <div>
-          <h2 className="text-3xl font-bold tracking-tight">Wallet</h2>
-          <p className="text-muted-foreground">Manage your personal and business finances.</p>
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <h2 className="text-3xl font-bold tracking-tight">Wallet</h2>
+            <p className="text-muted-foreground">Manage your personal and business finances.</p>
+          </div>
+          <BalanceToggle />
         </div>
 
         {paymentNotice && (
@@ -1361,7 +1365,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                 <div className="space-y-4">
                   <div>
                     <div className="text-2xl font-bold">
-                      {walletInfo.user_wallet.currency} {Number(walletInfo.user_wallet.balance).toLocaleString()}
+                      {walletInfo.user_wallet.currency} <PrivateAmount value={Number(walletInfo.user_wallet.balance).toLocaleString()} />
                     </div>
                     <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
@@ -1471,7 +1475,7 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                 <div className="space-y-4">
                   <div>
                     <div className="text-2xl font-bold">
-                      {walletInfo.business_wallet.currency} {Number(walletInfo.business_wallet.balance).toLocaleString()}
+                      {walletInfo.business_wallet.currency} <PrivateAmount value={Number(walletInfo.business_wallet.balance).toLocaleString()} />
                     </div>
                     <p className="text-xs text-muted-foreground">Available Balance</p>
                   </div>
@@ -1586,12 +1590,12 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
                     <SelectContent>
                       {walletInfo?.user_wallet && (
                         <SelectItem value="user">
-                          Personal ({walletInfo.user_wallet.currency} {Number(walletInfo.user_wallet.balance).toLocaleString()})
+                          Personal ({walletInfo.user_wallet.currency} <PrivateAmount value={Number(walletInfo.user_wallet.balance).toLocaleString()} />)
                         </SelectItem>
                       )}
                       {walletInfo?.business_wallet && canManageBusinessWallet && (
                         <SelectItem value="business">
-                          Business ({walletInfo.business_wallet.currency} {Number(walletInfo.business_wallet.balance).toLocaleString()})
+                          Business ({walletInfo.business_wallet.currency} <PrivateAmount value={Number(walletInfo.business_wallet.balance).toLocaleString()} />)
                         </SelectItem>
                       )}
                     </SelectContent>
