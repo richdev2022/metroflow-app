@@ -659,6 +659,12 @@ export default function Dashboard() {
     }
   };
 
+  // HOOK ORDER: this hook MUST live above the `if (loading)` early return
+  // below — a hook after a conditional return throws React error #310
+  // ("Rendered more hooks than during the previous render").
+  // Balance privacy — global show/hide shared with the Wallet page (persisted).
+  const [balanceHidden, toggleBalanceHidden] = useBalanceHidden();
+
   if (loading) {
     return (
       <Layout>
@@ -703,9 +709,6 @@ export default function Dashboard() {
     walletInfo?.canManageBusinessWallet && walletInfo.business_wallet
       ? walletInfo.business_wallet
       : walletInfo?.user_wallet;
-
-  // Balance privacy — global show/hide shared with the Wallet page (persisted).
-  const [balanceHidden, toggleBalanceHidden] = useBalanceHidden();
 
   const openFundWalletPicker = () => {
     setFundPickWalletId(primaryWallet?.id || fundWalletOptions[0]?.id || "");

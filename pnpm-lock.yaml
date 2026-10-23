@@ -3893,7 +3893,7 @@ packages:
         optional: true
 
   xlsx@https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz:
-    resolution: {tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz}
+    resolution: {tarball: https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz, integrity: sha384-dJKF8r+VpZOo2fQfh6kcnQ8ETQiDjmff9DJPjQCBAnPUwUwJ926qYynLdVMc203Z}
     version: 0.20.3
     engines: {node: '>=0.8'}
     hasBin: true
