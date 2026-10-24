@@ -32,7 +32,9 @@ export default function Settings() {
   // business profile. Email is read-only; name/phone are editable and any
   // save marks the personal profile complete (same contract as the
   // first-login completion prompt).
-  const [myRole, setMyRole] = useState<string>("member");
+  const [myRole, setMyRole] = useState<string>(
+    () => localStorage.getItem("userRole") || "member",
+  );
   const [myName, setMyName] = useState("");
   const [myEmail, setMyEmail] = useState("");
   const [myPhone, setMyPhone] = useState("");
@@ -40,8 +42,15 @@ export default function Settings() {
   // Per-user identity model: only the business OWNER may touch the business
   // profile, contact details and legacy shared PIN surface. Invited admins
   // and managers manage their OWN profile + their OWN transaction PIN.
-  const [isOwner, setIsOwner] = useState(false);
-  const isBusinessAdmin = myRole === "owner" || myRole === "admin";
+  const [isOwner, setIsOwner] = useState<boolean>(
+    // Persisted so a failed /settings refetch never flips an owner into the
+    // member view; cleared on logout so another account cannot inherit it.
+    () => localStorage.getItem("isBusinessOwner") === "1",
+  );
+  // The registrant's role string is 'admin' — the same role invited admins
+  // get — so the server-computed profile.isOwner flag is the ONLY reliable
+  // business-editing signal across the whole screen.
+  const isBusinessAdmin = isOwner || myRole === "owner";
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
 
@@ -99,7 +108,15 @@ export default function Settings() {
       const loadedProfile = profileData.settings ?? profileData.data ?? null;
       setProfile(loadedProfile);
       // Owner resolution comes from the backend (businesses.owner_id match).
-      setIsOwner(Boolean(profileData.profile?.isOwner));
+      const myProfileData = (profileData as { profile?: { isOwner?: boolean; role?: string } }).profile;
+      if (typeof myProfileData?.isOwner === "boolean") {
+        setIsOwner(myProfileData.isOwner);
+        localStorage.setItem("isBusinessOwner", myProfileData.isOwner ? "1" : "0");
+      }
+      if (myProfileData?.role) {
+        setMyRole(myProfileData.role);
+        localStorage.setItem("userRole", myProfileData.role);
+      }
       // Sync the app-wide display timezone with the saved business setting
       setTimezone(loadedProfile?.timezone || "UTC");
 
@@ -121,7 +138,10 @@ export default function Settings() {
       const meData = (meRes?.data as { data?: { hasPassword?: boolean; authProvider?: string; role?: string; name?: string; email?: string; phoneNumber?: string } } | null)?.data;
       setHasPassword(Boolean(meData?.hasPassword));
       setAuthProvider(meData?.authProvider || "local");
-      setMyRole(meData?.role || "member");
+      if (meData?.role) {
+        setMyRole(meData.role);
+        localStorage.setItem("userRole", meData.role);
+      }
       setMyName(meData?.name || "");
       setMyEmail(meData?.email || "");
       setMyPhone(meData?.phoneNumber || "");
@@ -445,7 +465,11 @@ export default function Settings() {
       <div className="mx-auto w-full max-w-6xl space-y-5 p-4 sm:space-y-8 sm:p-8">
         <div>
           <h2 className="text-2xl font-bold tracking-tight sm:text-3xl">Settings</h2>
-          <p className="text-muted-foreground">Manage your business profile and preferences.</p>
+          <p className="text-muted-foreground">
+            {isBusinessAdmin
+              ? "Manage your business profile and preferences."
+              : "Manage your personal profile and preferences."}
+          </p>
         </div>
 
         <Tabs defaultValue="profile" className="space-y-4">
@@ -459,7 +483,7 @@ export default function Settings() {
               <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">{isOwner ? "Business Profile" : "My Profile"}</TabsTrigger>
               {isOwner && <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>}
               <TabsTrigger value="security" className="snap-start shrink-0 rounded-lg px-3 py-2">Security</TabsTrigger>
-              <TabsTrigger value="preference" className="snap-start shrink-0 rounded-lg px-3 py-2">OTP Preferences</TabsTrigger>
+              {isBusinessAdmin && <TabsTrigger value="preference" className="snap-start shrink-0 rounded-lg px-3 py-2">OTP Preferences</TabsTrigger>}
               <TabsTrigger value="fees" className="snap-start shrink-0 rounded-lg px-3 py-2">Fee Schedule</TabsTrigger>
             </TabsList>
             <div aria-hidden className="pointer-events-none absolute inset-y-0 left-3 w-8 bg-gradient-to-r from-background to-transparent sm:hidden" />
@@ -614,14 +638,16 @@ export default function Settings() {
                 <CardDescription>Update email or phone number with OTP verification.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4 max-w-2xl">
-                    <div className="p-4 border rounded-lg">
+                {/* Mobile-responsive: single column on phones so long business
+                    emails/phone numbers wrap instead of overlapping. */}
+                <div className="grid max-w-2xl grid-cols-1 gap-3 sm:grid-cols-2 sm:gap-4">
+                    <div className="min-w-0 rounded-lg border p-4">
                         <div className="text-sm text-muted-foreground">Email</div>
-                        <div className="font-medium">{profile?.email}</div>
+                        <div className="break-all font-medium [overflow-wrap:anywhere]">{profile?.email || "—"}</div>
                     </div>
-                    <div className="p-4 border rounded-lg">
+                    <div className="min-w-0 rounded-lg border p-4">
                         <div className="text-sm text-muted-foreground">Phone</div>
-                        <div className="font-medium">{profile?.phone_number}</div>
+                        <div className="break-all font-medium [overflow-wrap:anywhere]">{profile?.phone_number || "—"}</div>
                     </div>
                 </div>
 
@@ -797,15 +823,34 @@ export default function Settings() {
                   <ShieldCheck className="h-5 w-5" />
                   Transaction OTP
                 </CardTitle>
-                <CardDescription>Toggle OTP requirement for transfers.</CardDescription>
+                <CardDescription>
+                  {isBusinessAdmin
+                    ? "Toggle OTP requirement for transfers."
+                    : "Managed by the business owner. Your transfer OTPs are always sent to your own phone/email."}
+                </CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="flex items-center justify-between">
-                  <div>
+                  <div className="min-w-0 pr-3">
                     <div className="font-medium">Require OTP for Transfers</div>
-                    <div className="text-sm text-muted-foreground">When enabled, all transfers will require an OTP verification.</div>
+                    <div className="text-sm text-muted-foreground">
+                      {isBusinessAdmin
+                        ? "When enabled, all transfers will require an OTP verification."
+                        : otpEnabled
+                          ? "Currently enabled for this business."
+                          : "Currently disabled for this business."}
+                    </div>
                   </div>
-                  <Switch checked={otpEnabled} onCheckedChange={handleToggleOtpEnabled} />
+                  {/* OWNER-ONLY control: the transfer-OTP requirement is a
+                      business-wide security policy. Invited members (admins
+                      included) see the current state read-only. */}
+                  {isBusinessAdmin ? (
+                    <Switch checked={otpEnabled} onCheckedChange={handleToggleOtpEnabled} />
+                  ) : (
+                    <span className="shrink-0 rounded-full bg-muted px-3 py-1 text-xs font-medium text-muted-foreground">
+                      {otpEnabled ? "On" : "Off"}
+                    </span>
+                  )}
                 </div>
               </CardContent>
             </Card>

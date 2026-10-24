@@ -677,6 +677,10 @@ export default function Layout({ children }: { children: React.ReactNode }) {
     localStorage.removeItem("userId");
     localStorage.removeItem("businessId");
     localStorage.removeItem("userName");
+    // IDENTITY CACHE: also drop the role/owner flags and profile details so
+    // the next account signing in on this browser can never inherit the
+    // previous user's owner view or business preferences.
+    ["userRole", "isBusinessOwner", "userEmail", "userAvatar"].forEach((k) => localStorage.removeItem(k));
     navigate("/login");
   };
 
