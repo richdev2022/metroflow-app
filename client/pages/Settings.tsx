@@ -37,6 +37,10 @@ export default function Settings() {
   const [myEmail, setMyEmail] = useState("");
   const [myPhone, setMyPhone] = useState("");
   const [personalSaving, setPersonalSaving] = useState(false);
+  // Per-user identity model: only the business OWNER may touch the business
+  // profile, contact details and legacy shared PIN surface. Invited admins
+  // and managers manage their OWN profile + their OWN transaction PIN.
+  const [isOwner, setIsOwner] = useState(false);
   const isBusinessAdmin = myRole === "owner" || myRole === "admin";
   const { toast } = useToast();
   const { seconds, isActive, startCountdown } = useCountdown();
@@ -84,7 +88,7 @@ export default function Settings() {
     try {
       setLoading(true);
       const [profileRes, prefRes, otpEnabledRes, feesRes, meRes] = await Promise.all([
-        api.get<{success: boolean, settings?: BusinessProfile, data?: BusinessProfile}>("/settings"),
+        api.get<{success: boolean, settings?: BusinessProfile, data?: BusinessProfile, profile?: { isOwner?: boolean; role?: string; transactionPinSet?: boolean }}>("/settings"),
         api.get<{success: boolean, preference?: string, data?: OtpPreferenceResponse}>("/settings/otp-preference"),
         api.get<OtpEnabledResponse>("/settings/otp-enabled"),
         api.get<{success: boolean, data: FeeConfig[]}>("/fees"),
@@ -94,6 +98,8 @@ export default function Settings() {
       const profileData = assertApiSuccess(profileRes.data, "Failed to fetch settings");
       const loadedProfile = profileData.settings ?? profileData.data ?? null;
       setProfile(loadedProfile);
+      // Owner resolution comes from the backend (businesses.owner_id match).
+      setIsOwner(Boolean(profileData.profile?.isOwner));
       // Sync the app-wide display timezone with the saved business setting
       setTimezone(loadedProfile?.timezone || "UTC");
 
@@ -447,10 +453,11 @@ export default function Settings() {
               viewport on small phones (snap + gradient fade masks at edges). */}
           <div className="relative -mx-4 px-4 sm:mx-0 sm:px-0">
             <TabsList className="h-auto min-h-11 w-full justify-start gap-1 overflow-x-auto rounded-xl border border-border/60 bg-muted/60 p-1 no-scrollbar sm:justify-center">
-              {/* Business-profile editing is for business admins ONLY —
-                  invited members see their PERSONAL profile here instead. */}
-              <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">{isBusinessAdmin ? "Business Profile" : "My Profile"}</TabsTrigger>
-              {isBusinessAdmin && <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>}
+              {/* Per-user identity model: BUSINESS profile + contact details
+                  are visible to the OWNER only. Invited members see their
+                  PERSONAL profile here instead. */}
+              <TabsTrigger value="profile" className="snap-start shrink-0 rounded-lg px-3 py-2">{isOwner ? "Business Profile" : "My Profile"}</TabsTrigger>
+              {isOwner && <TabsTrigger value="contact" className="snap-start shrink-0 rounded-lg px-3 py-2">Contact Info</TabsTrigger>}
               <TabsTrigger value="security" className="snap-start shrink-0 rounded-lg px-3 py-2">Security</TabsTrigger>
               <TabsTrigger value="preference" className="snap-start shrink-0 rounded-lg px-3 py-2">OTP Preferences</TabsTrigger>
               <TabsTrigger value="fees" className="snap-start shrink-0 rounded-lg px-3 py-2">Fee Schedule</TabsTrigger>
@@ -460,7 +467,7 @@ export default function Settings() {
           </div>
 
           <TabsContent value="profile">
-            {isBusinessAdmin ? (
+            {isOwner ? (
             <Card>
               <CardHeader>
                 <CardTitle>Business Profile</CardTitle>
@@ -560,7 +567,7 @@ export default function Settings() {
             <Card>
               <CardHeader>
                 <CardTitle>My Profile</CardTitle>
-                <CardDescription>Your personal details. Only business admins can edit the business profile.</CardDescription>
+                <CardDescription>Your personal details — your own name, email and phone number. Only the business owner can edit the business profile.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="max-w-none space-y-4 sm:max-w-md">
@@ -856,9 +863,9 @@ export default function Settings() {
               <CardHeader>
                 <CardTitle className="flex items-center gap-2">
                   <Lock className="h-5 w-5" />
-                  Transaction PIN
+                  Your Transaction PIN
                 </CardTitle>
-                <CardDescription>Manage your transaction PIN for enhanced security.</CardDescription>
+                <CardDescription>Every member owns a private PIN — yours is never shared with other team members and cannot be changed by them.</CardDescription>
               </CardHeader>
               <CardContent>
                 <div className="space-y-4">
