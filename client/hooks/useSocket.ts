@@ -76,7 +76,15 @@ let singletonKeepAliveInterval: NodeJS.Timeout | null = null;
 let singletonEverConnected = false;
 
 function ensureSingletonSocket(userId: string, businessId: string, userName: string) {
-  const credsMatch = singletonLastCreds?.userId === userId && singletonLastCreds?.businessId === businessId;
+  // REDIAL FIX: match on userId ONLY. CallRoom mounts `useSocket({ userId, userName })`
+  // WITHOUT businessId, so the old `businessId` comparison saw every call start as a
+  // credential change and tore down the app-wide singleton (removeAllListeners +
+  // disconnect). Every listener registered by Layout/Chat (incoming-call ring,
+  // ringback stop, typing, messages) died the moment a call opened — and was never
+  // re-attached after hangup, so the NEXT call never rang and hangup left the
+  // ringback screaming. The singleton keeps the businessId it was created with for
+  // keep-alive purposes, which is the only thing businessId is used for here.
+  const credsMatch = singletonLastCreds?.userId === userId;
   if (singletonSocket && credsMatch && singletonSocket.connected) {
     return singletonSocket;
   }

@@ -1050,7 +1050,15 @@ export function CallRoom({
     });
   }, [displayName, effectiveRoomId, emitRoom, localUserId]);
 
+  // REDIAL FIX: guard against double teardown. The hangup path can fire twice
+  // (double-tapped End, the floating bubble End racing the leave dialog,
+  // unmount + manual leave) — a second pass re-emitted call:leave/end and ran
+  // the entry point's onLeave twice, wedging the UI so the next dial did
+  // nothing.
+  const leavingRef = useRef(false);
   const leaveRoom = useCallback((options?: { endForEveryone?: boolean }) => {
+    if (leavingRef.current) return;
+    leavingRef.current = true;
     // If this participant was recording, broadcast the stop first (previous
     // behaviour) — then run the shared authoritative teardown.
     stopRecording(true);
