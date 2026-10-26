@@ -1913,6 +1913,9 @@ export default function Chat() {
       const matchId = payload?.callId || payload?.id || payload;
       if (!matchId || String(matchId) === String(cur.callId)) {
         doStop();
+        // REDIAL FIX: also drop the stored ringback so the next dial starts
+        // clean instead of seeing a stopped-but-still-mounted ringback.
+        setActiveCallRingback(null);
       }
     };
     on("call:accepted", stopForThisCall as any);

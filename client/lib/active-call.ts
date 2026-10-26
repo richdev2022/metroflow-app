@@ -30,6 +30,10 @@ let state: ActiveCallState = {
   startedAt: 0,
 };
 
+// REDIAL FIX: remembers the last ended call's props so a second endCall() pass
+// (double-tap, bubble vs dialog race) still runs the page-level onLeave exactly once.
+let lastEndCallProps: CallRoomProps | null = null;
+
 const listeners = new Set<() => void>();
 
 function emit() {
@@ -88,8 +92,26 @@ export function reportLocalStream(stream: MediaStream | null) {
 
 /** End/leave the active call entirely. */
 export function endCall() {
+  // REDIAL FIX: idempotent teardown. The old `if (!state.props) return;` ran
+  // BEFORE prev.onLeave, so a double cleanup pass (double-tapped hangup, the
+  // floating bubble End while the leave dialog was closing, CallRoom unmount
+  // racing the host) skipped the page-level cleanup entirely — the entry point
+  // never got its REST leave / ringback stop / navigation and the call looked
+  // "stuck" for the next dial. Keep the last props around and always run the
+  // stored onLeave exactly ONCE.
+  if (!state.props && lastEndCallProps) {
+    const stored = lastEndCallProps;
+    lastEndCallProps = null;
+    try {
+      stored.onLeave?.();
+    } catch {
+      // onLeave must never crash the host
+    }
+    return;
+  }
   if (!state.props) return;
   const prev = state.props;
+  lastEndCallProps = prev;
   state = { props: null, minimized: false, localStream: null, callType: "video", startedAt: 0 };
   emit();
   try {
