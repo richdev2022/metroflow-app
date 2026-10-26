@@ -949,7 +949,13 @@ const loadQuote = useCallback(async (amountNum: number, currency: string) => {
           payload.debitAmount = quote.total_debit;
           payload.debitCurrency = "NGN";
       }
-      if (values.recipientAddress !== undefined) {
+      // International beneficiary fields ride ONLY on international payouts.
+      // (Gating on `recipientAddress !== undefined` was always true — the form
+      // defaults it to "" — so NGN transfers carried the form's default
+      // recipientCountry 'US', which flipped Flutterwave dispatch onto
+      // international rails and the payout failed with "No account number or
+      // recipient identifier passed".)
+      if (isIntlCurrency(values.currency)) {
           payload.recipientAddress = values.recipientAddress?.trim() || undefined;
           payload.recipientCity = values.recipientCity?.trim() || undefined;
           payload.recipientState = values.recipientState?.trim() || undefined;
