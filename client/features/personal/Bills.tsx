@@ -189,8 +189,29 @@ export default function Bills() {
 
   const selectedPlan = buyProvider?.plans?.find((p) => p.code === planCode) || null;
   const amountDue = selectedPlan ? selectedPlan.amount : Number(amount) || 0;
-  const estimatedFee = 50; // standard convenience fee — actual fee (plan discount) is returned by the API
-  const totalDue = amountDue + (amountDue > 0 ? estimatedFee : 0);
+
+  // REAL fee + promotions from the backend — the old hardcoded ₦50 estimate
+  // showed a fee the API no longer charges once the admin sets it (e.g. 0).
+  const [billPricing, setBillPricing] = useState<{ fee: number; rules: Record<string, any> }>({ fee: 0, rules: {} });
+  useEffect(() => {
+    let alive = true;
+    api.get("/bills/pricing", { timeout: 15000 })
+      .then((res: any) => {
+        if (!alive) return;
+        setBillPricing({
+          fee: Number(res.data?.data?.fee ?? 0) || 0,
+          rules: res.data?.data?.rules ?? {},
+        });
+      })
+      .catch(() => {});
+    return () => { alive = false; };
+  }, []);
+  const promoRule: any = category ? billPricing.rules[category] : null;
+  const promoActive = promoRule?.enabled === true;
+  const discountDue = promoActive ? Math.round(amountDue * (Number(promoRule.discount_percent) || 0)) / 100 : 0;
+  const cashbackPercent = promoActive ? Number(promoRule.cashback_percent) || 0 : 0;
+  const estimatedFee = billPricing.fee;
+  const totalDue = amountDue > 0 ? Math.round((amountDue - discountDue + estimatedFee) * 100) / 100 : 0;
 
   const openBuy = (provider: BillProvider) => {
     setBuyProvider(provider);
@@ -473,10 +494,24 @@ export default function Bills() {
                   <span>Amount</span>
                   <span>{fmtMoney(amountDue)}</span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Convenience fee</span>
-                  <span>≈ {fmtMoney(estimatedFee)}</span>
-                </div>
+                {discountDue > 0 && (
+                  <div className="flex justify-between text-emerald-600">
+                    <span>Discount ({promoRule.discount_percent}%)</span>
+                    <span>-{fmtMoney(discountDue)}</span>
+                  </div>
+                )}
+                {estimatedFee > 0 && (
+                  <div className="flex justify-between">
+                    <span>Convenience fee</span>
+                    <span>{fmtMoney(estimatedFee)}</span>
+                  </div>
+                )}
+                {cashbackPercent > 0 && (
+                  <div className="flex justify-between text-emerald-600">
+                    <span>Cashback after payment</span>
+                    <span>+{cashbackPercent}%</span>
+                  </div>
+                )}
                 <div className="flex justify-between font-semibold border-t pt-1">
                   <span>Total</span>
                   <span>≈ {fmtMoney(totalDue)}</span>
