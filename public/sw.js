@@ -7,6 +7,12 @@
  *       Accept / Decline actions.
  *   { type: 'missed-call', callId?, callerName?, url? }
  *     → normal notification.
+ *   { type: 'chat-message', conversationId?, senderName?, message? }
+ *     → notification with Reply / Mark as read actions. Both actions (and
+ *       the default tap) focus or open /chat?conversation=<id>&reply=1;
+ *       the app then selects the thread, focuses the composer and flashes
+ *       it. (The SW has no authenticated-fetch pattern, so "Mark as read"
+ *       relies on the app's on-open read cursor instead of a raw fetch.)
  *   anything else with title/body → generic notification.
  *
  * notificationclick:
@@ -14,7 +20,8 @@
  *     to the app (which opens /join-call?call=<id>&auto=1 and rings the UI),
  *     focusing an existing client when possible.
  *   - decline → postMessage { type:'sw-call-action', action:'decline', callId }.
- *   - default → focus or open notification.data.url.
+ *   - chat 'reply' / 'mark-read' → same focus-or-open logic as the default
+ *     tap, using the notification's deep link.
  */
 
 self.addEventListener("install", (event) => {
@@ -82,7 +89,10 @@ self.addEventListener("push", (event) => {
     const sender = data.senderName || data.sender_name || data.title || "New message";
     const convo = data.conversationId || data.conversation_id || "";
     const body = data.message || data.body || "";
-    const deepLink = "/chat" + (convo ? "?conversation=" + encodeURIComponent(convo) : "");
+    // Reply-friendly deep link: the app focuses the composer for this thread.
+    const deepLink = convo
+      ? "/chat?conversation=" + encodeURIComponent(convo) + "&reply=1"
+      : "/chat";
     event.waitUntil(
       self.registration.showNotification(sender, {
         body: body,
@@ -90,6 +100,10 @@ self.addEventListener("push", (event) => {
         icon: "/icon-192.png",
         badge: "/icon-192.png",
         data: { url: deepLink, conversationId: convo, type: "chat-message" },
+        actions: [
+          { action: "reply", title: "Reply" },
+          { action: "mark-read", title: "Mark as read" },
+        ],
       }),
     );
     return;
@@ -141,7 +155,15 @@ self.addEventListener("notificationclick", (event) => {
         return;
       }
 
-      // Default click → focus existing client or open the deep link.
+      // Chat message actions — "reply" opens /chat?conversation=<id>&reply=1
+      // (the app focuses + flashes the composer); "mark-read" has no
+      // authenticated-fetch pattern available inside the SW, so it also just
+      // surfaces the thread (opening it marks it read via the app's normal
+      // on-open read cursor). Both reuse the default focus-or-open logic
+      // below via the notification's data.url deep link.
+
+      // Default click (and chat reply / mark-read) → focus existing client
+      // or open the deep link.
       const urlToOpen = new URL(data.url || "/", self.location.origin).href;
       const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const existing = clientList.find((c) => c.url === urlToOpen);

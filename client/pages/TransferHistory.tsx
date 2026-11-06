@@ -32,6 +32,7 @@ import { cn } from "@/lib/utils";
 import { downloadCsvExport, csvFilename } from "@/lib/csv-download";
 import { buildTransactionReceiptPdf, receiptFilename } from "@/lib/receipt-pdf";
 import { scrubProviderNames } from "@/lib/scrub";
+import { PrivateAmount } from "@/components/BalancePrivacy";
 
 export default function TransferHistory() {
   const [transfers, setTransfers] = useState<Transfer[]>([]);
@@ -329,7 +330,7 @@ export default function TransferHistory() {
       >
         {isCredit ? <ArrowDownLeft className="h-3.5 w-3.5" /> : isDebit ? <ArrowUpRight className="h-3.5 w-3.5" /> : null}
         <span>
-          {isCredit ? "+" : isDebit ? "\u2212" : ""} {t.currency} {Number(t.amount).toLocaleString()}
+          {isCredit ? "+" : isDebit ? "\u2212" : ""} {t.currency} <PrivateAmount value={Number(t.amount).toLocaleString()} />
         </span>
       </div>
     );
@@ -667,7 +668,7 @@ export default function TransferHistory() {
                                         })()}
                                     </div>
                                     <div className="text-3xl font-extrabold tracking-tight">
-                                        {selectedTransfer.currency} {Number(selectedTransfer.amount).toLocaleString()}
+                                        {selectedTransfer.currency} <PrivateAmount value={Number(selectedTransfer.amount).toLocaleString()} />
                                     </div>
                                     <div className="flex items-center gap-2">
                                         <span className="rounded-full bg-white/25 px-3 py-1 text-[11px] font-bold uppercase tracking-wide">
@@ -705,7 +706,7 @@ export default function TransferHistory() {
                                 {Number(selectedTransfer.fee) > 0 && (
                                     <div className="flex items-center justify-between">
                                         <span className="text-sm text-muted-foreground">Fee</span>
-                                        <span>{selectedTransfer.currency} {Number(selectedTransfer.fee).toLocaleString()}</span>
+                                        <span>{selectedTransfer.currency} <PrivateAmount value={Number(selectedTransfer.fee).toLocaleString()} /></span>
                                     </div>
                                 )}
                                 <div className="flex items-center justify-between">

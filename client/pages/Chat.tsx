@@ -1405,6 +1405,9 @@ export default function Chat() {
 
   // Composer formatting toolbar (bold / italic / strike / code)
   const [composerFocused, setComposerFocused] = useState(false);
+  // Subtle highlight on the composer when arriving from a push "Reply" action
+  // (/chat?conversation=<id>&reply=1 — see the handoff effect below).
+  const [composerFlash, setComposerFlash] = useState(false);
   // Re-render periodically so relative "last seen" strings stay fresh.
   const [, setPresenceTick] = useState(0);
   const messageElsRef = useRef<Map<string, HTMLElement>>(new Map());
@@ -1508,6 +1511,43 @@ export default function Chat() {
       navigate(location.pathname + location.search, { replace: true });
     }
   }, [location.state, location.pathname, location.search, conversations, navigate]);
+
+  // Push-notification reply handoff: the service worker opens
+  // /chat?conversation=<id>&reply=1 ("Reply" action or default tap on a chat
+  // message notification). Select that conversation once the list payload
+  // contains it, then focus the composer with a subtle highlight. Consumed
+  // params are stripped from the URL (same one-shot pattern as the
+  // join-by-invite state handoff above) so a re-render / refresh can't
+  // re-trigger the focus + flash.
+  useEffect(() => {
+    const params = new URLSearchParams(location.search);
+    const conversationParam = params.get("conversation");
+    if (!conversationParam || !conversations) return;
+    const conv = (conversations as ConversationView[]).find((c) => c.id === conversationParam);
+    if (!conv) return;
+    setSelectedConversation(conv);
+    setMobileShowSidebar(false);
+    if (params.get("reply") === "1") {
+      // The thread + composer mount on the next render — retry briefly until
+      // the textarea exists, then focus it and flash the composer.
+      let tries = 0;
+      const attemptFocus = () => {
+        const el = composerRef.current;
+        if (el) {
+          el.focus();
+          setComposerFlash(true);
+          window.setTimeout(() => setComposerFlash(false), 1600);
+          return;
+        }
+        if (tries++ < 16) window.setTimeout(attemptFocus, 125);
+      };
+      window.setTimeout(attemptFocus, 150);
+    }
+    params.delete("conversation");
+    params.delete("reply");
+    const nextSearch = params.toString();
+    navigate(location.pathname + (nextSearch ? `?${nextSearch}` : ""), { replace: true });
+  }, [location.search, location.pathname, conversations, navigate]);
 
   // Reset local messages on conversation change + mark as read
   useEffect(() => {
@@ -4031,7 +4071,10 @@ export default function Chat() {
                             </div>
                           </div>
                         )}
-                        <div className="flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all">
+                        <div className={cn(
+                          "flex items-end bg-muted/60 border border-border/80 rounded-2xl px-3 py-1.5 focus-within:border-blue-500/50 focus-within:ring-2 focus-within:ring-blue-500/20 transition-all",
+                          composerFlash && "border-blue-500/70 ring-2 ring-blue-500/30"
+                        )}>
                         <Textarea
                           ref={composerRef}
                           placeholder={editing ? "Edit message…" : "Type a message..."}
