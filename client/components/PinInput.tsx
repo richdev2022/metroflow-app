@@ -11,10 +11,9 @@ import { cn } from "@/lib/utils";
  * 4 slots.
  *
  * Privacy: digits are masked by default; a small eye button beside the boxes
- * reveals/hides them. Masking uses input-otp's native `obscure` prop — the
- * shadcn wrapper spreads unknown props straight onto <OTPInput> — so paste,
- * auto-advance and the caret keep working untouched (•••• with the last
- * typed digit briefly visible, like a real bank app).
+ * reveals/hides them. Masking rides a `masked` prop on the shadcn wrapper
+ * (the pinned input-otp predates `obscure`) — slots render • when masked, so
+ * typing, paste, auto-advance and the caret keep working untouched.
  */
 export function PinInput({
   value,
@@ -41,7 +40,7 @@ export function PinInput({
         onChange={onChange}
         disabled={disabled}
         aria-label={ariaLabel}
-        obscure={!show}
+        masked={!show}
       >
         <InputOTPGroup className="gap-2">
           <InputOTPSlot index={0} className="h-11 w-11 rounded-lg border text-base first:rounded-l-lg" />
