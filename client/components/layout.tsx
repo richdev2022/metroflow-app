@@ -46,6 +46,7 @@ import { unwrapApiData } from "@/lib/api-response";
 import { Conversation } from "@shared/api";
 import { toast as sonnerToast } from "sonner";
 import { cn } from "@/lib/utils";
+import { setFaviconBadge } from "@/lib/favicon-badge";
 import AppTour, { restartAppTour } from "./AppTour";
 import { Compass } from "lucide-react";
 import { SidebarToggleButton } from "./SidebarToggleButton";
@@ -608,6 +609,13 @@ export default function Layout({ children }: { children: React.ReactNode }) {
 
     document.title = APP_TITLE;
   }, [incomingCall, isHidden, totalUnread]);
+
+  // Favicon unread badge — same total as the hidden-tab title badge above
+  // (chat unread + meeting invites), but visible on pinned tabs too. Fires
+  // on every change, including 0 (restores the clean favicon).
+  useEffect(() => {
+    setFaviconBadge(totalUnread + meetingsUnread);
+  }, [totalUnread, meetingsUnread]);
 
   // KYC State
   const [showKycModal, setShowKycModal] = useState(false);

@@ -8,11 +8,13 @@
  *   { type: 'missed-call', callId?, callerName?, url? }
  *     → normal notification.
  *   { type: 'chat-message', conversationId?, senderName?, message? }
- *     → notification with Reply / Mark as read actions. Both actions (and
- *       the default tap) focus or open /chat?conversation=<id>&reply=1;
- *       the app then selects the thread, focuses the composer and flashes
- *       it. (The SW has no authenticated-fetch pattern, so "Mark as read"
- *       relies on the app's on-open read cursor instead of a raw fetch.)
+ *     → notification with Reply / Mark as read actions. Reply (and the
+ *       default tap) focus or open /chat?conversation=<id>&reply=1; the
+ *       app then selects the thread, focuses the composer and flashes it.
+ *       "Mark as read" POSTs <apiBase>/chat/conversations/<id>/read with a
+ *       token borrowed from an open client over a MessageChannel handshake
+ *       ('sw-request-token'); with no client/token it falls back to just
+ *       opening the thread (the app marks it read on load).
  *   anything else with title/body → generic notification.
  *
  * notificationclick:
@@ -20,8 +22,10 @@
  *     to the app (which opens /join-call?call=<id>&auto=1 and rings the UI),
  *     focusing an existing client when possible.
  *   - decline → postMessage { type:'sw-call-action', action:'decline', callId }.
- *   - chat 'reply' / 'mark-read' → same focus-or-open logic as the default
- *     tap, using the notification's deep link.
+ *   - chat 'reply' → same focus-or-open logic as the default tap, using the
+ *     notification's deep link (/chat?conversation=<id>&reply=1).
+ *   - chat 'mark-read' → POST <apiBase>/chat/conversations/<id>/read with a
+ *     token borrowed from an open client; fallback = open the thread.
  */
 
 self.addEventListener("install", (event) => {
@@ -131,6 +135,40 @@ async function postActionToClients(action, callId) {
   return clientList;
 }
 
+/**
+ * Ask any open app window for the auth token (the SW cannot read
+ * localStorage itself). PushManager replies over a MessageChannel with
+ * { token, apiBase, userId, businessId }. Resolves null when no client is
+ * open or nothing answers within the timeout — callers then fall back to
+ * just opening the app (Chat marks the conversation read on load anyway).
+ */
+function requestAuthTokenFromClients() {
+  return (async () => {
+    let clientList = [];
+    try {
+      clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
+    } catch (e) {
+      return null;
+    }
+    for (const client of clientList) {
+      try {
+        const token = await new Promise((resolve) => {
+          const channel = new MessageChannel();
+          const timer = setTimeout(() => resolve(null), 1500);
+          channel.port1.onmessage = (ev) => {
+            clearTimeout(timer);
+            const d = ev && ev.data;
+            resolve(d && d.token ? d : null);
+          };
+          client.postMessage({ type: "sw-request-token" }, [channel.port2]);
+        });
+        if (token) return token;
+      } catch (e) { /* try the next client */ }
+    }
+    return null;
+  })();
+}
+
 self.addEventListener("notificationclick", (event) => {
   const notification = event.notification;
   const action = event.action;
@@ -155,15 +193,43 @@ self.addEventListener("notificationclick", (event) => {
         return;
       }
 
-      // Chat message actions — "reply" opens /chat?conversation=<id>&reply=1
-      // (the app focuses + flashes the composer); "mark-read" has no
-      // authenticated-fetch pattern available inside the SW, so it also just
-      // surfaces the thread (opening it marks it read via the app's normal
-      // on-open read cursor). Both reuse the default focus-or-open logic
-      // below via the notification's data.url deep link.
+      // Chat: Mark as read → POST the conversation read endpoint with the
+      // token borrowed from an open client (the SW cannot read localStorage
+      // itself). No token available (app closed / handshake timeout) or the
+      // fetch failed? Fall through to the default focus-or-open logic below
+      // — opening the thread marks it read via the app's on-open read
+      // cursor. NOTE: the read URL is built by string concatenation; a
+      // leading slash via new URL(url, base) would DROP the /api prefix when
+      // apiBase ends in /api (→ 404s).
+      if (action === "mark-read" && data.type === "chat-message" && data.conversationId) {
+        const auth = await requestAuthTokenFromClients();
+        if (auth && auth.token) {
+          try {
+            const apiBase = (auth.apiBase || "/api").trim();
+            const readUrl =
+              apiBase.replace(/\/$/, "") +
+              "/chat/conversations/" +
+              encodeURIComponent(data.conversationId) +
+              "/read";
+            const headers = { "Authorization": "Bearer " + auth.token };
+            // This app's API identifies requests via the x-user-id /
+            // x-business-id headers — mirror what api-client.ts sends.
+            if (auth.userId) headers["x-user-id"] = auth.userId;
+            if (auth.businessId) headers["x-business-id"] = auth.businessId;
+            const res = await fetch(readUrl, {
+              method: "POST",
+              headers: headers,
+            });
+            if (res.ok) return; // silently read — no window opened
+          } catch (e) {
+            /* fall through to the app-open fallback */
+          }
+        }
+      }
 
-      // Default click (and chat reply / mark-read) → focus existing client
-      // or open the deep link.
+      // Chat "reply" (and the default tap, plus a mark-read that couldn't
+      // POST) → focus existing client or open the deep link
+      // (/chat?conversation=<id>&reply=1).
       const urlToOpen = new URL(data.url || "/", self.location.origin).href;
       const clientList = await self.clients.matchAll({ type: "window", includeUncontrolled: true });
       const existing = clientList.find((c) => c.url === urlToOpen);
